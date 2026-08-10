@@ -12,11 +12,14 @@ import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
+import geiler.addons.client.render.WorldToScreen;
 import geiler.addons.client.tiki.TikiSolver;
 import geiler.addons.client.tiki.TikiStacks;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Camera;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
@@ -76,6 +79,8 @@ public final class TikiHelperModule extends Module {
 	/** Sideways, not toward the camera: a nearer label parallaxes onto the neighbouring head. */
 	private static final double LABEL_OFFSET = 0.8;
 	private static final double LABEL_ANCHOR = 0.25;
+	/** Half a line of text, so the HUD label centres on the projected point. */
+	private static final int HUD_LABEL_HALF_HEIGHT = 4;
 
 	private static final int DEBUG_RESCAN_INTERVAL = 20;
 	private static final double SOUND_SLACK = 8.0;
@@ -105,6 +110,7 @@ public final class TikiHelperModule extends Module {
 	private final NumberSetting labelHeight;
 	private final BooleanSetting showLocked;
 	private final BooleanSetting showUnknown;
+	private final BooleanSetting worldLabels;
 
 	private final NumberSetting trackRadius;
 	private final BooleanSetting trackSounds;
@@ -138,7 +144,7 @@ public final class TikiHelperModule extends Module {
 		super("Tiki Helper", "Waypoints, click solver and research logging for Sneaky Tikis.", Category.HUNTING,
 			List.of(s.validColor, s.invalidColor, s.tracerColor, s.leftColor, s.rightColor, s.lockedColor),
 			List.of(s.scanInterval, s.tracerWidth, s.range, s.labelHeight, s.trackRadius),
-			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown,
+			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown, s.worldLabels,
 				s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
 			List.of(new ModuleAction("Manage Tiki Coords", TikiHelperModule::openCoordManager)));
 		this.waypoints = s.waypoints;
@@ -157,6 +163,7 @@ public final class TikiHelperModule extends Module {
 		this.labelHeight = s.labelHeight;
 		this.showLocked = s.showLocked;
 		this.showUnknown = s.showUnknown;
+		this.worldLabels = s.worldLabels;
 		this.trackRadius = s.trackRadius;
 		this.trackSounds = s.trackSounds;
 		this.trackChat = s.trackChat;
@@ -184,6 +191,8 @@ public final class TikiHelperModule extends Module {
 		final NumberSetting labelHeight = new NumberSetting("Label Height", 0.1f, 1.5f, 0.35f);
 		final BooleanSetting showLocked = new BooleanSetting("Show Locked", true);
 		final BooleanSetting showUnknown = new BooleanSetting("Show Unknown", true);
+		/** Off means the real font on the HUD; on falls back to the stroked in-world glyphs. */
+		final BooleanSetting worldLabels = new BooleanSetting("World Labels", false);
 
 		final NumberSetting trackRadius = new NumberSetting("Track Radius", 2, 32, 8, true);
 		final BooleanSetting trackSounds = new BooleanSetting("Track Sounds", true);
@@ -576,14 +585,14 @@ public final class TikiHelperModule extends Module {
 			}
 		}
 
-		if (solver.value() && eachSolverLabel((index, text, color, height) ->
+		if (solver.value() && worldLabels.value() && eachSolverLabel((index, text, color, height) ->
 			EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
 				labelX(index, camPos), labelY(index, height, camPos), labelZ(index, camPos),
 				text, color, height, LABEL_LINE_WIDTH))) {
 			drew = true;
 		}
 
-		if (debugLogging.value() && armed) {
+		if (debugLogging.value() && armed && worldLabels.value()) {
 			int debugColor = lockedColor.argb();
 			for (Map.Entry<BlockPos, Skull> entry : tracked.entrySet()) {
 				BlockPos pos = entry.getKey();
@@ -598,6 +607,28 @@ public final class TikiHelperModule extends Module {
 			bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_QUADS);
 			bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_LINES);
 		}
+	}
+
+	/**
+	 * Labels in the real game font, drawn on the HUD at the projected position of each skull.
+	 *
+	 * <p>In-world text does not render from any level-render stage this mod can reach, so the
+	 * label is placed by projecting the world position into GUI coordinates and drawing it with
+	 * the same text call the Click GUI uses.
+	 */
+	public void renderHud(GuiGraphicsExtractor graphics) {
+		if (!isEnabled() || !solver.value() || worldLabels.value()) return;
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.level == null || mc.player == null || mc.options.hideGui) return;
+
+		Camera camera = mc.gameRenderer.getMainCamera();
+		Font font = mc.font;
+		eachSolverLabel((index, text, color, height) -> {
+			Vec3 world = new Vec3(slotBase.getX() + 0.5, slotBase.getY() + index + LABEL_ANCHOR, slotBase.getZ() + 0.5);
+			float[] screen = WorldToScreen.project(camera, world);
+			if (screen == null) return;
+			graphics.text(font, text, Math.round(screen[0]) - font.width(text) / 2, Math.round(screen[1]) - HUD_LABEL_HALF_HEIGHT, color);
+		});
 	}
 
 	/** @return true if anything was emitted */

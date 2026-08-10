@@ -1,11 +1,13 @@
 package geiler.addons.client;
 
+import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 
 public class GeilerAddonsClient implements ClientModInitializer {
@@ -24,5 +26,9 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			I4HelperModule.INSTANCE.render(context);
 			TikiHelperModule.INSTANCE.render(context);
 		});
+		// Solver labels are drawn here rather than in the world: in-world text does not render
+		// from any level stage reachable on 26.1, so they are projected onto the HUD instead.
+		HudElementRegistry.addLast(GeilerAddons.id("tiki_labels"),
+			(graphics, tickCounter) -> TikiHelperModule.INSTANCE.renderHud(graphics));
 	}
 }
