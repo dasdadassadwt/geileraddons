@@ -9,6 +9,7 @@ import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.render.EspRenderer;
+import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.tiki.TikiSolver;
 import geiler.addons.client.tiki.TikiStacks;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
@@ -54,7 +55,8 @@ public final class TikiDebugModule extends Module {
 	private static final int RESCAN_INTERVAL = 20;
 	/** Extra slack past the track radius for sounds, which are emitted from the block's center. */
 	private static final double SOUND_SLACK = 8.0;
-	private static final float LABEL_SCALE = 0.025f;
+	private static final float LABEL_HEIGHT = 0.3f;
+	private static final float LABEL_LINE_WIDTH = 3.0f;
 	/** Ticks to wait after a click before checking the result against the solver's move rule. */
 	private static final int VERIFY_DELAY = 8;
 
@@ -433,10 +435,10 @@ public final class TikiDebugModule extends Module {
 		for (Map.Entry<BlockPos, Skull> entry : tracked.entrySet()) {
 			BlockPos pos = entry.getKey();
 			EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
-				pos.getX() + 0.5 - camPos.x, pos.getY() + 1.0 - camPos.y, pos.getZ() + 0.5 - camPos.z,
-				entry.getValue().label(), color, LABEL_SCALE);
+				pos.getX() + 0.5 - camPos.x, pos.getY() + 0.6 - camPos.y, pos.getZ() + 0.5 - camPos.z,
+				entry.getValue().label(), color, LABEL_HEIGHT, LABEL_LINE_WIDTH);
 		}
-		bufferSource.endBatch();
+		bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_LINES);
 	}
 
 	// ---- helpers ------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.render.EspRenderer;
+import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.tiki.TikiSolver;
 import geiler.addons.client.tiki.TikiStacks;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
@@ -35,8 +36,9 @@ import java.util.List;
 public final class TikiSolverModule extends Module {
 	/** Ticks between column sweeps for unlisted tikis; the stored-coordinate path runs every tick. */
 	private static final int SEARCH_INTERVAL = 10;
-	private static final String LOCKED_LABEL = "·";
+	private static final String LOCKED_LABEL = ".";
 	private static final String UNKNOWN_LABEL = "?";
+	private static final float LABEL_LINE_WIDTH = 3.0f;
 	/**
 	 * Labels sit this far to the side of the stack. Sideways rather than toward the camera on
 	 * purpose: a label pulled toward the viewer sits closer than the skull it belongs to, so
@@ -45,8 +47,8 @@ public final class TikiSolverModule extends Module {
 	 * depth, so it stays level with its skull from any angle.
 	 */
 	private static final double LABEL_OFFSET = 0.8;
-	/** Vertical anchor within the skull's block - a floor skull only fills the bottom half. */
-	private static final double LABEL_HEIGHT = 0.4;
+	/** Bottom of the label within the skull's block - a floor skull only fills the lower half. */
+	private static final double LABEL_ANCHOR = 0.25;
 	private static final float LOCKED_LABEL_SCALE = 0.6f;
 	/** Below this many readable heads there is nothing to reason about. */
 	private static final int MIN_READABLE_SLOTS = 2;
@@ -57,7 +59,7 @@ public final class TikiSolverModule extends Module {
 	private final ColorSetting rightColor;
 	private final ColorSetting lockedColor;
 	private final NumberSetting range;
-	private final NumberSetting labelSize;
+	private final NumberSetting labelHeight;
 	private final BooleanSetting showLocked;
 	private final BooleanSetting showUnknown;
 
@@ -73,7 +75,7 @@ public final class TikiSolverModule extends Module {
 			new ColorSetting("Right Color", 255, 60, 60, 255),
 			new ColorSetting("Locked Color", 160, 160, 160, 200),
 			new NumberSetting("Range", 2, 32, 8, true),
-			new NumberSetting("Label Size", 0.01f, 0.06f, 0.03f),
+			new NumberSetting("Label Height", 0.1f, 1.5f, 0.35f),
 			new BooleanSetting("Show Locked", true),
 			new BooleanSetting("Show Unknown", true)
 		);
@@ -81,18 +83,18 @@ public final class TikiSolverModule extends Module {
 
 	private TikiSolverModule(
 		ColorSetting leftColor, ColorSetting rightColor, ColorSetting lockedColor,
-		NumberSetting range, NumberSetting labelSize, BooleanSetting showLocked, BooleanSetting showUnknown
+		NumberSetting range, NumberSetting labelHeight, BooleanSetting showLocked, BooleanSetting showUnknown
 	) {
 		super("Tiki Solver", "Shows which skull to click and how many times to align a tiki.", Category.HUNTING,
 			List.of(leftColor, rightColor, lockedColor),
-			List.of(range, labelSize),
+			List.of(range, labelHeight),
 			List.of(showLocked, showUnknown),
 			List.of());
 		this.leftColor = leftColor;
 		this.rightColor = rightColor;
 		this.lockedColor = lockedColor;
 		this.range = range;
-		this.labelSize = labelSize;
+		this.labelHeight = labelHeight;
 		this.showLocked = showLocked;
 		this.showUnknown = showUnknown;
 	}
@@ -124,7 +126,9 @@ public final class TikiSolverModule extends Module {
 			base = unlistedColumnBase(level, player, range);
 		}
 		if (base == null) {
-			clear();
+			// Note: no counter reset here. Resetting it on every empty tick meant the sweep
+			// interval never elapsed and the unlisted-tiki search could never run at all.
+			forgetTarget();
 			return;
 		}
 
@@ -208,16 +212,16 @@ public final class TikiSolverModule extends Module {
 		if (plan == null) {
 			if (showUnknown.value()) {
 				label(poseStack, bufferSource, camera, camPos, offsetX, offsetZ,
-					1, UNKNOWN_LABEL, rightColor.argb(), labelSize.value());
+					1, UNKNOWN_LABEL, rightColor.argb(), labelHeight.value());
 			}
-			bufferSource.endBatch();
+			bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_LINES);
 			return;
 		}
 
 		for (int i = 0; i < TikiStacks.STACK_HEIGHT; i++) {
 			String text;
 			int color;
-			float scale = labelSize.value();
+			float height = labelHeight.value();
 			if (plan.index() == i) {
 				String count = plan.clicks() == TikiSolver.UNKNOWN_CLICKS ? UNKNOWN_LABEL : String.valueOf(plan.clicks());
 				text = (plan.direction() > 0 ? "+" : "-") + count;
@@ -225,30 +229,34 @@ public final class TikiSolverModule extends Module {
 			} else if (showLocked.value() && hiddenIndex < 0 && TikiSolver.isLocked(rotations, i)) {
 				text = LOCKED_LABEL;
 				color = lockedColor.argb();
-				scale *= LOCKED_LABEL_SCALE;
+				height *= LOCKED_LABEL_SCALE;
 			} else {
 				continue;
 			}
-			label(poseStack, bufferSource, camera, camPos, offsetX, offsetZ, i, text, color, scale);
+			label(poseStack, bufferSource, camera, camPos, offsetX, offsetZ, i, text, color, height);
 		}
 
-		bufferSource.endBatch();
+		bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_LINES);
 	}
 
-	private void label(PoseStack poseStack, MultiBufferSource bufferSource, Camera camera, Vec3 camPos, double offsetX, double offsetZ, int index, String text, int color, float scale) {
+	private void label(PoseStack poseStack, MultiBufferSource bufferSource, Camera camera, Vec3 camPos, double offsetX, double offsetZ, int index, String text, int color, float height) {
 		BlockPos pos = slotBase.above(index);
 		EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
 			pos.getX() + 0.5 + offsetX - camPos.x,
-			pos.getY() + LABEL_HEIGHT - camPos.y,
+			pos.getY() + LABEL_ANCHOR + height / 2.0f - camPos.y,
 			pos.getZ() + 0.5 + offsetZ - camPos.z,
-			text, color, scale);
+			text, color, height, LABEL_LINE_WIDTH);
 	}
 
-	private void clear() {
+	private void forgetTarget() {
 		slotBase = null;
 		rotations = null;
 		hiddenIndex = -1;
 		plan = null;
+	}
+
+	private void clear() {
+		forgetTarget();
 		ticksSinceSearch = 0;
 	}
 }

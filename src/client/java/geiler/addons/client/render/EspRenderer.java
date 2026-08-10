@@ -2,16 +2,39 @@ package geiler.addons.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.MultiBufferSource;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
+import java.util.Map;
+
 /** Draws simple translucent, always-visible-through-walls shapes: boxes, UV spheres, lines and labels. */
 public final class EspRenderer {
-	/** Packed light for "ignore world lighting", so labels stay readable in the dark. */
-	private static final int FULL_BRIGHT = 0xF000F0;
+	/** Glyph cell, in the label's own units: y runs downward, matching text layout. */
+	private static final float GLYPH_WIDTH = 1.0f;
+	private static final float GLYPH_HEIGHT = 2.0f;
+	private static final float GLYPH_SPACING = 0.4f;
+
+	/**
+	 * Seven-segment strokes per character, each entry {x0, y0, x1, y1} in the glyph cell.
+	 * Only the characters the overlays actually use are defined.
+	 */
+	private static final Map<Character, float[][]> GLYPHS = Map.ofEntries(
+		Map.entry('0', new float[][]{{0, 0, 1, 0}, {1, 0, 1, 1}, {1, 1, 1, 2}, {0, 2, 1, 2}, {0, 1, 0, 2}, {0, 0, 0, 1}}),
+		Map.entry('1', new float[][]{{1, 0, 1, 1}, {1, 1, 1, 2}}),
+		Map.entry('2', new float[][]{{0, 0, 1, 0}, {1, 0, 1, 1}, {0, 1, 1, 1}, {0, 1, 0, 2}, {0, 2, 1, 2}}),
+		Map.entry('3', new float[][]{{0, 0, 1, 0}, {1, 0, 1, 1}, {0, 1, 1, 1}, {1, 1, 1, 2}, {0, 2, 1, 2}}),
+		Map.entry('4', new float[][]{{0, 0, 0, 1}, {0, 1, 1, 1}, {1, 0, 1, 1}, {1, 1, 1, 2}}),
+		Map.entry('5', new float[][]{{0, 0, 1, 0}, {0, 0, 0, 1}, {0, 1, 1, 1}, {1, 1, 1, 2}, {0, 2, 1, 2}}),
+		Map.entry('6', new float[][]{{0, 0, 1, 0}, {0, 0, 0, 1}, {0, 1, 1, 1}, {1, 1, 1, 2}, {0, 1, 0, 2}, {0, 2, 1, 2}}),
+		Map.entry('7', new float[][]{{0, 0, 1, 0}, {1, 0, 1, 1}, {1, 1, 1, 2}}),
+		Map.entry('8', new float[][]{{0, 0, 1, 0}, {1, 0, 1, 1}, {1, 1, 1, 2}, {0, 2, 1, 2}, {0, 1, 0, 2}, {0, 0, 0, 1}, {0, 1, 1, 1}}),
+		Map.entry('9', new float[][]{{0, 0, 1, 0}, {1, 0, 1, 1}, {1, 1, 1, 2}, {0, 2, 1, 2}, {0, 0, 0, 1}, {0, 1, 1, 1}}),
+		Map.entry('+', new float[][]{{0, 1, 1, 1}, {0.5f, 0.5f, 0.5f, 1.5f}}),
+		Map.entry('-', new float[][]{{0, 1, 1, 1}}),
+		Map.entry('?', new float[][]{{0, 0, 1, 0}, {1, 0, 1, 1}, {0.5f, 1, 1, 1}, {0.5f, 1, 0.5f, 1.4f}, {0.5f, 1.8f, 0.5f, 2}}),
+		Map.entry('.', new float[][]{{0.35f, 1, 0.65f, 1}})
+	);
 
 	private EspRenderer() {
 	}
@@ -81,18 +104,43 @@ public final class EspRenderer {
 	}
 
 	/**
-	 * Billboarded text at a camera-relative position, drawn through walls. Used for the debug
-	 * overlay's rotation numbers.
+	 * Billboarded label at a camera-relative position, drawn through walls.
+	 *
+	 * <p>Stroked from line segments rather than rendered with {@link net.minecraft.client.gui.Font}:
+	 * since 26.1 in-world text has to be handed to {@code SubmitNodeCollector.submitText}, and
+	 * {@code Font.drawInBatch} against the level's buffer source has no draw pass behind it - the
+	 * glyphs are buffered and silently dropped. These segments go through the same ESP line
+	 * pipeline as every other shape here, which does draw.
+	 *
+	 * @param height how tall the label should be, in blocks
 	 */
-	public static void renderLabel(PoseStack poseStack, MultiBufferSource bufferSource, Quaternionf cameraRotation, double x, double y, double z, String text, int color, float scale) {
-		Font font = Minecraft.getInstance().font;
+	public static void renderLabel(PoseStack poseStack, MultiBufferSource bufferSource, Quaternionf cameraRotation, double x, double y, double z, String text, int color, float height, float lineWidth) {
+		if (text.isEmpty()) return;
+		float scale = height / GLYPH_HEIGHT;
+
 		poseStack.pushPose();
 		poseStack.translate(x, y, z);
 		poseStack.mulPose(cameraRotation);
-		// Negative on x/y because text is laid out top-left down, opposite of world axes.
+		// Negative on x/y because glyphs are laid out top-left down, opposite of world axes.
 		poseStack.scale(-scale, -scale, scale);
-		font.drawInBatch(text, -font.width(text) / 2.0f, 0.0f, color, false, poseStack.last().pose(), bufferSource,
-			Font.DisplayMode.SEE_THROUGH, 0, FULL_BRIGHT);
+
+		float advance = GLYPH_WIDTH + GLYPH_SPACING;
+		float cursorX = -(text.length() * advance - GLYPH_SPACING) / 2.0f;
+		PoseStack.Pose pose = poseStack.last();
+		VertexConsumer lines = bufferSource.getBuffer(GeilerAddonsRenderTypes.ESP_LINES);
+
+		for (int i = 0; i < text.length(); i++) {
+			float[][] glyph = GLYPHS.get(text.charAt(i));
+			if (glyph != null) {
+				for (float[] segment : glyph) {
+					line(lines, pose,
+						new float[]{cursorX + segment[0], segment[1], 0},
+						new float[]{cursorX + segment[2], segment[3], 0},
+						color, lineWidth);
+				}
+			}
+			cursorX += advance;
+		}
 		poseStack.popPose();
 	}
 
