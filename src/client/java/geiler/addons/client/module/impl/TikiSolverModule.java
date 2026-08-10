@@ -33,8 +33,16 @@ public final class TikiSolverModule extends Module {
 	private static final int SEARCH_INTERVAL = 10;
 	private static final String LOCKED_LABEL = "·";
 	private static final String UNKNOWN_LABEL = "?";
-	/** Labels float this far toward the camera so they sit in front of the stack, not inside it. */
-	private static final double LABEL_OFFSET = 0.7;
+	/**
+	 * Labels sit this far to the side of the stack. Sideways rather than toward the camera on
+	 * purpose: a label pulled toward the viewer sits closer than the skull it belongs to, so
+	 * looking down at the tiki projects it onto a neighbouring skull and it reads as labelling
+	 * the wrong one. Offsetting perpendicular to the view keeps every label at the stack's own
+	 * depth, so it stays level with its skull from any angle.
+	 */
+	private static final double LABEL_OFFSET = 0.8;
+	/** Vertical anchor within the skull's block - a floor skull only fills the bottom half. */
+	private static final double LABEL_HEIGHT = 0.4;
 	private static final float LOCKED_LABEL_SCALE = 0.6f;
 	/** Columns this short or tall are still worth flagging; anything else isn't a tiki at all. */
 	private static final int MIN_COLUMN = 2;
@@ -134,16 +142,16 @@ public final class TikiSolverModule extends Module {
 		PoseStack poseStack = context.poseStack();
 		MultiBufferSource.BufferSource bufferSource = context.bufferSource();
 
-		// Push labels out toward the viewer along the horizontal, so they hang in front of the
-		// stack instead of being swallowed by the skull above.
+		// Perpendicular to the line of sight, so the labels shift sideways on screen without
+		// moving nearer to or further from the camera.
 		double offsetX = 0;
 		double offsetZ = 0;
 		double dx = camPos.x - (columnBase.getX() + 0.5);
 		double dz = camPos.z - (columnBase.getZ() + 0.5);
 		double horizontal = Math.sqrt(dx * dx + dz * dz);
 		if (horizontal > 1.0e-3) {
-			offsetX = dx / horizontal * LABEL_OFFSET;
-			offsetZ = dz / horizontal * LABEL_OFFSET;
+			offsetX = -dz / horizontal * LABEL_OFFSET;
+			offsetZ = dx / horizontal * LABEL_OFFSET;
 		}
 
 		if (rotations == null) {
@@ -180,7 +188,7 @@ public final class TikiSolverModule extends Module {
 		BlockPos pos = columnBase.above(index);
 		EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
 			pos.getX() + 0.5 + offsetX - camPos.x,
-			pos.getY() + 0.5 - camPos.y,
+			pos.getY() + LABEL_HEIGHT - camPos.y,
 			pos.getZ() + 0.5 + offsetZ - camPos.z,
 			text, color, scale);
 	}
