@@ -111,6 +111,7 @@ public final class TikiHelperModule extends Module {
 	private final BooleanSetting showLocked;
 	private final BooleanSetting showUnknown;
 	private final BooleanSetting worldLabels;
+	private final BooleanSetting hypixelRule;
 
 	private final NumberSetting trackRadius;
 	private final BooleanSetting trackSounds;
@@ -144,7 +145,7 @@ public final class TikiHelperModule extends Module {
 		super("Tiki Helper", "Waypoints, click solver and research logging for Sneaky Tikis.", Category.HUNTING,
 			List.of(s.validColor, s.invalidColor, s.tracerColor, s.leftColor, s.rightColor, s.lockedColor),
 			List.of(s.scanInterval, s.tracerWidth, s.range, s.labelHeight, s.trackRadius),
-			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown, s.worldLabels,
+			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
 				s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
 			List.of(new ModuleAction("Manage Tiki Coords", TikiHelperModule::openCoordManager)));
 		this.waypoints = s.waypoints;
@@ -164,6 +165,7 @@ public final class TikiHelperModule extends Module {
 		this.showLocked = s.showLocked;
 		this.showUnknown = s.showUnknown;
 		this.worldLabels = s.worldLabels;
+		this.hypixelRule = s.hypixelRule;
 		this.trackRadius = s.trackRadius;
 		this.trackSounds = s.trackSounds;
 		this.trackChat = s.trackChat;
@@ -193,6 +195,8 @@ public final class TikiHelperModule extends Module {
 		final BooleanSetting showUnknown = new BooleanSetting("Show Unknown", true);
 		/** Off means the real font on the HUD; on falls back to the stroked in-world glyphs. */
 		final BooleanSetting worldLabels = new BooleanSetting("World Labels", false);
+		/** Plan against the wiki's wording instead of the rule the logs actually show. */
+		final BooleanSetting hypixelRule = new BooleanSetting("Hypixel Rule", false);
 
 		final NumberSetting trackRadius = new NumberSetting("Track Radius", 2, 32, 8, true);
 		final BooleanSetting trackSounds = new BooleanSetting("Track Sounds", true);
@@ -324,7 +328,7 @@ public final class TikiHelperModule extends Module {
 		rotations = read;
 		hiddenIndex = hiddenCount == 1 ? hidden : -1;
 		plan = switch (hiddenCount) {
-			case 0 -> TikiSolver.solve(read);
+			case 0 -> TikiSolver.solve(read, rule());
 			case 1 -> TikiSolver.solveWithHidden(read, hidden);
 			default -> null;
 		};
@@ -345,6 +349,11 @@ public final class TikiHelperModule extends Module {
 			best = base;
 		}
 		return best;
+	}
+
+	/** Which reading of the click rule the solver and the log verification plan against. */
+	private TikiSolver.Rule rule() {
+		return hypixelRule.value() ? TikiSolver.Rule.WIKI : TikiSolver.Rule.OBSERVED;
 	}
 
 	private void clearSolver() {
@@ -650,7 +659,7 @@ public final class TikiHelperModule extends Module {
 				String count = plan.clicks() == TikiSolver.UNKNOWN_CLICKS ? UNKNOWN_LABEL : String.valueOf(plan.clicks());
 				text = (plan.direction() > 0 ? "+" : "-") + count;
 				color = plan.direction() > 0 ? leftColor.argb() : rightColor.argb();
-			} else if (showLocked.value() && hiddenIndex < 0 && TikiSolver.isLocked(rotations, i)) {
+			} else if (showLocked.value() && hiddenIndex < 0 && TikiSolver.isLocked(rotations, i, rule())) {
 				text = LOCKED_LABEL;
 				color = lockedColor.argb();
 				height *= LOCKED_LABEL_SCALE;
@@ -747,7 +756,7 @@ public final class TikiHelperModule extends Module {
 			log("VERIFY no-op - click did not register (rotation cooldown)");
 			return;
 		}
-		int[] expected = TikiSolver.applyMove(check.before, check.index, check.direction);
+		int[] expected = TikiSolver.applyMove(check.before, check.index, check.direction, rule());
 		if (Arrays.equals(expected, actual)) {
 			log("VERIFY ok " + Arrays.toString(check.before) + " -> " + Arrays.toString(actual));
 		} else {
