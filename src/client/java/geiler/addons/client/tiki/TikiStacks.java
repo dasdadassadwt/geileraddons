@@ -18,13 +18,23 @@ public final class TikiStacks {
 		return level.isLoaded(pos) && level.getBlockState(pos).getBlock() instanceof AbstractSkullBlock;
 	}
 
+	/** The lowest skull of a column, i.e. a skull with no skull under it. */
+	public static boolean isColumnBase(ClientLevel level, BlockPos base) {
+		return isSkull(level, base) && !isSkull(level, base.below());
+	}
+
+	/** @return how many skulls stand on top of each other starting at base */
+	public static int columnHeight(ClientLevel level, BlockPos base) {
+		int height = 0;
+		while (isSkull(level, base.above(height))) {
+			height++;
+		}
+		return height;
+	}
+
 	/** Exactly three skulls tall, so the single head the player drops nearby never matches. */
 	public static boolean isStackBase(ClientLevel level, BlockPos base) {
-		if (isSkull(level, base.below())) return false;
-		for (int i = 0; i < STACK_HEIGHT; i++) {
-			if (!isSkull(level, base.above(i))) return false;
-		}
-		return !isSkull(level, base.above(STACK_HEIGHT));
+		return isColumnBase(level, base) && columnHeight(level, base) == STACK_HEIGHT;
 	}
 
 	/** @return rotations bottom-to-top, or null if any skull is a wall head or missing */
@@ -40,15 +50,22 @@ public final class TikiStacks {
 		return rotations;
 	}
 
-	/** @return the base of the nearest three-skull column within {@code range}, or null */
-	public static BlockPos findNearestStackBase(ClientLevel level, Vec3 from, BlockPos center, int range) {
+	/**
+	 * @return the base of the nearest skull column whose height falls in the given range, or null.
+	 *     The range is deliberately wider than a healthy tiki: a column that is present but the
+	 *     wrong shape has to be found before it can be reported, otherwise the overlay silently
+	 *     shows nothing and looks broken.
+	 */
+	public static BlockPos findNearestColumnBase(ClientLevel level, Vec3 from, BlockPos center, int range, int minHeight, int maxHeight) {
 		BlockPos best = null;
 		double bestDistance = Double.MAX_VALUE;
 		for (int dx = -range; dx <= range; dx++) {
 			for (int dy = -range; dy <= range; dy++) {
 				for (int dz = -range; dz <= range; dz++) {
 					BlockPos pos = center.offset(dx, dy, dz);
-					if (!isSkull(level, pos) || !isStackBase(level, pos)) continue;
+					if (!isColumnBase(level, pos)) continue;
+					int height = columnHeight(level, pos);
+					if (height < minHeight || height > maxHeight) continue;
 					double distance = from.distanceToSqr(pos.getCenter());
 					if (distance < bestDistance) {
 						bestDistance = distance;
