@@ -24,8 +24,5 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			I4HelperModule.INSTANCE.render(context);
 			TikiHelperModule.INSTANCE.render(context);
 		});
-		// In-world text has to be queued here; submitting it during the feature passes above is
-		// too late for anything to draw it.
-		LevelRenderEvents.COLLECT_SUBMITS.register(TikiHelperModule.INSTANCE::collectSubmits);
 	}
 }

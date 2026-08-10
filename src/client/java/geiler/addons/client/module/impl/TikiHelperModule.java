@@ -71,7 +71,7 @@ public final class TikiHelperModule extends Module {
 
 	private static final String LOCKED_LABEL = ".";
 	private static final String UNKNOWN_LABEL = "?";
-	private static final float LABEL_LINE_WIDTH = 3.0f;
+	private static final float LABEL_LINE_WIDTH = 4.0f;
 	private static final float LOCKED_LABEL_SCALE = 0.6f;
 	/** Sideways, not toward the camera: a nearer label parallaxes onto the neighbouring head. */
 	private static final double LABEL_OFFSET = 0.8;
@@ -105,7 +105,6 @@ public final class TikiHelperModule extends Module {
 	private final NumberSetting labelHeight;
 	private final BooleanSetting showLocked;
 	private final BooleanSetting showUnknown;
-	private final BooleanSetting vectorLabels;
 
 	private final NumberSetting trackRadius;
 	private final BooleanSetting trackSounds;
@@ -140,7 +139,7 @@ public final class TikiHelperModule extends Module {
 			List.of(s.validColor, s.invalidColor, s.tracerColor, s.leftColor, s.rightColor, s.lockedColor),
 			List.of(s.scanInterval, s.tracerWidth, s.range, s.labelHeight, s.trackRadius),
 			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown,
-				s.vectorLabels, s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
+				s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
 			List.of(new ModuleAction("Manage Tiki Coords", TikiHelperModule::openCoordManager)));
 		this.waypoints = s.waypoints;
 		this.solver = s.solver;
@@ -158,7 +157,6 @@ public final class TikiHelperModule extends Module {
 		this.labelHeight = s.labelHeight;
 		this.showLocked = s.showLocked;
 		this.showUnknown = s.showUnknown;
-		this.vectorLabels = s.vectorLabels;
 		this.trackRadius = s.trackRadius;
 		this.trackSounds = s.trackSounds;
 		this.trackChat = s.trackChat;
@@ -186,7 +184,6 @@ public final class TikiHelperModule extends Module {
 		final NumberSetting labelHeight = new NumberSetting("Label Height", 0.1f, 1.5f, 0.35f);
 		final BooleanSetting showLocked = new BooleanSetting("Show Locked", true);
 		final BooleanSetting showUnknown = new BooleanSetting("Show Unknown", true);
-		final BooleanSetting vectorLabels = new BooleanSetting("Vector Labels", false);
 
 		final NumberSetting trackRadius = new NumberSetting("Track Radius", 2, 32, 8, true);
 		final BooleanSetting trackSounds = new BooleanSetting("Track Sounds", true);
@@ -579,41 +576,27 @@ public final class TikiHelperModule extends Module {
 			}
 		}
 
-		if (solver.value() && vectorLabels.value() && eachSolverLabel((index, text, color, height) ->
+		if (solver.value() && eachSolverLabel((index, text, color, height) ->
 			EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
 				labelX(index, camPos), labelY(index, height, camPos), labelZ(index, camPos),
 				text, color, height, LABEL_LINE_WIDTH))) {
 			drew = true;
 		}
 
+		if (debugLogging.value() && armed) {
+			int debugColor = lockedColor.argb();
+			for (Map.Entry<BlockPos, Skull> entry : tracked.entrySet()) {
+				BlockPos pos = entry.getKey();
+				EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
+					pos.getX() + 0.5 - camPos.x, pos.getY() + 0.6 - camPos.y, pos.getZ() + 0.5 - camPos.z,
+					entry.getValue().label(), debugColor, DEBUG_LABEL_HEIGHT, LABEL_LINE_WIDTH);
+				drew = true;
+			}
+		}
+
 		if (drew) {
 			bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_QUADS);
 			bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_LINES);
-		}
-	}
-
-	/** Text: queued during the collect-submits stage, which is the only place it actually draws. */
-	public void collectSubmits(LevelRenderContext context) {
-		if (!isEnabled()) return;
-
-		Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
-		Vec3 camPos = camera.position();
-		PoseStack poseStack = context.poseStack();
-
-		if (solver.value() && !vectorLabels.value()) {
-			eachSolverLabel((index, text, color, height) ->
-				EspRenderer.submitLabel(context.submitNodeCollector(), poseStack, camera.rotation(),
-					labelX(index, camPos), labelY(index, height, camPos), labelZ(index, camPos), text, color, height));
-		}
-
-		if (debugLogging.value() && armed) {
-			int color = lockedColor.argb();
-			for (Map.Entry<BlockPos, Skull> entry : tracked.entrySet()) {
-				BlockPos pos = entry.getKey();
-				EspRenderer.submitLabel(context.submitNodeCollector(), poseStack, camera.rotation(),
-					pos.getX() + 0.5 - camPos.x, pos.getY() + 0.6 - camPos.y, pos.getZ() + 0.5 - camPos.z,
-					entry.getValue().label(), color, DEBUG_LABEL_HEIGHT);
-			}
 		}
 	}
 
