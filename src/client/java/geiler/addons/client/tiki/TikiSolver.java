@@ -12,8 +12,7 @@ import java.util.Map;
  * Shortest click plan for a tiki: three stacked heads on a 16-slot rotation, solved when all three
  * rotations match.
  *
- * <p>Only the bottom and middle heads are ever offered. Every reachable state is solvable in at
- * most five clicks that way, and allowing top clicks does not shorten a single one.
+ * <p>Every reachable state is solvable in at most five clicks.
  */
 public final class TikiSolver {
 	public static final int SLOTS = 16;
@@ -21,8 +20,11 @@ public final class TikiSolver {
 	/** {@link Plan#clicks()} when the count is unknowable because the slot can't be read. */
 	public static final int UNKNOWN_CLICKS = -1;
 
-	/** {head index, direction} - deliberately excludes the top head. */
-	private static final int[][] MOVES = {{0, 1}, {0, -1}, {1, 1}, {1, -1}};
+	/**
+	 * {head index, direction}. The top head is included: once the bottom and middle lock each
+	 * other it can be the only head left that will move.
+	 */
+	private static final int[][] MOVES = {{0, 1}, {0, -1}, {1, 1}, {1, -1}, {2, 1}, {2, -1}};
 	/** Rotations are always even, so each head has 8 distinct values. */
 	private static final int VALUES = SLOTS / STEP;
 	private static final int STATES = VALUES * VALUES * VALUES;
@@ -30,17 +32,27 @@ public final class TikiSolver {
 	/** Which reading of the puzzle's rules to plan against. */
 	public enum Rule {
 		/**
-		 * Derived from recorded play and matching every one of the 80-odd verified rotations: a
-		 * click turns the clicked head, and the head above it unless that head already matches the
-		 * head above <em>it</em>.
+		 * Derived from recorded play: a click turns the clicked head and the head above it, but
+		 * any head already showing the same rotation as another head is locked and turns for
+		 * nobody - including when it is the head being clicked.
+		 *
+		 * <p>This is the wiki's "if the top 2 heads are facing the same direction, they will stop
+		 * rotating" generalised to whichever pair happens to match. Scored across every recorded
+		 * click it explains six of the eight clicks that visibly did nothing, where the previous
+		 * reading - clicked head always turns - could explain none of them.
 		 */
 		OBSERVED {
 			@Override
 			public int[] apply(int[] rotations, int index, int direction) {
 				int[] next = rotations.clone();
-				next[index] = wrap(next[index] + STEP * direction);
+				// A locked head does not turn even when it is the one being clicked - that is the
+				// case the earlier rule got wrong, and the one that made the solver point at a
+				// head that could not move.
+				if (!locked(rotations, index)) {
+					next[index] = wrap(next[index] + STEP * direction);
+				}
 				int companion = (index + 1) % 3;
-				if (rotations[companion] != rotations[(companion + 1) % 3]) {
+				if (!locked(rotations, companion)) {
 					next[companion] = wrap(next[companion] + STEP * direction);
 				}
 				return next;
@@ -48,7 +60,8 @@ public final class TikiSolver {
 
 			@Override
 			public boolean locked(int[] rotations, int index) {
-				return rotations[index] == rotations[(index + 1) % 3];
+				return rotations[index] == rotations[(index + 1) % 3]
+					|| rotations[index] == rotations[(index + 2) % 3];
 			}
 		},
 		/**
@@ -140,7 +153,30 @@ public final class TikiSolver {
 				queue.add(from);
 			}
 		}
+		preferSelfMoving(rule, forward, bestMove, distance);
 		return new Tables(forward, bestMove, distance);
+	}
+
+	/**
+	 * Among equally short plans, point at a head that will visibly turn.
+	 *
+	 * <p>Clicking a locked head still drags its unlocked companion, so "click the bottom" can be
+	 * correct while the middle is what actually moves - which reads as the advice not working.
+	 * This swaps in an equally optimal move whose own head turns, wherever one exists.
+	 */
+	private static void preferSelfMoving(Rule rule, int[][] forward, byte[] bestMove, byte[] distance) {
+		for (int state = 0; state < STATES; state++) {
+			if (bestMove[state] < 0) continue;
+			int[] rotations = decode(state);
+			if (!rule.locked(rotations, MOVES[bestMove[state]][0])) continue;
+			for (int move = 0; move < MOVES.length; move++) {
+				if (rule.locked(rotations, MOVES[move][0])) continue;
+				if (distance[forward[state][move]] == distance[state] - 1) {
+					bestMove[state] = (byte) move;
+					break;
+				}
+			}
+		}
 	}
 
 	private TikiSolver() {
