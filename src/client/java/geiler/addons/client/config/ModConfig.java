@@ -3,6 +3,7 @@ package geiler.addons.client.config;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import geiler.addons.client.module.BooleanSetting;
+import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleManager;
@@ -38,6 +39,11 @@ public final class ModConfig {
 		 * empty list is a list the user emptied out and must stay empty.
 		 */
 		List<int[]> tikiCoords;
+		/** Click GUI view state - see {@link ClickGuiState}. */
+		String uiCategory;
+		String uiOpenModule;
+		String uiExpandedColor;
+		int uiSettingsScroll;
 	}
 
 	public static void load() {
@@ -66,6 +72,7 @@ public final class ModConfig {
 			}
 		}
 		loadTikiCoords(data);
+		loadUiState(data);
 	}
 
 	public static void save() {
@@ -86,6 +93,10 @@ public final class ModConfig {
 		for (BlockPos pos : TikiCoords.all()) {
 			data.tikiCoords.add(new int[]{pos.getX(), pos.getY(), pos.getZ()});
 		}
+		data.uiCategory = ClickGuiState.category().name();
+		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().name();
+		data.uiExpandedColor = ClickGuiState.expandedColor() == null ? null : ClickGuiState.expandedColor().name();
+		data.uiSettingsScroll = ClickGuiState.settingsScroll();
 		try {
 			Files.createDirectories(PATH.getParent());
 			try (Writer writer = Files.newBufferedWriter(PATH)) {
@@ -108,6 +119,33 @@ public final class ModConfig {
 			}
 		}
 		TikiCoords.replaceAll(coords);
+	}
+
+	/** Resolves the saved names back to live objects; anything that no longer exists is dropped. */
+	private static void loadUiState(Data data) {
+		if (data.uiCategory != null) {
+			for (Category category : Category.values()) {
+				if (category.name().equals(data.uiCategory)) {
+					ClickGuiState.setCategory(category);
+					break;
+				}
+			}
+		}
+		if (data.uiOpenModule == null) return;
+		for (Module module : ModuleManager.modules()) {
+			if (!module.name().equals(data.uiOpenModule) || !module.hasSettings()) continue;
+			ClickGuiState.setOpenModule(module);
+			ClickGuiState.setSettingsScroll(Math.max(0, data.uiSettingsScroll));
+			if (data.uiExpandedColor != null) {
+				for (ColorSetting setting : module.colorSettings()) {
+					if (setting.name().equals(data.uiExpandedColor)) {
+						ClickGuiState.setExpandedColor(setting);
+						break;
+					}
+				}
+			}
+			return;
+		}
 	}
 
 	private static Data readData() {

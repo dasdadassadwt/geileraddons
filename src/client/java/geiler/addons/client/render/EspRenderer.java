@@ -2,11 +2,17 @@ package geiler.addons.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.MultiBufferSource;
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
-/** Draws simple translucent, always-visible-through-walls shapes: boxes, UV spheres and lines. */
+/** Draws simple translucent, always-visible-through-walls shapes: boxes, UV spheres, lines and labels. */
 public final class EspRenderer {
+	/** Packed light for "ignore world lighting", so labels stay readable in the dark. */
+	private static final int FULL_BRIGHT = 0xF000F0;
+
 	private EspRenderer() {
 	}
 
@@ -72,6 +78,22 @@ public final class EspRenderer {
 		// A zero-length line would make the normal below NaN, which corrupts the whole line batch.
 		if (from[0] == to[0] && from[1] == to[1] && from[2] == to[2]) return;
 		line(bufferSource.getBuffer(GeilerAddonsRenderTypes.ESP_LINES), poseStack.last(), from, to, color, width);
+	}
+
+	/**
+	 * Billboarded text at a camera-relative position, drawn through walls. Used for the debug
+	 * overlay's rotation numbers.
+	 */
+	public static void renderLabel(PoseStack poseStack, MultiBufferSource bufferSource, Quaternionf cameraRotation, double x, double y, double z, String text, int color, float scale) {
+		Font font = Minecraft.getInstance().font;
+		poseStack.pushPose();
+		poseStack.translate(x, y, z);
+		poseStack.mulPose(cameraRotation);
+		// Negative on x/y because text is laid out top-left down, opposite of world axes.
+		poseStack.scale(-scale, -scale, scale);
+		font.drawInBatch(text, -font.width(text) / 2.0f, 0.0f, color, false, poseStack.last().pose(), bufferSource,
+			Font.DisplayMode.SEE_THROUGH, 0, FULL_BRIGHT);
+		poseStack.popPose();
 	}
 
 	private static float[] sphereVertex(double cx, double cy, double cz, float radius, double theta, double phi) {

@@ -1,5 +1,6 @@
 package geiler.addons.client.gui;
 
+import geiler.addons.client.config.ClickGuiState;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
@@ -20,15 +21,22 @@ import java.util.List;
 import static geiler.addons.client.gui.GuiTheme.*;
 
 public class ClickGuiScreen extends Screen {
-	private static final int CATEGORY_WIDTH = 100;
-	private static final int MODULE_WIDTH = 190;
-	private static final int PANEL_HEIGHT = 260;
+	/** Share of the screen width the panel aims for, before the height cap below applies. */
+	private static final float WIDTH_FRACTION = 0.62f;
+	/** The panel never grows past this share of the screen height. */
+	private static final float MAX_HEIGHT_FRACTION = 0.75f;
+	private static final int MIN_PANEL_WIDTH = 240;
+	/** Left panel's share of the total width; the module panel takes the rest. */
+	private static final int CATEGORY_WIDTH_DIVISOR = 3;
+
 	private static final int ROW_HEIGHT = 26;
 	private static final int PADDING = 6;
 	private static final int CHANNEL_ROW_HEIGHT = 14;
 	private static final int SCROLLBAR_WIDTH = 3;
+	/** Room reserved on a setting row's right for the swatch, toggle or value read-out. */
+	private static final int VALUE_GUTTER = 34;
 
-	private Category selectedCategory = Category.F7;
+	private Category selectedCategory;
 	private Module openSettingsModule;
 	private ColorSetting expandedColorSetting;
 	private ColorSetting.Channel draggingChannel;
@@ -37,6 +45,10 @@ public class ClickGuiScreen extends Screen {
 
 	public ClickGuiScreen() {
 		super(Component.literal("GeilerAddons"));
+		selectedCategory = ClickGuiState.category();
+		openSettingsModule = ClickGuiState.openModule();
+		expandedColorSetting = ClickGuiState.expandedColor();
+		settingsScroll = ClickGuiState.settingsScroll();
 	}
 
 	@Override
@@ -45,17 +57,69 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	@Override
+	public void removed() {
+		// Written once on the way out rather than on every scroll notch, which would mean a
+		// config write per mouse-wheel click.
+		persistView();
+		ModConfig.save();
+		super.removed();
+	}
+
+	private void persistView() {
+		ClickGuiState.setCategory(selectedCategory);
+		ClickGuiState.setOpenModule(openSettingsModule);
+		ClickGuiState.setExpandedColor(expandedColorSetting);
+		ClickGuiState.setSettingsScroll(settingsScroll);
+	}
+
+	// ---- layout -------------------------------------------------------------------------
+
+	/** Widest 2:1 box that fits inside both the width and height budgets. */
+	private int panelWidth() {
+		int byWidth = Math.round(this.width * WIDTH_FRACTION);
+		int byHeight = Math.round(this.height * MAX_HEIGHT_FRACTION) * 2;
+		int width = Math.max(MIN_PANEL_WIDTH, Math.min(byWidth, byHeight));
+		// Even, so panelHeight() is exactly half and the 2:1 ratio holds after integer division.
+		return Math.min(width, this.width) & ~1;
+	}
+
+	private int panelHeight() {
+		return panelWidth() / 2;
+	}
+
+	private int categoryWidth() {
+		return panelWidth() / CATEGORY_WIDTH_DIVISOR;
+	}
+
+	private int moduleWidth() {
+		return panelWidth() - categoryWidth();
+	}
+
+	private int panelX() {
+		return (this.width - panelWidth()) / 2;
+	}
+
+	private int panelY() {
+		return (this.height - panelHeight()) / 2;
+	}
+
+	// ---- rendering ----------------------------------------------------------------------
+
+	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		int panelX = panelX();
 		int panelY = panelY();
-		int rightX = panelX + CATEGORY_WIDTH;
+		int categoryWidth = categoryWidth();
+		int moduleWidth = moduleWidth();
+		int panelHeight = panelHeight();
+		int rightX = panelX + categoryWidth;
 		Font font = this.font;
 
-		roundedRect(graphics, panelX, panelY, CATEGORY_WIDTH, PANEL_HEIGHT, RADIUS, PANEL_TOP, PANEL_BOTTOM);
-		outline(graphics, panelX, panelY, CATEGORY_WIDTH, PANEL_HEIGHT, RADIUS, BORDER);
+		roundedRect(graphics, panelX, panelY, categoryWidth, panelHeight, RADIUS, PANEL_TOP, PANEL_BOTTOM);
+		outline(graphics, panelX, panelY, categoryWidth, panelHeight, RADIUS, BORDER);
 
-		roundedRect(graphics, rightX, panelY, MODULE_WIDTH, PANEL_HEIGHT, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM);
-		outline(graphics, rightX, panelY, MODULE_WIDTH, PANEL_HEIGHT, RADIUS, BORDER);
+		roundedRect(graphics, rightX, panelY, moduleWidth, panelHeight, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM);
+		outline(graphics, rightX, panelY, moduleWidth, panelHeight, RADIUS, BORDER);
 
 		List<Rect> categoryRows = categoryRows(panelX, panelY);
 		Category[] categories = Category.values();
@@ -102,7 +166,7 @@ public class ClickGuiScreen extends Screen {
 			}
 		}
 		if (anySettings) {
-			graphics.text(font, "Right-click for settings", panelX + CATEGORY_WIDTH + 10, panelY + PANEL_HEIGHT - 16, TEXT_MUTED);
+			graphics.text(font, "Right-click for settings", panelX + categoryWidth() + 10, panelY + panelHeight() - 16, TEXT_MUTED);
 		}
 	}
 
@@ -201,19 +265,19 @@ public class ClickGuiScreen extends Screen {
 		int thumbHeight = Math.max(16, viewport.h * viewport.h / contentHeight);
 		int travel = viewport.h - thumbHeight;
 		int maxScroll = contentHeight - viewport.h;
-		int thumbY = viewport.y + (maxScroll == 0 ? 0 : travel * settingsScroll / maxScroll);
+		int thumbY = viewport.y + travel * settingsScroll / maxScroll;
 		graphics.fill(trackX, thumbY, trackX + SCROLLBAR_WIDTH, thumbY + thumbHeight, SCROLLBAR);
 	}
 
 	private Rect headerRow(int x, int y) {
-		return new Rect(x, y + PADDING, MODULE_WIDTH, ROW_HEIGHT);
+		return new Rect(x, y + PADDING, moduleWidth(), ROW_HEIGHT);
 	}
 
 	/** The clipped, scrollable area below the back header that the setting rows live in. */
 	private Rect settingsViewport(int x, int panelY) {
 		Rect header = headerRow(x, panelY);
 		int top = header.y + header.h;
-		return new Rect(x, top, MODULE_WIDTH, panelY + PANEL_HEIGHT - PADDING - top);
+		return new Rect(x, top, moduleWidth(), panelY + panelHeight() - PADDING - top);
 	}
 
 	/** Setting rows with the current scroll already applied, so callers can hit-test them directly. */
@@ -242,6 +306,7 @@ public class ClickGuiScreen extends Screen {
 	/** @param startY where the first row begins; already offset by the scroll position */
 	private List<Row> layoutRows(Module module, int x, int startY) {
 		List<Row> rows = new ArrayList<>();
+		int moduleWidth = moduleWidth();
 		int cursorY = startY;
 
 		for (ColorSetting setting : module.colorSettings()) {
@@ -252,34 +317,36 @@ public class ClickGuiScreen extends Screen {
 				ColorSetting.Channel[] channels = {ColorSetting.Channel.RED, ColorSetting.Channel.GREEN, ColorSetting.Channel.BLUE, ColorSetting.Channel.ALPHA};
 				int sliderY = cursorY + ROW_HEIGHT + 2;
 				int sliderX = x + 22;
-				int sliderWidth = MODULE_WIDTH - 22 - 34;
+				int sliderWidth = moduleWidth - 22 - VALUE_GUTTER;
 				for (ColorSetting.Channel channel : channels) {
 					sliders.add(new SliderRect(channel, new Rect(sliderX, sliderY, sliderWidth, 6)));
 					sliderY += CHANNEL_ROW_HEIGHT;
 				}
 			}
-			rows.add(new ColorRow(setting, new Rect(x, cursorY, MODULE_WIDTH, rowHeight), sliders));
+			rows.add(new ColorRow(setting, new Rect(x, cursorY, moduleWidth, rowHeight), sliders));
 			cursorY += rowHeight;
 		}
 
 		for (NumberSetting setting : module.numberSettings()) {
-			Rect slider = new Rect(x + 10, cursorY + 15, MODULE_WIDTH - 20 - 34, 6);
-			rows.add(new NumberRow(setting, new Rect(x, cursorY, MODULE_WIDTH, ROW_HEIGHT), slider));
+			Rect slider = new Rect(x + 10, cursorY + 15, moduleWidth - 20 - VALUE_GUTTER, 6);
+			rows.add(new NumberRow(setting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), slider));
 			cursorY += ROW_HEIGHT;
 		}
 
 		for (BooleanSetting setting : module.booleanSettings()) {
-			rows.add(new ToggleRow(setting, new Rect(x, cursorY, MODULE_WIDTH, ROW_HEIGHT)));
+			rows.add(new ToggleRow(setting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
 			cursorY += ROW_HEIGHT;
 		}
 
 		for (ModuleAction action : module.actions()) {
-			rows.add(new ActionRow(action, new Rect(x, cursorY, MODULE_WIDTH, ROW_HEIGHT)));
+			rows.add(new ActionRow(action, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
 			cursorY += ROW_HEIGHT;
 		}
 
 		return rows;
 	}
+
+	// ---- input --------------------------------------------------------------------------
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
@@ -287,7 +354,7 @@ public class ClickGuiScreen extends Screen {
 		int mouseY = (int) event.y();
 		int panelX = panelX();
 		int panelY = panelY();
-		int rightX = panelX + CATEGORY_WIDTH;
+		int rightX = panelX + categoryWidth();
 		boolean left = event.button() == 0;
 		boolean right = event.button() == 1;
 
@@ -314,11 +381,13 @@ public class ClickGuiScreen extends Screen {
 			Module module = modules.get(i);
 			if (left) {
 				module.toggle();
+				persistView();
 				ModConfig.save();
 			} else if (right && module.hasSettings()) {
 				openSettingsModule = module;
 				expandedColorSetting = null;
 				settingsScroll = 0;
+				persistView();
 			}
 			return true;
 		}
@@ -353,6 +422,7 @@ public class ClickGuiScreen extends Screen {
 					}
 					if (new Rect(colorRow.bounds.x, colorRow.bounds.y, colorRow.bounds.w, ROW_HEIGHT).contains(mouseX, mouseY)) {
 						expandedColorSetting = expandedColorSetting == colorRow.setting ? null : colorRow.setting;
+						persistView();
 						return true;
 					}
 				}
@@ -366,6 +436,7 @@ public class ClickGuiScreen extends Screen {
 				case ToggleRow toggleRow -> {
 					if (toggleRow.bounds.contains(mouseX, mouseY)) {
 						toggleRow.setting.toggle();
+						persistView();
 						ModConfig.save();
 						return true;
 					}
@@ -387,7 +458,7 @@ public class ClickGuiScreen extends Screen {
 		if (openSettingsModule == null) {
 			return super.mouseDragged(event, dragX, dragY);
 		}
-		int rightX = panelX() + CATEGORY_WIDTH;
+		int rightX = panelX() + categoryWidth();
 		int mouseX = (int) event.x();
 
 		if (draggingChannel != null || draggingNumberSetting != null) {
@@ -415,6 +486,7 @@ public class ClickGuiScreen extends Screen {
 		if (draggingChannel != null || draggingNumberSetting != null) {
 			draggingChannel = null;
 			draggingNumberSetting = null;
+			persistView();
 			ModConfig.save();
 			return true;
 		}
@@ -424,10 +496,11 @@ public class ClickGuiScreen extends Screen {
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
 		if (openSettingsModule != null) {
-			Rect viewport = settingsViewport(panelX() + CATEGORY_WIDTH, panelY());
+			Rect viewport = settingsViewport(panelX() + categoryWidth(), panelY());
 			if (viewport.contains(mouseX, mouseY)) {
 				int maxScroll = Math.max(0, settingsContentHeight(openSettingsModule) - viewport.h);
 				settingsScroll = Math.max(0, Math.min(maxScroll, settingsScroll - (int) Math.round(scrollY * CHANNEL_ROW_HEIGHT)));
+				persistView();
 				return true;
 			}
 		}
@@ -438,6 +511,7 @@ public class ClickGuiScreen extends Screen {
 		openSettingsModule = null;
 		expandedColorSetting = null;
 		settingsScroll = 0;
+		persistView();
 	}
 
 	private void applySlider(ColorSetting setting, SliderRect slider, int mouseX) {
@@ -451,27 +525,22 @@ public class ClickGuiScreen extends Screen {
 		setting.setFraction(fraction);
 	}
 
-	private int panelX() {
-		return (this.width - CATEGORY_WIDTH - MODULE_WIDTH) / 2;
-	}
-
-	private int panelY() {
-		return (this.height - PANEL_HEIGHT) / 2;
-	}
-
 	private List<Rect> categoryRows(int panelX, int panelY) {
 		List<Rect> rows = new ArrayList<>();
 		Category[] categories = Category.values();
+		int categoryWidth = categoryWidth();
 		for (int i = 0; i < categories.length; i++) {
-			rows.add(new Rect(panelX, panelY + PADDING + i * ROW_HEIGHT, CATEGORY_WIDTH, ROW_HEIGHT));
+			rows.add(new Rect(panelX, panelY + PADDING + i * ROW_HEIGHT, categoryWidth, ROW_HEIGHT));
 		}
 		return rows;
 	}
 
 	private List<Rect> moduleRows(int panelX, int panelY, int count) {
 		List<Rect> rows = new ArrayList<>();
+		int x = panelX + categoryWidth();
+		int moduleWidth = moduleWidth();
 		for (int i = 0; i < count; i++) {
-			rows.add(new Rect(panelX + CATEGORY_WIDTH, panelY + PADDING + i * ROW_HEIGHT, MODULE_WIDTH, ROW_HEIGHT));
+			rows.add(new Rect(x, panelY + PADDING + i * ROW_HEIGHT, moduleWidth, ROW_HEIGHT));
 		}
 		return rows;
 	}
