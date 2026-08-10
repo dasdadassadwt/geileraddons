@@ -37,6 +37,23 @@ public final class TikiStacks {
 		return isColumnBase(level, base) && columnHeight(level, base) == STACK_HEIGHT;
 	}
 
+	/** @return the floor skull's rotation, or -1 if this position isn't a readable floor skull */
+	public static int readRotation(ClientLevel level, BlockPos pos) {
+		if (!level.isLoaded(pos)) return -1;
+		BlockState state = level.getBlockState(pos);
+		if (!(state.getBlock() instanceof AbstractSkullBlock) || !state.hasProperty(SkullBlock.ROTATION)) return -1;
+		return state.getValue(SkullBlock.ROTATION);
+	}
+
+	/** @return how many of the three slots starting at base hold a readable floor skull */
+	public static int readableSlots(ClientLevel level, BlockPos base) {
+		int count = 0;
+		for (int i = 0; i < STACK_HEIGHT; i++) {
+			if (readRotation(level, base.above(i)) >= 0) count++;
+		}
+		return count;
+	}
+
 	/** @return rotations bottom-to-top, or null if any skull is a wall head or missing */
 	public static int[] readRotations(ClientLevel level, BlockPos base) {
 		int[] rotations = new int[STACK_HEIGHT];

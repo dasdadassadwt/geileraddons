@@ -1,6 +1,7 @@
 package geiler.addons.client.module.impl;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import geiler.addons.client.config.TikiCoords;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
@@ -24,12 +25,15 @@ import java.util.List;
  * Floats the next click straight onto the skull that needs it: green "+2" means left-click it
  * twice, red "-3" means right-click it three times. Skulls that have locked in show a dot.
  *
- * <p>A column that is present but not a solvable three-skull tiki gets a "?" instead of nothing,
- * so a shape the solver doesn't understand reads as "I can't help here" rather than as the
- * overlay being broken.
+ * <p>A tiki occupies the three blocks above one of the stored coordinates. Slots are read from
+ * there rather than by looking for a column of skulls, because a slot can hold an ordinary block
+ * instead of a head - it still rotates and still counts, so the tiki has to be located by
+ * position rather than by what happens to be standing in it. Such a slot gets "+?": keep clicking
+ * it, the count can't be known. Tikis outside the coordinate list are still picked up by a plain
+ * column search, as long as all three heads are visible.
  */
 public final class TikiSolverModule extends Module {
-	/** Ticks between full sweeps while no column is held; a held column is re-read every tick. */
+	/** Ticks between column sweeps for unlisted tikis; the stored-coordinate path runs every tick. */
 	private static final int SEARCH_INTERVAL = 10;
 	private static final String LOCKED_LABEL = "·";
 	private static final String UNKNOWN_LABEL = "?";
@@ -44,9 +48,8 @@ public final class TikiSolverModule extends Module {
 	/** Vertical anchor within the skull's block - a floor skull only fills the bottom half. */
 	private static final double LABEL_HEIGHT = 0.4;
 	private static final float LOCKED_LABEL_SCALE = 0.6f;
-	/** Columns this short or tall are still worth flagging; anything else isn't a tiki at all. */
-	private static final int MIN_COLUMN = 2;
-	private static final int MAX_COLUMN = 4;
+	/** Below this many readable heads there is nothing to reason about. */
+	private static final int MIN_READABLE_SLOTS = 2;
 
 	public static final TikiSolverModule INSTANCE = new TikiSolverModule();
 
@@ -58,9 +61,9 @@ public final class TikiSolverModule extends Module {
 	private final BooleanSetting showLocked;
 	private final BooleanSetting showUnknown;
 
-	private BlockPos columnBase;
-	private int columnHeight;
+	private BlockPos slotBase;
 	private int[] rotations;
+	private int hiddenIndex = -1;
 	private TikiSolver.Plan plan;
 	private int ticksSinceSearch;
 
@@ -116,26 +119,74 @@ public final class TikiSolverModule extends Module {
 		}
 
 		int range = this.range.intValue();
-		if (columnBase != null && (!player.blockPosition().closerThan(columnBase, range) || !TikiStacks.isColumnBase(level, columnBase))) {
-			columnBase = null;
+		BlockPos base = nearestStoredSlotBase(level, player, range);
+		if (base == null) {
+			base = unlistedColumnBase(level, player, range);
 		}
-		if (columnBase == null) {
-			// Sweeping every tick would be thousands of block reads; once a column is held the
-			// per-tick cost is a handful, which is what keeps the label instant.
-			resetTarget();
-			if (++ticksSinceSearch < SEARCH_INTERVAL) return;
-			ticksSinceSearch = 0;
-			columnBase = TikiStacks.findNearestColumnBase(level, player.position(), player.blockPosition(), range, MIN_COLUMN, MAX_COLUMN);
-			if (columnBase == null) return;
+		if (base == null) {
+			clear();
+			return;
 		}
 
-		columnHeight = TikiStacks.columnHeight(level, columnBase);
-		rotations = columnHeight == TikiStacks.STACK_HEIGHT ? TikiStacks.readRotations(level, columnBase) : null;
-		plan = rotations != null ? TikiSolver.solve(rotations) : null;
+		slotBase = base;
+		readSlots(level, base);
+	}
+
+	/** The three blocks above the nearest stored coordinate that still holds a tiki. */
+	private BlockPos nearestStoredSlotBase(ClientLevel level, LocalPlayer player, int range) {
+		double rangeSq = (double) range * range;
+		Vec3 position = player.position();
+		BlockPos best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (BlockPos coord : TikiCoords.all()) {
+			double distance = position.distanceToSqr(coord.getCenter());
+			if (distance > rangeSq || distance >= bestDistance) continue;
+			BlockPos base = coord.above();
+			if (TikiStacks.readableSlots(level, base) < MIN_READABLE_SLOTS) continue;
+			bestDistance = distance;
+			best = base;
+		}
+		return best;
+	}
+
+	/** Fallback for a tiki that isn't in the coordinate list - only works if all three heads show. */
+	private BlockPos unlistedColumnBase(ClientLevel level, LocalPlayer player, int range) {
+		if (slotBase != null && player.blockPosition().closerThan(slotBase, range) && TikiStacks.isStackBase(level, slotBase)) {
+			return slotBase;
+		}
+		// Sweeping every tick would be thousands of block reads, and this path only exists for
+		// tikis the coordinate list doesn't know about.
+		if (++ticksSinceSearch < SEARCH_INTERVAL) return null;
+		ticksSinceSearch = 0;
+		return TikiStacks.findNearestColumnBase(level, player.position(), player.blockPosition(), range,
+			TikiStacks.STACK_HEIGHT, TikiStacks.STACK_HEIGHT);
+	}
+
+	private void readSlots(ClientLevel level, BlockPos base) {
+		int[] read = new int[TikiStacks.STACK_HEIGHT];
+		int hidden = -1;
+		int hiddenCount = 0;
+		for (int i = 0; i < TikiStacks.STACK_HEIGHT; i++) {
+			read[i] = TikiStacks.readRotation(level, base.above(i));
+			if (read[i] < 0) {
+				hidden = i;
+				hiddenCount++;
+			}
+		}
+
+		rotations = read;
+		hiddenIndex = hiddenCount == 1 ? hidden : -1;
+		if (hiddenCount == 0) {
+			plan = TikiSolver.solve(read);
+		} else if (hiddenCount == 1) {
+			plan = TikiSolver.solveWithHidden(read, hidden);
+		} else {
+			plan = null;
+		}
 	}
 
 	public void render(LevelRenderContext context) {
-		if (!isEnabled() || columnBase == null) return;
+		if (!isEnabled() || slotBase == null || rotations == null) return;
 
 		Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
 		Vec3 camPos = camera.position();
@@ -146,19 +197,18 @@ public final class TikiSolverModule extends Module {
 		// moving nearer to or further from the camera.
 		double offsetX = 0;
 		double offsetZ = 0;
-		double dx = camPos.x - (columnBase.getX() + 0.5);
-		double dz = camPos.z - (columnBase.getZ() + 0.5);
+		double dx = camPos.x - (slotBase.getX() + 0.5);
+		double dz = camPos.z - (slotBase.getZ() + 0.5);
 		double horizontal = Math.sqrt(dx * dx + dz * dz);
 		if (horizontal > 1.0e-3) {
 			offsetX = -dz / horizontal * LABEL_OFFSET;
 			offsetZ = dx / horizontal * LABEL_OFFSET;
 		}
 
-		if (rotations == null) {
-			// Found a skull column the solver can't read - say so rather than showing nothing.
+		if (plan == null) {
 			if (showUnknown.value()) {
 				label(poseStack, bufferSource, camera, camPos, offsetX, offsetZ,
-					Math.max(0, columnHeight - 1) / 2, UNKNOWN_LABEL, rightColor.argb(), labelSize.value());
+					1, UNKNOWN_LABEL, rightColor.argb(), labelSize.value());
 			}
 			bufferSource.endBatch();
 			return;
@@ -168,10 +218,11 @@ public final class TikiSolverModule extends Module {
 			String text;
 			int color;
 			float scale = labelSize.value();
-			if (plan != null && plan.index() == i) {
-				text = (plan.direction() > 0 ? "+" : "-") + plan.clicks();
+			if (plan.index() == i) {
+				String count = plan.clicks() == TikiSolver.UNKNOWN_CLICKS ? UNKNOWN_LABEL : String.valueOf(plan.clicks());
+				text = (plan.direction() > 0 ? "+" : "-") + count;
 				color = plan.direction() > 0 ? leftColor.argb() : rightColor.argb();
-			} else if (showLocked.value() && TikiSolver.isLocked(rotations, i)) {
+			} else if (showLocked.value() && hiddenIndex < 0 && TikiSolver.isLocked(rotations, i)) {
 				text = LOCKED_LABEL;
 				color = lockedColor.argb();
 				scale *= LOCKED_LABEL_SCALE;
@@ -185,7 +236,7 @@ public final class TikiSolverModule extends Module {
 	}
 
 	private void label(PoseStack poseStack, MultiBufferSource bufferSource, Camera camera, Vec3 camPos, double offsetX, double offsetZ, int index, String text, int color, float scale) {
-		BlockPos pos = columnBase.above(index);
+		BlockPos pos = slotBase.above(index);
 		EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
 			pos.getX() + 0.5 + offsetX - camPos.x,
 			pos.getY() + LABEL_HEIGHT - camPos.y,
@@ -193,15 +244,11 @@ public final class TikiSolverModule extends Module {
 			text, color, scale);
 	}
 
-	private void resetTarget() {
-		columnHeight = 0;
-		rotations = null;
-		plan = null;
-	}
-
 	private void clear() {
-		columnBase = null;
+		slotBase = null;
+		rotations = null;
+		hiddenIndex = -1;
+		plan = null;
 		ticksSinceSearch = 0;
-		resetTarget();
 	}
 }

@@ -27,6 +27,8 @@ import java.util.List;
 public final class TikiSolver {
 	public static final int SLOTS = 16;
 	public static final int STEP = 2;
+	/** {@link Plan#clicks()} when the count is unknowable because the slot can't be read. */
+	public static final int UNKNOWN_CLICKS = -1;
 
 	/** {skull index, direction} - deliberately excludes the top skull. */
 	private static final int[][] MOVES = {{0, 1}, {0, -1}, {1, 1}, {1, -1}};
@@ -108,6 +110,41 @@ public final class TikiSolver {
 			cursor = FORWARD[cursor][move];
 		}
 		return new Plan(MOVES[move][0], MOVES[move][1], clicks, DISTANCE[state]);
+	}
+
+	/**
+	 * Plan for a tiki where one slot's rotation can't be read - the server sometimes puts an
+	 * ordinary block (weeping vines, say) in a slot, and it still rotates and still counts.
+	 *
+	 * <p>Solvable without ever knowing the hidden value, in two phases. Writing H for the hidden
+	 * slot, K for H's companion and J for the slot whose companion is H:
+	 * <ol>
+	 *   <li>Click J until it matches K. A click on J moves J and conditionally H, so among the two
+	 *       readable slots only J moves - the unknown never enters the arithmetic.</li>
+	 *   <li>Click H until the tiki completes. J and K now match, so they are locked and a click on
+	 *       H moves nothing but H. At most {@code SLOTS / STEP - 1} clicks.</li>
+	 * </ol>
+	 *
+	 * @param rotations the three slot rotations, with the hidden one's value ignored
+	 * @return the plan, or null if the two readable slots aren't valid tiki rotations
+	 */
+	public static Plan solveWithHidden(int[] rotations, int hidden) {
+		if (rotations == null || rotations.length != 3 || hidden < 0 || hidden > 2) return null;
+		int companion = (hidden + 1) % 3;
+		int feeder = (hidden + 2) % 3;
+		for (int index : new int[]{companion, feeder}) {
+			int rotation = rotations[index];
+			if (rotation < 0 || rotation >= SLOTS || rotation % STEP != 0) return null;
+		}
+
+		if (rotations[feeder] == rotations[companion]) {
+			return new Plan(hidden, 1, UNKNOWN_CLICKS, UNKNOWN_CLICKS);
+		}
+		int forward = Math.floorMod(rotations[companion] - rotations[feeder], SLOTS) / STEP;
+		int backward = SLOTS / STEP - forward;
+		boolean left = forward <= backward;
+		int clicks = left ? forward : backward;
+		return new Plan(feeder, left ? 1 : -1, clicks, clicks);
 	}
 
 	/** Applies the click rule; exposed so the debug module can check reality against it. */
