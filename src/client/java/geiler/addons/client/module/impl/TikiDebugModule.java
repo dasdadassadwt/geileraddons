@@ -9,6 +9,8 @@ import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.render.EspRenderer;
+import geiler.addons.client.tiki.TikiSolver;
+import geiler.addons.client.tiki.TikiStacks;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Camera;
@@ -20,6 +22,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvent;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.AbstractSkullBlock;
 import net.minecraft.world.level.block.SkullBlock;
@@ -28,10 +31,12 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.SkullBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +55,8 @@ public final class TikiDebugModule extends Module {
 	/** Extra slack past the track radius for sounds, which are emitted from the block's center. */
 	private static final double SOUND_SLACK = 8.0;
 	private static final float LABEL_SCALE = 0.025f;
+	/** Ticks to wait after a click before checking the result against the solver's move rule. */
+	private static final int VERIFY_DELAY = 8;
 
 	public static final TikiDebugModule INSTANCE = new TikiDebugModule();
 
@@ -59,6 +66,7 @@ public final class TikiDebugModule extends Module {
 	private final BooleanSetting showRotations;
 	private final BooleanSetting trackSounds;
 	private final BooleanSetting trackChat;
+	private final BooleanSetting verifySolver;
 	private final BooleanSetting echoToChat;
 
 	private final Map<BlockPos, Skull> tracked = new HashMap<>();
@@ -67,6 +75,7 @@ public final class TikiDebugModule extends Module {
 	private long tick;
 	private int ticksSinceRescan;
 	private ClientLevel lastLevel;
+	private PendingVerification pending;
 
 	private TikiDebugModule() {
 		this(
@@ -76,18 +85,20 @@ public final class TikiDebugModule extends Module {
 			new BooleanSetting("Show Rotations", true),
 			new BooleanSetting("Track Sounds", true),
 			new BooleanSetting("Track Chat", true),
+			new BooleanSetting("Verify Solver", true),
 			new BooleanSetting("Echo To Chat", false)
 		);
 	}
 
 	private TikiDebugModule(
 		ColorSetting labelColor, NumberSetting armRange, NumberSetting trackRadius,
-		BooleanSetting showRotations, BooleanSetting trackSounds, BooleanSetting trackChat, BooleanSetting echoToChat
+		BooleanSetting showRotations, BooleanSetting trackSounds, BooleanSetting trackChat,
+		BooleanSetting verifySolver, BooleanSetting echoToChat
 	) {
 		super("Tiki Debug", "Logs skull rotations, clicks, sounds and chat near tiki coordinates.", Category.HUNTING,
 			List.of(labelColor),
 			List.of(armRange, trackRadius),
-			List.of(showRotations, trackSounds, trackChat, echoToChat),
+			List.of(showRotations, trackSounds, trackChat, verifySolver, echoToChat),
 			List.of());
 		this.labelColor = labelColor;
 		this.armRange = armRange;
@@ -95,6 +106,7 @@ public final class TikiDebugModule extends Module {
 		this.showRotations = showRotations;
 		this.trackSounds = trackSounds;
 		this.trackChat = trackChat;
+		this.verifySolver = verifySolver;
 		this.echoToChat = echoToChat;
 	}
 
@@ -116,6 +128,7 @@ public final class TikiDebugModule extends Module {
 	protected void onDisable() {
 		tracked.clear();
 		armed = false;
+		pending = null;
 		TikiDebugLog.close();
 	}
 
@@ -144,6 +157,12 @@ public final class TikiDebugModule extends Module {
 		}
 		if (!armed) return;
 
+		// Both block updates from one rotation land within a tick or two of each other, so the
+		// comparison waits for them to settle rather than judging a half-applied state.
+		if (pending != null && tick - pending.tick >= VERIFY_DELAY) {
+			runVerification(level);
+		}
+
 		if (++ticksSinceRescan >= RESCAN_INTERVAL) {
 			ticksSinceRescan = 0;
 			rescan(level, player);
@@ -170,6 +189,7 @@ public final class TikiDebugModule extends Module {
 	private void setArmed(boolean value, BlockPos near) {
 		if (armed == value) return;
 		armed = value;
+		pending = null;
 		if (armed) {
 			log("ARMED near=" + format(near));
 			Minecraft mc = Minecraft.getInstance();
@@ -300,17 +320,84 @@ public final class TikiDebugModule extends Module {
 		ClientLevel level = mc.level;
 		LocalPlayer player = mc.player;
 		if (level == null || player == null) return;
-		if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return;
 
-		BlockPos pos = hit.getBlockPos();
-		Skull skull = snapshot(level, pos);
-		if (skull == null) return;
-
+		String kind = rightClick ? "RCLICK" : "LCLICK";
 		ItemStack held = player.getMainHandItem();
-		log((rightClick ? "RCLICK" : "LCLICK") + " " + format(pos) + " " + skull
-			+ " face=" + hit.getDirection().getName()
-			+ " held=" + (held.isEmpty() ? "empty" : held.getHoverName().getString())
+		String heldName = " held=" + (held.isEmpty() ? "empty" : held.getHoverName().getString());
+		HitResult hit = mc.hitResult;
+
+		// Logged even when the crosshair isn't on a skull: clicks that land on an interaction
+		// entity in front of the block used to vanish from the log while still rotating it.
+		if (hit == null || hit.getType() == HitResult.Type.MISS) {
+			log(kind + " target=nothing" + heldName);
+			return;
+		}
+		if (hit instanceof EntityHitResult entityHit) {
+			Entity entity = entityHit.getEntity();
+			log(kind + " target=entity " + entity.getClass().getSimpleName() + " \"" + entity.getName().getString() + "\""
+				+ " at=" + format(entity.blockPosition()) + heldName);
+			return;
+		}
+		if (!(hit instanceof BlockHitResult blockHit)) return;
+
+		BlockPos pos = blockHit.getBlockPos();
+		Skull skull = snapshot(level, pos);
+		if (skull == null) {
+			log(kind + " target=block " + format(pos) + " " + level.getBlockState(pos).getBlock().getName().getString() + heldName);
+			return;
+		}
+
+		log(kind + " " + format(pos) + " " + skull
+			+ " face=" + blockHit.getDirection().getName()
+			+ heldName
 			+ " " + stackOf(level, pos));
+
+		if (verifySolver.value()) {
+			armVerification(level, pos, rightClick ? -1 : 1);
+		}
+	}
+
+	/**
+	 * Snapshots the stack so the next tick batch can be checked against {@link TikiSolver}'s move
+	 * rule - if Hypixel ever changes the puzzle, the log says so instead of the solver quietly
+	 * giving wrong advice.
+	 */
+	private void armVerification(ClientLevel level, BlockPos clicked, int direction) {
+		BlockPos base = clicked;
+		while (TikiStacks.isSkull(level, base.below())) {
+			base = base.below();
+		}
+		if (!TikiStacks.isStackBase(level, base)) return;
+		int index = clicked.getY() - base.getY();
+		int[] before = TikiStacks.readRotations(level, base);
+		if (before == null || index < 0 || index >= TikiStacks.STACK_HEIGHT) return;
+		pending = new PendingVerification(base.immutable(), index, direction, before, tick);
+	}
+
+	private void runVerification(ClientLevel level) {
+		PendingVerification check = pending;
+		pending = null;
+
+		int[] actual = TikiStacks.readRotations(level, check.base);
+		if (actual == null) {
+			log("VERIFY skipped - stack gone (completed or out of range)");
+			return;
+		}
+		if (Arrays.equals(actual, check.before)) {
+			log("VERIFY no-op - click did not register (rotation cooldown)");
+			return;
+		}
+		// The top skull is never clicked in practice, so the rule for index 2 is inferred; the
+		// solver never suggests it, but a real click there is still worth checking.
+		int[] expected = TikiSolver.applyMove(check.before, check.index, check.direction);
+		if (Arrays.equals(expected, actual)) {
+			log("VERIFY ok " + Arrays.toString(check.before) + " -> " + Arrays.toString(actual));
+		} else {
+			log("VERIFY MISMATCH click=idx" + check.index + " dir=" + (check.direction > 0 ? "+" : "-")
+				+ " before=" + Arrays.toString(check.before)
+				+ " expected=" + Arrays.toString(expected)
+				+ " actual=" + Arrays.toString(actual));
+		}
 	}
 
 	public void onSound(Holder<SoundEvent> sound, double x, double y, double z, float volume, float pitch) {
@@ -370,6 +457,10 @@ public final class TikiDebugModule extends Module {
 
 	private static String format(BlockPos pos) {
 		return pos == null ? "none" : pos.getX() + "," + pos.getY() + "," + pos.getZ();
+	}
+
+	/** A click whose effect hasn't been read back yet - see {@link #runVerification}. */
+	private record PendingVerification(BlockPos base, int index, int direction, int[] before, long tick) {
 	}
 
 	/**
