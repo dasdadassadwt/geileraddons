@@ -3,13 +3,14 @@
 	"id": "geileraddons",
 	"version": "${version}",
 	"name": "GeilerAddons",
-	"description": "Client-side helper modules: the Catacombs F7/M7 4th-device puzzle and tiki skull tracking.",
+	"description": "Client-side helper modules for Hypixel SkyBlock: the Catacombs F7/M7 4th-device puzzle and Sneaky Tiki hunting (waypoints, click solver, research logging).",
 	"authors": [
-		"Me!"
+		"dasdadassadwt"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"homepage": "https://github.com/dasdadassadwt/geileraddons",
+		"sources": "https://github.com/dasdadassadwt/geileraddons",
+		"issues": "https://github.com/dasdadassadwt/geileraddons/issues"
 	},
 	"license": "CC0-1.0",
 	"icon": "assets/geileraddons/icon.png",
