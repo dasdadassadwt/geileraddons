@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "geileraddons",
+	"version": "${version}",
+	"name": "GeilerAddons",
+	"description": "Client-side helper modules: the Catacombs F7/M7 4th-device puzzle and tiki skull tracking.",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/geileraddons/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"geiler.addons.GeilerAddons"
+		],
+		"client": [
+			"geiler.addons.client.GeilerAddonsClient"
+		]
+	},
+	"mixins": [
+		"geileraddons.mixins.json",
+		{
+			"config": "geileraddons.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
