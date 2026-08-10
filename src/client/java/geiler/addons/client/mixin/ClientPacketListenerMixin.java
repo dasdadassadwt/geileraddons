@@ -2,7 +2,7 @@ package geiler.addons.client.mixin;
 
 import geiler.addons.client.gui.ClickGuiScreen;
 import geiler.addons.client.module.impl.I4HelperModule;
-import geiler.addons.client.module.impl.TikiDebugModule;
+import geiler.addons.client.module.impl.TikiHelperModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
@@ -40,35 +40,34 @@ public abstract class ClientPacketListenerMixin {
 	@Inject(method = "handleBlockUpdate", at = @At("TAIL"))
 	private void geileraddons$onBlockUpdate(ClientboundBlockUpdatePacket packet, CallbackInfo ci) {
 		I4HelperModule.INSTANCE.onBlockChange(packet.getPos(), packet.getBlockState());
-		TikiDebugModule.INSTANCE.onBlockChange(packet.getPos(), packet.getBlockState());
+		TikiHelperModule.INSTANCE.onBlockChange(packet.getPos(), packet.getBlockState());
 	}
 
 	@Inject(method = "handleChunkBlocksUpdate", at = @At("TAIL"))
 	private void geileraddons$onChunkBlocksUpdate(ClientboundSectionBlocksUpdatePacket packet, CallbackInfo ci) {
 		packet.runUpdates((pos, state) -> {
 			I4HelperModule.INSTANCE.onBlockChange(pos, state);
-			TikiDebugModule.INSTANCE.onBlockChange(pos, state);
+			TikiHelperModule.INSTANCE.onBlockChange(pos, state);
 		});
 	}
 
+	/**
+	 * HEAD rather than TAIL so this sees the raw server text: a chat-compacting mod that cancels
+	 * or rewrites the message would otherwise hide it entirely, which is exactly what happened to
+	 * the tiki debug log. HEAD also runs once on the netty thread before the packet is rescheduled,
+	 * hence the thread guard for anything that touches level state.
+	 */
 	@Inject(method = "handleSystemChat", at = @At("HEAD"))
 	private void geileraddons$onSystemChat(ClientboundSystemChatPacket packet, CallbackInfo ci) {
 		I4HelperModule.INSTANCE.onChatMessage(packet.content().getString());
-	}
-
-	/**
-	 * Separate from the HEAD hook above: HEAD runs before the packet handler's own
-	 * same-thread check, so it can fire on the netty thread. The debug log reads level state
-	 * and must be on the client thread, which TAIL guarantees.
-	 */
-	@Inject(method = "handleSystemChat", at = @At("TAIL"))
-	private void geileraddons$onSystemChatForDebug(ClientboundSystemChatPacket packet, CallbackInfo ci) {
-		TikiDebugModule.INSTANCE.onChatMessage(packet.content().getString());
+		if (Minecraft.getInstance().isSameThread()) {
+			TikiHelperModule.INSTANCE.onChatMessage(packet.content().getString());
+		}
 	}
 
 	@Inject(method = "handleSoundEvent", at = @At("TAIL"))
 	private void geileraddons$onSoundEvent(ClientboundSoundPacket packet, CallbackInfo ci) {
-		TikiDebugModule.INSTANCE.onSound(packet.getSound(), packet.getX(), packet.getY(), packet.getZ(),
+		TikiHelperModule.INSTANCE.onSound(packet.getSound(), packet.getX(), packet.getY(), packet.getZ(),
 			packet.getVolume(), packet.getPitch());
 	}
 

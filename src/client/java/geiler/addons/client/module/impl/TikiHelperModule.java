@@ -2,6 +2,7 @@ package geiler.addons.client.module.impl;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import geiler.addons.client.config.TikiCoords;
+import geiler.addons.client.config.TikiDebugLog;
 import geiler.addons.client.gui.TikiCoordManagerScreen;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
@@ -11,36 +12,84 @@ import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
+import geiler.addons.client.tiki.TikiSolver;
+import geiler.addons.client.tiki.TikiStacks;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.core.SectionPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.AbstractSkullBlock;
+import net.minecraft.world.level.block.SkullBlock;
+import net.minecraft.world.level.block.WallSkullBlock;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.SkullBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3fc;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Periodically checks every stored tiki coordinate for skulls stacked directly above it and
- * boxes the coordinate green (enough skulls) or red (not enough). Optionally draws a tracer
- * from the crosshair to the nearest green one.
+ * Everything for hunting Sneaky Tikis, in one module with a sub-toggle per part.
+ *
+ * <p><b>Waypoints</b> box each stored coordinate green or red by whether a tiki is standing there,
+ * remembering what it last saw so a coordinate spotted at the edge of render distance keeps its
+ * marker after the chunk unloads. <b>Solver</b> floats the next click on the head that needs it.
+ * <b>Debug logging</b> records rotations, clicks, sounds and chat to a file for working out the
+ * puzzle's rules.
+ *
+ * <p>A tiki is three heads on the three blocks above a stored coordinate. Slots are read by
+ * position rather than by hunting for a column of skulls, because a slot can hold an ordinary
+ * block instead of a head - it still rotates and still counts toward the solution.
  */
 public final class TikiHelperModule extends Module {
-	/** Blocks checked above each stored coordinate: y+1 through y+SCAN_HEIGHT. */
-	private static final int SCAN_HEIGHT = 4;
-	/** Skulls needed in that column for a coordinate to count as valid. */
+	private static final int SCAN_HEIGHT = TikiStacks.STACK_HEIGHT;
+	/** Heads needed at a coordinate for the waypoint to count as a live tiki. */
 	private static final int REQUIRED_SKULLS = 2;
-	/** How far in front of the camera the tracer starts, so it appears to leave the crosshair. */
 	private static final double TRACER_START_DISTANCE = 0.5;
 	private static final float BOX_LINE_WIDTH = 2.0f;
 
+	private static final String LOCKED_LABEL = ".";
+	private static final String UNKNOWN_LABEL = "?";
+	private static final float LABEL_LINE_WIDTH = 3.0f;
+	private static final float LOCKED_LABEL_SCALE = 0.6f;
+	/** Sideways, not toward the camera: a nearer label parallaxes onto the neighbouring head. */
+	private static final double LABEL_OFFSET = 0.8;
+	private static final double LABEL_ANCHOR = 0.25;
+
+	private static final int DEBUG_RESCAN_INTERVAL = 20;
+	private static final double SOUND_SLACK = 8.0;
+	private static final int VERIFY_DELAY = 8;
+	private static final float DEBUG_LABEL_HEIGHT = 0.3f;
+
+	/** Matched with contains(), so a chat-compacting mod appending a counter still hits. */
+	private static final String AWAKENED_MESSAGE = "Looks like you woke the Tiki up!";
+
 	public static final TikiHelperModule INSTANCE = new TikiHelperModule();
+
+	private final BooleanSetting waypoints;
+	private final BooleanSetting solver;
+	private final BooleanSetting debugLogging;
 
 	private final ColorSetting validColor;
 	private final ColorSetting invalidColor;
@@ -49,89 +98,177 @@ public final class TikiHelperModule extends Module {
 	private final NumberSetting tracerWidth;
 	private final BooleanSetting tracer;
 
-	private final List<BlockPos> valid = new ArrayList<>();
-	private final List<BlockPos> invalid = new ArrayList<>();
+	private final ColorSetting leftColor;
+	private final ColorSetting rightColor;
+	private final ColorSetting lockedColor;
+	private final NumberSetting range;
+	private final NumberSetting labelHeight;
+	private final BooleanSetting showLocked;
+	private final BooleanSetting showUnknown;
+	private final BooleanSetting vectorLabels;
 
+	private final NumberSetting trackRadius;
+	private final BooleanSetting trackSounds;
+	private final BooleanSetting trackChat;
+	private final BooleanSetting verifySolver;
+	private final BooleanSetting echoToChat;
+
+	/** Last known state per stored coordinate; survives the chunk unloading. */
+	private final Map<BlockPos, Boolean> remembered = new LinkedHashMap<>();
+	/** Tikis woken since they were last seen standing; skipped until a fresh one is there. */
+	private final Set<BlockPos> woken = new HashSet<>();
+
+	private BlockPos slotBase;
+	private int[] rotations;
+	private int hiddenIndex = -1;
+	private TikiSolver.Plan plan;
+
+	private final Map<BlockPos, Skull> tracked = new HashMap<>();
+	private boolean armed;
+	private long tick;
 	private int ticksSinceScan;
-	private boolean scanPending;
+	private int ticksSinceDebugScan;
+	private PendingVerification pending;
 	private ClientLevel lastLevel;
 
 	private TikiHelperModule() {
-		this(
-			new ColorSetting("Valid Color", 0, 255, 0, 128),
-			new ColorSetting("Invalid Color", 255, 0, 0, 128),
-			new ColorSetting("Tracer Color", 0, 255, 0, 255),
-			new NumberSetting("Scan Interval", 1, 200, 40, true),
-			new NumberSetting("Tracer Width", 0.5f, 10.0f, 2.0f),
-			new BooleanSetting("Tracer Line", true)
-		);
+		this(new Settings());
 	}
 
-	private TikiHelperModule(
-		ColorSetting validColor, ColorSetting invalidColor, ColorSetting tracerColor,
-		NumberSetting scanInterval, NumberSetting tracerWidth, BooleanSetting tracer
-	) {
-		super("Tiki Helper", "Highlights tiki coordinates by how many skulls are stacked above them.", Category.HUNTING,
-			List.of(validColor, invalidColor, tracerColor),
-			List.of(scanInterval, tracerWidth),
-			List.of(tracer),
+	private TikiHelperModule(Settings s) {
+		super("Tiki Helper", "Waypoints, click solver and research logging for Sneaky Tikis.", Category.HUNTING,
+			List.of(s.validColor, s.invalidColor, s.tracerColor, s.leftColor, s.rightColor, s.lockedColor),
+			List.of(s.scanInterval, s.tracerWidth, s.range, s.labelHeight, s.trackRadius),
+			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown,
+				s.vectorLabels, s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
 			List.of(new ModuleAction("Manage Tiki Coords", TikiHelperModule::openCoordManager)));
-		this.validColor = validColor;
-		this.invalidColor = invalidColor;
-		this.tracerColor = tracerColor;
-		this.scanInterval = scanInterval;
-		this.tracerWidth = tracerWidth;
-		this.tracer = tracer;
+		this.waypoints = s.waypoints;
+		this.solver = s.solver;
+		this.debugLogging = s.debugLogging;
+		this.validColor = s.validColor;
+		this.invalidColor = s.invalidColor;
+		this.tracerColor = s.tracerColor;
+		this.scanInterval = s.scanInterval;
+		this.tracerWidth = s.tracerWidth;
+		this.tracer = s.tracer;
+		this.leftColor = s.leftColor;
+		this.rightColor = s.rightColor;
+		this.lockedColor = s.lockedColor;
+		this.range = s.range;
+		this.labelHeight = s.labelHeight;
+		this.showLocked = s.showLocked;
+		this.showUnknown = s.showUnknown;
+		this.vectorLabels = s.vectorLabels;
+		this.trackRadius = s.trackRadius;
+		this.trackSounds = s.trackSounds;
+		this.trackChat = s.trackChat;
+		this.verifySolver = s.verifySolver;
+		this.echoToChat = s.echoToChat;
 	}
+
+	/** Just a carrier so the constructor can both build the settings and keep references to them. */
+	private static final class Settings {
+		final BooleanSetting waypoints = new BooleanSetting("Waypoints", true);
+		final BooleanSetting solver = new BooleanSetting("Solver", true);
+		final BooleanSetting debugLogging = new BooleanSetting("Debug Logging", false);
+
+		final ColorSetting validColor = new ColorSetting("Valid Color", 0, 255, 0, 128);
+		final ColorSetting invalidColor = new ColorSetting("Invalid Color", 255, 0, 0, 128);
+		final ColorSetting tracerColor = new ColorSetting("Tracer Color", 0, 255, 0, 255);
+		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 40, true);
+		final NumberSetting tracerWidth = new NumberSetting("Tracer Width", 0.5f, 10.0f, 2.0f);
+		final BooleanSetting tracer = new BooleanSetting("Tracer Line", true);
+
+		final ColorSetting leftColor = new ColorSetting("Left Color", 85, 255, 85, 255);
+		final ColorSetting rightColor = new ColorSetting("Right Color", 255, 60, 60, 255);
+		final ColorSetting lockedColor = new ColorSetting("Locked Color", 160, 160, 160, 200);
+		final NumberSetting range = new NumberSetting("Solver Range", 2, 32, 8, true);
+		final NumberSetting labelHeight = new NumberSetting("Label Height", 0.1f, 1.5f, 0.35f);
+		final BooleanSetting showLocked = new BooleanSetting("Show Locked", true);
+		final BooleanSetting showUnknown = new BooleanSetting("Show Unknown", true);
+		final BooleanSetting vectorLabels = new BooleanSetting("Vector Labels", false);
+
+		final NumberSetting trackRadius = new NumberSetting("Track Radius", 2, 32, 8, true);
+		final BooleanSetting trackSounds = new BooleanSetting("Track Sounds", true);
+		final BooleanSetting trackChat = new BooleanSetting("Track Chat", true);
+		final BooleanSetting verifySolver = new BooleanSetting("Verify Solver", true);
+		final BooleanSetting echoToChat = new BooleanSetting("Echo To Chat", false);
+	}
+
+	// ---- lifecycle ----------------------------------------------------------------------
 
 	@Override
 	protected void onEnable() {
-		clearResults();
-		// Deferred to the next tick rather than scanned here: this also runs during config load,
-		// before the client has a level (or even a finished Minecraft instance) to read.
-		scanPending = true;
+		remembered.clear();
+		woken.clear();
+		clearSolver();
+		tracked.clear();
+		armed = false;
+		pending = null;
+		tick = 0;
+		ticksSinceScan = 0;
+		ticksSinceDebugScan = 0;
 	}
 
 	@Override
 	protected void onDisable() {
-		clearResults();
+		remembered.clear();
+		woken.clear();
+		clearSolver();
+		tracked.clear();
+		armed = false;
+		pending = null;
+		TikiDebugLog.close();
 	}
 
-	/** Re-runs on the next tick - used when the coordinate list changes under us. */
+	/** Re-reads the waypoints on the next tick - the coordinate list just changed under us. */
 	public void requestScan() {
-		scanPending = true;
+		ticksSinceScan = Integer.MAX_VALUE - 1;
+		remembered.keySet().retainAll(TikiCoords.all());
 	}
 
 	public void tick() {
 		if (!isEnabled()) return;
-
-		ClientLevel level = Minecraft.getInstance().level;
-		if (level != lastLevel) {
-			// Joining, leaving or changing dimension: the old results describe a world that
-			// isn't on screen any more.
-			lastLevel = level;
-			clearResults();
-			scanPending = true;
-		}
-
-		ticksSinceScan++;
-		if (!scanPending && ticksSinceScan < scanInterval.intValue()) return;
-
-		scanPending = false;
-		ticksSinceScan = 0;
-		scan();
-	}
-
-	private void scan() {
-		clearResults();
+		tick++;
 
 		Minecraft mc = Minecraft.getInstance();
 		ClientLevel level = mc.level;
 		LocalPlayer player = mc.player;
-		if (level == null || player == null) return;
 
-		// Coordinates past the render distance are skipped outright: their chunks aren't drawn,
-		// so there is nothing to highlight and nothing worth reading out of the world.
+		if (level != lastLevel) {
+			lastLevel = level;
+			remembered.clear();
+			woken.clear();
+			tracked.clear();
+			clearSolver();
+			setArmed(false, null);
+		}
+		if (level == null || player == null) {
+			clearSolver();
+			setArmed(false, null);
+			return;
+		}
+
+		if (waypoints.value() && ++ticksSinceScan >= scanInterval.intValue()) {
+			ticksSinceScan = 0;
+			scanWaypoints(level, player);
+		}
+		if (solver.value()) {
+			updateSolver(level, player);
+		} else {
+			clearSolver();
+		}
+		tickDebug(level, player);
+	}
+
+	// ---- waypoints ----------------------------------------------------------------------
+
+	/**
+	 * Only coordinates inside the render distance are re-read; everything else keeps whatever it
+	 * last showed, so a marker spotted at the edge of view stays put once the chunk unloads.
+	 */
+	private void scanWaypoints(ClientLevel level, LocalPlayer player) {
+		Minecraft mc = Minecraft.getInstance();
 		int renderDistance = mc.options.getEffectiveRenderDistance();
 		int playerChunkX = SectionPos.blockToSectionCoord(player.getBlockX());
 		int playerChunkZ = SectionPos.blockToSectionCoord(player.getBlockZ());
@@ -145,79 +282,550 @@ public final class TikiHelperModule extends Module {
 			int skulls = 0;
 			for (int dy = 1; dy <= SCAN_HEIGHT; dy++) {
 				BlockPos above = coord.above(dy);
-				// isLoaded also rejects positions outside build height, which getBlockState would not like.
 				if (level.isLoaded(above) && level.getBlockState(above).getBlock() instanceof AbstractSkullBlock) {
 					skulls++;
 				}
 			}
-
-			(skulls >= REQUIRED_SKULLS ? valid : invalid).add(coord);
+			// Reading it up close is what clears a woken flag: once the heads are gone the next
+			// tiki to stand here is a fresh puzzle.
+			if (skulls == 0) {
+				woken.remove(coord);
+			}
+			remembered.put(coord.immutable(), skulls >= REQUIRED_SKULLS && !woken.contains(coord));
 		}
 	}
 
+	// ---- solver -------------------------------------------------------------------------
+
+	private void updateSolver(ClientLevel level, LocalPlayer player) {
+		BlockPos base = nearestSlotBase(level, player, range.intValue());
+		if (base == null) {
+			clearSolver();
+			return;
+		}
+		slotBase = base;
+
+		int[] read = new int[SCAN_HEIGHT];
+		int hidden = -1;
+		int hiddenCount = 0;
+		for (int i = 0; i < SCAN_HEIGHT; i++) {
+			read[i] = TikiStacks.readRotation(level, base.above(i));
+			if (read[i] < 0) {
+				hidden = i;
+				hiddenCount++;
+			}
+		}
+		rotations = read;
+		hiddenIndex = hiddenCount == 1 ? hidden : -1;
+		plan = switch (hiddenCount) {
+			case 0 -> TikiSolver.solve(read);
+			case 1 -> TikiSolver.solveWithHidden(read, hidden);
+			default -> null;
+		};
+	}
+
+	/** The three blocks above the nearest stored coordinate that still holds a tiki. */
+	private BlockPos nearestSlotBase(ClientLevel level, LocalPlayer player, int range) {
+		double rangeSq = (double) range * range;
+		Vec3 position = player.position();
+		BlockPos best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (BlockPos coord : TikiCoords.all()) {
+			double distance = position.distanceToSqr(coord.getCenter());
+			if (distance > rangeSq || distance >= bestDistance) continue;
+			BlockPos base = coord.above();
+			if (TikiStacks.readableSlots(level, base) < REQUIRED_SKULLS) continue;
+			bestDistance = distance;
+			best = base;
+		}
+		return best;
+	}
+
+	private void clearSolver() {
+		slotBase = null;
+		rotations = null;
+		hiddenIndex = -1;
+		plan = null;
+	}
+
+	// ---- debug --------------------------------------------------------------------------
+
+	private void tickDebug(ClientLevel level, LocalPlayer player) {
+		if (!debugLogging.value()) {
+			if (armed) setArmed(false, null);
+			return;
+		}
+		BlockPos nearest = nearestCoord(player, range.intValue());
+		if ((nearest != null) != armed) {
+			setArmed(nearest != null, nearest);
+		}
+		if (!armed) return;
+
+		if (pending != null && tick - pending.tick >= VERIFY_DELAY) {
+			runVerification(level);
+		}
+		if (++ticksSinceDebugScan >= DEBUG_RESCAN_INTERVAL) {
+			ticksSinceDebugScan = 0;
+			rescanSkulls(level, player);
+		}
+	}
+
+	private BlockPos nearestCoord(LocalPlayer player, int range) {
+		double rangeSq = (double) range * range;
+		Vec3 position = player.position();
+		BlockPos best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (BlockPos coord : TikiCoords.all()) {
+			double distance = position.distanceToSqr(coord.getCenter());
+			if (distance <= rangeSq && distance < bestDistance) {
+				bestDistance = distance;
+				best = coord;
+			}
+		}
+		return best;
+	}
+
+	private void setArmed(boolean value, BlockPos near) {
+		if (armed == value) return;
+		armed = value;
+		pending = null;
+		if (!armed) {
+			log("DISARMED");
+			tracked.clear();
+			return;
+		}
+		if (TikiDebugLog.path() == null) {
+			TikiDebugLog.open();
+			if (TikiDebugLog.path() != null) {
+				chat("Logging to " + TikiDebugLog.path().getFileName());
+			}
+		}
+		log("ARMED near=" + format(near));
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.level != null && mc.player != null) {
+			rescanSkulls(mc.level, mc.player);
+		}
+	}
+
+	private void rescanSkulls(ClientLevel level, LocalPlayer player) {
+		int radius = trackRadius.intValue();
+		BlockPos center = player.blockPosition();
+		Map<BlockPos, Skull> current = new HashMap<>();
+
+		for (int dx = -radius; dx <= radius; dx++) {
+			for (int dy = -radius; dy <= radius; dy++) {
+				for (int dz = -radius; dz <= radius; dz++) {
+					BlockPos pos = center.offset(dx, dy, dz);
+					if (!level.isLoaded(pos)) continue;
+					Skull skull = snapshot(level, pos);
+					if (skull != null) current.put(pos.immutable(), skull);
+				}
+			}
+		}
+
+		for (Map.Entry<BlockPos, Skull> entry : current.entrySet()) {
+			Skull previous = tracked.get(entry.getKey());
+			if (previous == null) {
+				log("ADD    " + format(entry.getKey()) + " " + entry.getValue() + " " + stackOf(level, entry.getKey()));
+			} else if (!previous.equals(entry.getValue())) {
+				log("CHANGE " + format(entry.getKey()) + " " + previous.orientation() + " -> " + entry.getValue().orientation()
+					+ " " + stackOf(level, entry.getKey()));
+			}
+		}
+		for (Map.Entry<BlockPos, Skull> entry : tracked.entrySet()) {
+			if (!current.containsKey(entry.getKey())) {
+				log("REMOVE " + format(entry.getKey()) + " last=" + entry.getValue());
+			}
+		}
+
+		tracked.clear();
+		tracked.putAll(current);
+	}
+
+	// ---- events -------------------------------------------------------------------------
+
+	public void onBlockChange(BlockPos pos, BlockState state) {
+		if (!isEnabled() || !debugLogging.value() || !armed) return;
+		Minecraft mc = Minecraft.getInstance();
+		ClientLevel level = mc.level;
+		LocalPlayer player = mc.player;
+		if (level == null || player == null) return;
+		if (!player.blockPosition().closerThan(pos, trackRadius.intValue())) return;
+
+		BlockPos key = pos.immutable();
+		Skull previous = tracked.get(key);
+		Skull now = state.getBlock() instanceof AbstractSkullBlock ? snapshot(level, key) : null;
+
+		if (now == null) {
+			if (previous != null) {
+				tracked.remove(key);
+				log("REMOVE " + format(key) + " last=" + previous + " (became " + state.getBlock().getName().getString() + ")");
+			}
+			return;
+		}
+		if (previous == null) {
+			tracked.put(key, now);
+			log("ADD    " + format(key) + " " + now + " " + stackOf(level, key));
+		} else if (!previous.equals(now)) {
+			tracked.put(key, now);
+			log("CHANGE " + format(key) + " " + previous.orientation() + " -> " + now.orientation() + " " + stackOf(level, key));
+		}
+	}
+
+	public void onClick(boolean rightClick) {
+		if (!isEnabled()) return;
+		Minecraft mc = Minecraft.getInstance();
+		ClientLevel level = mc.level;
+		LocalPlayer player = mc.player;
+		if (level == null || player == null) return;
+		if (!debugLogging.value() || !armed) return;
+
+		String kind = rightClick ? "RCLICK" : "LCLICK";
+		ItemStack held = player.getMainHandItem();
+		String heldName = " held=" + (held.isEmpty() ? "empty" : held.getHoverName().getString());
+		HitResult hit = mc.hitResult;
+
+		if (hit == null || hit.getType() == HitResult.Type.MISS) {
+			log(kind + " target=nothing" + heldName);
+			return;
+		}
+		if (hit instanceof EntityHitResult entityHit) {
+			Entity entity = entityHit.getEntity();
+			log(kind + " target=entity " + entity.getClass().getSimpleName() + " \"" + entity.getName().getString() + "\""
+				+ " at=" + format(entity.blockPosition()) + heldName);
+			return;
+		}
+		if (!(hit instanceof BlockHitResult blockHit)) return;
+
+		BlockPos pos = blockHit.getBlockPos();
+		Skull skull = snapshot(level, pos);
+		if (skull == null) {
+			log(kind + " target=block " + format(pos) + " " + level.getBlockState(pos).getBlock().getName().getString() + heldName);
+			return;
+		}
+		log(kind + " " + format(pos) + " " + skull + " face=" + blockHit.getDirection().getName() + heldName
+			+ " " + stackOf(level, pos));
+
+		if (verifySolver.value()) {
+			armVerification(level, pos, rightClick ? -1 : 1);
+		}
+	}
+
+	public void onSound(Holder<SoundEvent> sound, double x, double y, double z, float volume, float pitch) {
+		if (!isEnabled() || !debugLogging.value() || !armed || !trackSounds.value()) return;
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (player == null) return;
+
+		double distance = player.position().distanceTo(new Vec3(x, y, z));
+		if (distance > trackRadius.intValue() + SOUND_SLACK) return;
+
+		String name = sound.unwrapKey()
+			.map(key -> key.identifier().toString())
+			.orElseGet(() -> sound.value().location().toString());
+		log(String.format("SOUND  %s pitch=%.3f vol=%.2f at=%.1f,%.1f,%.1f d=%.1f", name, pitch, volume, x, y, z, distance));
+	}
+
+	/**
+	 * Fed the raw server text before any chat-compacting mod can merge or cancel it, and matched
+	 * with contains() so a counter suffix or rank prefix still hits.
+	 */
+	public void onChatMessage(String message) {
+		if (!isEnabled()) return;
+		if (message.contains(AWAKENED_MESSAGE)) {
+			onTikiAwakened();
+		}
+		if (debugLogging.value() && armed && trackChat.value()) {
+			log("CHAT   " + message);
+		}
+	}
+
+	/** The tiki just woken stops being a target until a fresh one stands in its place. */
+	private void onTikiAwakened() {
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (player == null) return;
+		BlockPos coord = nearestCoord(player, range.intValue());
+		if (coord == null) return;
+
+		woken.add(coord.immutable());
+		remembered.put(coord.immutable(), false);
+		clearSolver();
+		log("AWAKENED " + format(coord));
+	}
+
+	// ---- rendering ----------------------------------------------------------------------
+
+	/** Geometry: waypoint boxes, the tracer, and vector labels if the font path is switched off. */
 	public void render(LevelRenderContext context) {
 		if (!isEnabled()) return;
-		if (valid.isEmpty() && invalid.isEmpty()) return;
 
 		Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
 		Vec3 camPos = camera.position();
 		PoseStack poseStack = context.poseStack();
 		MultiBufferSource.BufferSource bufferSource = context.bufferSource();
+		boolean drew = false;
 
-		renderBoxes(poseStack, bufferSource, camPos, valid, validColor.argb());
-		renderBoxes(poseStack, bufferSource, camPos, invalid, invalidColor.argb());
-
-		if (tracer.value()) {
-			renderTracer(poseStack, bufferSource, camera, camPos);
+		if (waypoints.value() && !remembered.isEmpty()) {
+			for (Map.Entry<BlockPos, Boolean> entry : remembered.entrySet()) {
+				BlockPos pos = entry.getKey();
+				int color = entry.getValue() ? validColor.argb() : invalidColor.argb();
+				poseStack.pushPose();
+				poseStack.translate(pos.getX() - camPos.x, pos.getY() - camPos.y, pos.getZ() - camPos.z);
+				EspRenderer.renderBox(poseStack, bufferSource, 0, 0, 0, 1, 1, 1, color, color, BOX_LINE_WIDTH);
+				poseStack.popPose();
+				drew = true;
+			}
+			if (tracer.value() && renderTracer(poseStack, bufferSource, camera, camPos)) {
+				drew = true;
+			}
 		}
 
-		bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_QUADS);
-		bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_LINES);
-	}
+		if (solver.value() && vectorLabels.value() && eachSolverLabel((index, text, color, height) ->
+			EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
+				labelX(index, camPos), labelY(index, height, camPos), labelZ(index, camPos),
+				text, color, height, LABEL_LINE_WIDTH))) {
+			drew = true;
+		}
 
-	private void renderBoxes(PoseStack poseStack, MultiBufferSource bufferSource, Vec3 camPos, List<BlockPos> positions, int color) {
-		for (BlockPos pos : positions) {
-			poseStack.pushPose();
-			poseStack.translate(pos.getX() - camPos.x, pos.getY() - camPos.y, pos.getZ() - camPos.z);
-			EspRenderer.renderBox(poseStack, bufferSource, 0, 0, 0, 1, 1, 1, color, color, BOX_LINE_WIDTH);
-			poseStack.popPose();
+		if (drew) {
+			bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_QUADS);
+			bufferSource.endBatch(GeilerAddonsRenderTypes.ESP_LINES);
 		}
 	}
 
-	private void renderTracer(PoseStack poseStack, MultiBufferSource bufferSource, Camera camera, Vec3 camPos) {
+	/** Text: queued during the collect-submits stage, which is the only place it actually draws. */
+	public void collectSubmits(LevelRenderContext context) {
+		if (!isEnabled()) return;
+
+		Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
+		Vec3 camPos = camera.position();
+		PoseStack poseStack = context.poseStack();
+
+		if (solver.value() && !vectorLabels.value()) {
+			eachSolverLabel((index, text, color, height) ->
+				EspRenderer.submitLabel(context.submitNodeCollector(), poseStack, camera.rotation(),
+					labelX(index, camPos), labelY(index, height, camPos), labelZ(index, camPos), text, color, height));
+		}
+
+		if (debugLogging.value() && armed) {
+			int color = lockedColor.argb();
+			for (Map.Entry<BlockPos, Skull> entry : tracked.entrySet()) {
+				BlockPos pos = entry.getKey();
+				EspRenderer.submitLabel(context.submitNodeCollector(), poseStack, camera.rotation(),
+					pos.getX() + 0.5 - camPos.x, pos.getY() + 0.6 - camPos.y, pos.getZ() + 0.5 - camPos.z,
+					entry.getValue().label(), color, DEBUG_LABEL_HEIGHT);
+			}
+		}
+	}
+
+	/** @return true if anything was emitted */
+	private boolean eachSolverLabel(LabelSink sink) {
+		if (slotBase == null || rotations == null) return false;
+
+		if (plan == null) {
+			if (!showUnknown.value()) return false;
+			sink.accept(1, UNKNOWN_LABEL, rightColor.argb(), labelHeight.value());
+			return true;
+		}
+
+		boolean any = false;
+		for (int i = 0; i < SCAN_HEIGHT; i++) {
+			String text;
+			int color;
+			float height = labelHeight.value();
+			if (plan.index() == i) {
+				String count = plan.clicks() == TikiSolver.UNKNOWN_CLICKS ? UNKNOWN_LABEL : String.valueOf(plan.clicks());
+				text = (plan.direction() > 0 ? "+" : "-") + count;
+				color = plan.direction() > 0 ? leftColor.argb() : rightColor.argb();
+			} else if (showLocked.value() && hiddenIndex < 0 && TikiSolver.isLocked(rotations, i)) {
+				text = LOCKED_LABEL;
+				color = lockedColor.argb();
+				height *= LOCKED_LABEL_SCALE;
+			} else {
+				continue;
+			}
+			sink.accept(i, text, color, height);
+			any = true;
+		}
+		return any;
+	}
+
+	private interface LabelSink {
+		void accept(int index, String text, int color, float height);
+	}
+
+	private double labelOffsetX(Vec3 camPos) {
+		double dx = camPos.x - (slotBase.getX() + 0.5);
+		double dz = camPos.z - (slotBase.getZ() + 0.5);
+		double horizontal = Math.sqrt(dx * dx + dz * dz);
+		return horizontal > 1.0e-3 ? -dz / horizontal * LABEL_OFFSET : 0;
+	}
+
+	private double labelOffsetZ(Vec3 camPos) {
+		double dx = camPos.x - (slotBase.getX() + 0.5);
+		double dz = camPos.z - (slotBase.getZ() + 0.5);
+		double horizontal = Math.sqrt(dx * dx + dz * dz);
+		return horizontal > 1.0e-3 ? dx / horizontal * LABEL_OFFSET : 0;
+	}
+
+	private double labelX(int index, Vec3 camPos) {
+		return slotBase.getX() + 0.5 + labelOffsetX(camPos) - camPos.x;
+	}
+
+	private double labelY(int index, float height, Vec3 camPos) {
+		return slotBase.getY() + index + LABEL_ANCHOR + height / 2.0f - camPos.y;
+	}
+
+	private double labelZ(int index, Vec3 camPos) {
+		return slotBase.getZ() + 0.5 + labelOffsetZ(camPos) - camPos.z;
+	}
+
+	private boolean renderTracer(PoseStack poseStack, MultiBufferSource bufferSource, Camera camera, Vec3 camPos) {
 		BlockPos target = closestValid(camPos);
-		if (target == null) return;
+		if (target == null) return false;
 
-		// Everything here is camera-relative, so the camera itself sits at the origin and the
-		// tracer starts a short way down the look vector - visually, at the crosshair.
 		Vector3fc forward = camera.forwardVector();
 		Vec3 center = target.getCenter();
 		EspRenderer.renderLine(poseStack, bufferSource,
 			forward.x() * TRACER_START_DISTANCE, forward.y() * TRACER_START_DISTANCE, forward.z() * TRACER_START_DISTANCE,
 			center.x - camPos.x, center.y - camPos.y, center.z - camPos.z,
 			tracerColor.argb(), tracerWidth.value());
+		return true;
 	}
 
 	private BlockPos closestValid(Vec3 from) {
 		BlockPos closest = null;
 		double closestDistance = Double.MAX_VALUE;
-		for (BlockPos pos : valid) {
-			double distance = from.distanceToSqr(pos.getCenter());
+		for (Map.Entry<BlockPos, Boolean> entry : remembered.entrySet()) {
+			if (!entry.getValue()) continue;
+			double distance = from.distanceToSqr(entry.getKey().getCenter());
 			if (distance < closestDistance) {
 				closestDistance = distance;
-				closest = pos;
+				closest = entry.getKey();
 			}
 		}
 		return closest;
 	}
 
-	private void clearResults() {
-		valid.clear();
-		invalid.clear();
+	// ---- verification -------------------------------------------------------------------
+
+	private void armVerification(ClientLevel level, BlockPos clicked, int direction) {
+		BlockPos base = clicked;
+		while (TikiStacks.isSkull(level, base.below())) {
+			base = base.below();
+		}
+		int index = clicked.getY() - base.getY();
+		if (index < 0 || index >= SCAN_HEIGHT) return;
+		int[] before = TikiStacks.readRotations(level, base);
+		if (before == null) return;
+		pending = new PendingVerification(base.immutable(), index, direction, before, tick);
+	}
+
+	private void runVerification(ClientLevel level) {
+		PendingVerification check = pending;
+		pending = null;
+
+		int[] actual = TikiStacks.readRotations(level, check.base);
+		if (actual == null) {
+			log("VERIFY skipped - stack gone (completed or out of range)");
+			return;
+		}
+		if (Arrays.equals(actual, check.before)) {
+			log("VERIFY no-op - click did not register (rotation cooldown)");
+			return;
+		}
+		int[] expected = TikiSolver.applyMove(check.before, check.index, check.direction);
+		if (Arrays.equals(expected, actual)) {
+			log("VERIFY ok " + Arrays.toString(check.before) + " -> " + Arrays.toString(actual));
+		} else {
+			log("VERIFY MISMATCH click=idx" + check.index + " dir=" + (check.direction > 0 ? "+" : "-")
+				+ " before=" + Arrays.toString(check.before)
+				+ " expected=" + Arrays.toString(expected)
+				+ " actual=" + Arrays.toString(actual));
+		}
+	}
+
+	// ---- helpers ------------------------------------------------------------------------
+
+	private static Skull snapshot(ClientLevel level, BlockPos pos) {
+		BlockState state = level.getBlockState(pos);
+		if (!(state.getBlock() instanceof AbstractSkullBlock)) return null;
+		int rotation = state.hasProperty(SkullBlock.ROTATION) ? state.getValue(SkullBlock.ROTATION) : -1;
+		String facing = state.hasProperty(WallSkullBlock.FACING) ? state.getValue(WallSkullBlock.FACING).getName() : "";
+		return new Skull(state.getBlock().getName().getString(), rotation, facing, ownerOf(level, pos));
+	}
+
+	private static String ownerOf(ClientLevel level, BlockPos pos) {
+		BlockEntity blockEntity = level.getBlockEntity(pos);
+		if (!(blockEntity instanceof SkullBlockEntity skull)) return "";
+		var profile = skull.getOwnerProfile();
+		if (profile == null) return "";
+
+		String name = profile.name().orElse("?");
+		// Hypixel's decorative heads share a blank-ish name, so the texture blob is what actually
+		// tells two tiki variants apart - hashed to keep the log line short.
+		String skin = "";
+		var textures = profile.partialProfile().properties().get("textures");
+		if (!textures.isEmpty()) {
+			skin = Integer.toHexString(textures.iterator().next().value().hashCode());
+		}
+		return name + (skin.isEmpty() ? "" : "/" + skin);
+	}
+
+	private static String stackOf(ClientLevel level, BlockPos pos) {
+		BlockPos base = pos;
+		while (TikiStacks.isSkull(level, base.below())) {
+			base = base.below();
+		}
+		List<String> labels = new ArrayList<>();
+		BlockPos cursor = base;
+		while (TikiStacks.isSkull(level, cursor)) {
+			Skull skull = snapshot(level, cursor);
+			labels.add(skull == null ? "?" : skull.label());
+			cursor = cursor.above();
+		}
+		return "stack@" + format(base) + "=" + labels;
+	}
+
+	private void log(String line) {
+		if (!debugLogging.value()) return;
+		TikiDebugLog.write(tick, line);
+		if (echoToChat.value()) {
+			chat(line);
+		}
+	}
+
+	private static void chat(String message) {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.gui == null) return;
+		mc.gui.getChat().addClientSystemMessage(Component.literal("[Tiki] ").withStyle(ChatFormatting.AQUA)
+			.append(Component.literal(message).withStyle(ChatFormatting.GRAY)));
+	}
+
+	private static String format(BlockPos pos) {
+		return pos == null ? "none" : pos.getX() + "," + pos.getY() + "," + pos.getZ();
 	}
 
 	private static void openCoordManager() {
 		Minecraft mc = Minecraft.getInstance();
 		mc.setScreen(new TikiCoordManagerScreen(mc.screen));
+	}
+
+	private record PendingVerification(BlockPos base, int index, int direction, int[] before, long tick) {
+	}
+
+	/** @param rotation 0-15 for a floor skull, -1 for a wall skull, which uses {@code facing} */
+	private record Skull(String blockId, int rotation, String facing, String owner) {
+		String orientation() {
+			return rotation >= 0 ? "rot=" + rotation : "facing=" + facing;
+		}
+
+		String label() {
+			return rotation >= 0 ? String.valueOf(rotation) : facing;
+		}
+
+		@Override
+		public String toString() {
+			return orientation() + " block=" + blockId + (owner.isEmpty() ? "" : " owner=" + owner);
+		}
 	}
 }

@@ -2,7 +2,11 @@ package geiler.addons.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.network.chat.Component;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
@@ -10,6 +14,14 @@ import java.util.Map;
 
 /** Draws simple translucent, always-visible-through-walls shapes: boxes, UV spheres, lines and labels. */
 public final class EspRenderer {
+	/** Packed light for "ignore world lighting", so labels stay readable in the dark. */
+	private static final int FULL_BRIGHT = 0xF000F0;
+	/** Sentinel the vanilla text submitter uses for "draw no backdrop". */
+	private static final int NO_BACKGROUND = Integer.MIN_VALUE;
+	private static final int NO_OUTLINE = 0;
+	/** Height of one line of the game font, in font units. */
+	private static final float FONT_LINE_HEIGHT = 9.0f;
+
 	/** Glyph cell, in the label's own units: y runs downward, matching text layout. */
 	private static final float GLYPH_WIDTH = 1.0f;
 	private static final float GLYPH_HEIGHT = 2.0f;
@@ -141,6 +153,30 @@ public final class EspRenderer {
 			}
 			cursorX += advance;
 		}
+		poseStack.popPose();
+	}
+
+	/**
+	 * Billboarded label in the real game font. Must be called during the collect-submits stage:
+	 * since 26.1 in-world text is queued through {@link SubmitNodeCollector} and drawn later, and
+	 * {@code Font.drawInBatch} against the level's buffer source has no draw pass behind it - the
+	 * glyphs are buffered and silently dropped.
+	 *
+	 * @param height how tall the text should be, in blocks
+	 */
+	public static void submitLabel(SubmitNodeCollector collector, PoseStack poseStack, Quaternionf cameraRotation, double x, double y, double z, String text, int color, float height) {
+		if (text.isEmpty()) return;
+		Font font = Minecraft.getInstance().font;
+		float scale = height / FONT_LINE_HEIGHT;
+
+		poseStack.pushPose();
+		poseStack.translate(x, y, z);
+		poseStack.mulPose(cameraRotation);
+		// Negative on x/y because text is laid out top-left down, opposite of world axes.
+		poseStack.scale(-scale, -scale, scale);
+		collector.order(1).submitText(poseStack, -font.width(text) / 2.0f, 0.0f,
+			Component.literal(text).getVisualOrderText(), false, Font.DisplayMode.SEE_THROUGH,
+			FULL_BRIGHT, color, NO_BACKGROUND, NO_OUTLINE);
 		poseStack.popPose();
 	}
 
