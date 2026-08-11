@@ -38,9 +38,10 @@ public final class I4HelperModule extends Module {
 		new BlockPos(68, 126, 50), new BlockPos(66, 126, 50), new BlockPos(64, 126, 50)
 	};
 
-	/** Feet-height band counting as "standing on the device", generous enough to survive a jump. */
-	private static final int DEVICE_MIN_Y = 126;
-	private static final int DEVICE_MAX_Y = 129;
+	/** Feet height of the pressure plate. The device itself disables the instant you leave it, so
+	 * this is deliberately exact rather than a tolerant band - stepping off (a jump included) is
+	 * supposed to reset the overlay, because the real device just went inactive too. */
+	private static final int DEVICE_Y = 127;
 
 	/** Not on the device, or not yet known - no highlight. */
 	private static final int NONE = 0;
@@ -133,9 +134,7 @@ public final class I4HelperModule extends Module {
 			double x = player.getX();
 			double z = player.getZ();
 			int y = Mth.floor(player.getY());
-			// A height band rather than an exact y: a jump lifts the player a full block, and
-			// treating that as "left the device" would wipe the board in the middle of a puzzle.
-			nowOnDevice = x > 62 && x < 65 && y >= DEVICE_MIN_Y && y <= DEVICE_MAX_Y && z > 33 && z < 37;
+			nowOnDevice = x > 62 && x < 65 && y == DEVICE_Y && z > 33 && z < 37;
 		}
 
 		if (nowOnDevice != onDevice) {

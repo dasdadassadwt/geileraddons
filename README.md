@@ -29,7 +29,7 @@ Takes the guesswork out of the 4th device puzzle.
 - **Marks where to aim** — a bright dot on the exact spot for the current shot, so you're not eyeballing block edges mid-fight.
 - **Shows the next shots too** — every still-open block gets a dimmer marker, so you can pre-aim instead of reacting.
 - **Plays a jingle** when your team finishes a device, and hides the notification spam that buries it.
-- **Survives a jump.** Hopping on the platform, or arriving part-way through a device, doesn't blank the overlay.
+- **Recovers instantly when you land back on the plate.** Arriving part-way through a device, or stepping back on after the device itself went inactive, re-reads the live target instead of guessing a blank board.
 
 Colours and marker sizes are all adjustable.
 
