@@ -4,7 +4,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import geiler.addons.client.config.TikiCoords;
 import geiler.addons.client.config.TikiDebugLog;
 import geiler.addons.client.gui.TikiCoordManagerScreen;
-import geiler.addons.client.location.SkyBlockLocation;
+import geiler.addons.client.location.TorrhusPresence;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
@@ -93,9 +93,6 @@ public final class TikiHelperModule extends Module {
 
 	/** Matched with contains(), so a chat-compacting mod appending a counter still hits. */
 	private static final String AWAKENED_MESSAGE = "Looks like you woke the Tiki up!";
-
-	/** Region stem the module runs in - shared by Torrhus Canyon and Torrhus Heights alike. */
-	private static final String TIKI_AREA = "Torrhus";
 
 	public static final TikiHelperModule INSTANCE = new TikiHelperModule();
 
@@ -253,25 +250,20 @@ public final class TikiHelperModule extends Module {
 	}
 
 	/**
-	 * Tikis only exist in the Torrhus region, so everywhere else the module stays switched on but
-	 * does nothing. Gating here rather than on the enabled flag means the user's switch keeps
-	 * meaning what they set it to, and the whole per-tick solver scan stops costing anything for
-	 * the rest of SkyBlock.
-	 *
-	 * <p>Matched on the region stem rather than one exact area name: the sub-areas share it, so
-	 * this covers the canyon and the heights alike.
+	 * Tikis only exist in Torrhus Canyon, so everywhere else the module stays switched on but does
+	 * nothing. Gating here rather than on the enabled flag means the user's switch keeps meaning
+	 * what they set it to, and the whole per-tick solver scan stops costing anything for the rest
+	 * of SkyBlock.
 	 */
 	@Override
 	public boolean isActive() {
-		return isEnabled() && SkyBlockLocation.isIn(TIKI_AREA);
+		return isEnabled() && TorrhusPresence.isPresent();
 	}
 
 	@Override
 	public String inactiveReason() {
 		if (!isEnabled() || isActive()) return null;
-		String area = SkyBlockLocation.area();
-		// Naming the detected area makes a mismatch self-diagnosing instead of looking broken.
-		return area == null ? "Waiting for SkyBlock" : "Inactive in " + area;
+		return TorrhusPresence.reason();
 	}
 
 	private void resetState() {

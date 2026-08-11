@@ -2,7 +2,7 @@ package geiler.addons.client;
 
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
-import geiler.addons.client.location.SkyBlockLocation;
+import geiler.addons.client.location.TorrhusPresence;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
@@ -23,8 +23,8 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		UpdateChecker.start();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			// First: the modules gate themselves on the area this resolves.
-			SkyBlockLocation.tick();
+			// First: the modules gate themselves on the presence this resolves.
+			TorrhusPresence.tick();
 			UpdateChecker.tick();
 			I4HelperModule.INSTANCE.tick();
 			TikiHelperModule.INSTANCE.tick();

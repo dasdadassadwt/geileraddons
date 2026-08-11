@@ -12,6 +12,7 @@ import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.NumberSetting;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.Block;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -46,6 +47,8 @@ public final class ModConfig {
 		 * empty list is a list the user emptied out and must stay empty.
 		 */
 		List<int[]> tikiCoords;
+		/** "x,y,z" -> block id, e.g. "minecraft:stone". Absent or missing entries just aren't learned yet. */
+		Map<String, String> tikiFingerprints;
 		/** Click GUI view state - see {@link ClickGuiState}. */
 		String uiCategory;
 		String uiOpenModule;
@@ -97,6 +100,7 @@ public final class ModConfig {
 			checkForUpdates = data.checkForUpdates;
 		}
 		loadTikiCoords(data);
+		loadTikiFingerprints(data);
 		loadUiState(data);
 	}
 
@@ -117,6 +121,10 @@ public final class ModConfig {
 		data.tikiCoords = new ArrayList<>();
 		for (BlockPos pos : TikiCoords.all()) {
 			data.tikiCoords.add(new int[]{pos.getX(), pos.getY(), pos.getZ()});
+		}
+		data.tikiFingerprints = new HashMap<>();
+		for (Map.Entry<BlockPos, Block> entry : TikiFingerprints.all().entrySet()) {
+			data.tikiFingerprints.put(coordKey(entry.getKey()), TikiFingerprints.idOf(entry.getValue()));
 		}
 		data.uiCategory = ClickGuiState.category().name();
 		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().name();
@@ -148,6 +156,33 @@ public final class ModConfig {
 			}
 		}
 		TikiCoords.replaceAll(coords);
+	}
+
+	private static void loadTikiFingerprints(Data data) {
+		if (data.tikiFingerprints == null) return;
+		Map<BlockPos, Block> fingerprints = new HashMap<>();
+		for (Map.Entry<String, String> entry : data.tikiFingerprints.entrySet()) {
+			BlockPos pos = parseCoordKey(entry.getKey());
+			Block block = TikiFingerprints.byId(entry.getValue());
+			if (pos != null && block != null) {
+				fingerprints.put(pos, block);
+			}
+		}
+		TikiFingerprints.replaceAll(fingerprints);
+	}
+
+	private static BlockPos parseCoordKey(String key) {
+		String[] parts = key.split(",");
+		if (parts.length != 3) return null;
+		try {
+			return new BlockPos(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2]));
+		} catch (NumberFormatException e) {
+			return null;
+		}
+	}
+
+	private static String coordKey(BlockPos pos) {
+		return pos.getX() + "," + pos.getY() + "," + pos.getZ();
 	}
 
 	/** Resolves the saved names back to live objects; anything that no longer exists is dropped. */
