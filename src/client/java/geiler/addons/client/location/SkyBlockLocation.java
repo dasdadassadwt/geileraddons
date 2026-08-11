@@ -3,34 +3,45 @@ package geiler.addons.client.location;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
+import net.minecraft.network.chat.TextColor;
 import net.minecraft.world.scores.DisplaySlot;
 import net.minecraft.world.scores.Objective;
 import net.minecraft.world.scores.PlayerScoreEntry;
 import net.minecraft.world.scores.PlayerTeam;
 import net.minecraft.world.scores.Scoreboard;
 
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Which SkyBlock area the player is standing in, read out of the scoreboard sidebar.
  *
- * <p>Hypixel marks the area line with a glyph rather than a fixed position, and the sidebar is
- * reordered constantly (piece count, timers and event lines come and go), so the line is found by
- * its marker wherever it happens to sit rather than by index.
+ * <p>The detection mirrors what SkyHanni does (see {@code HypixelData.skyblockAreaPattern} in
+ * hannibal002/SkyHanni): the area line is found by shape, not by which glyph it uses. Every area
+ * has its own icon - a marker allowlist can only ever cover the icons someone happened to test
+ * with, and missed exactly this way once already. The shape a real area line has is a run of one
+ * or more spaces, a legacy colour code, exactly one character (the icon, whatever it is), a
+ * literal space, another legacy colour code, then the area name - and nothing else on the
+ * scoreboard is shaped like that.
+ *
+ * <p>Reading that shape needs the line's legacy formatting codes, which {@code Component#getString}
+ * strips before this ever sees it. {@link #toLegacyText} rebuilds them from the component's style
+ * runs instead of reading them off the wire, since Fabric's chat components never carry raw §
+ * codes to begin with.
  *
  * <p>Kept deliberately cheap: the sidebar is only re-read once a second, and everything in between
  * answers from the cached string. Modules ask via {@link #isIn} rather than parsing anything
  * themselves, so any future module can gate on an area for free.
  */
 public final class SkyBlockLocation {
-	/**
-	 * The glyph Hypixel puts in front of the area name. U+23E3 is the normal SkyBlock marker;
-	 * U+0444 is the one the Rift uses instead.
-	 */
-	private static final char[] AREA_MARKERS = {'⏣', 'ф'};
-
 	/** One second. The area only changes on a warp or a walk across a border, so this is plenty. */
 	private static final int REFRESH_INTERVAL_TICKS = 20;
+
+	/** RGB value of each legacy colour, keyed back to the code that produces it. */
+	private static final Map<Integer, Character> LEGACY_COLORS_BY_RGB = buildLegacyColorTable();
 
 	private static String area;
 	/** Folded once per refresh: isIn() is called from render, so it must not allocate per frame. */
@@ -94,32 +105,89 @@ public final class SkyBlockLocation {
 			// The visible text lives in the team prefix/suffix wrapped around the score holder,
 			// not in the holder name itself, which is why this goes through the team formatting.
 			PlayerTeam team = scoreboard.getPlayersTeam(entry.owner());
-			String raw = PlayerTeam.formatNameForTeam(team, entry.ownerName()).getString();
-			if (!hasAreaMarker(raw)) continue;
-			String cleaned = clean(raw);
-			if (!cleaned.isEmpty()) return cleaned;
+			Component formatted = PlayerTeam.formatNameForTeam(team, entry.ownerName());
+			String area = parseAreaLine(toLegacyText(formatted));
+			if (area != null) return area;
 		}
 		return null;
 	}
 
-	private static boolean hasAreaMarker(String raw) {
-		for (char marker : AREA_MARKERS) {
-			if (raw.indexOf(marker) >= 0) return true;
-		}
-		return false;
+	/**
+	 * Matches the shape of a SkyHanni-style area line and returns the area name, or null if this
+	 * line isn't one. Written by hand rather than as a regex: the icon is one Unicode code point,
+	 * which can be two {@code char}s wide, and Java's {@code .} only ever matches one.
+	 */
+	private static String parseAreaLine(String legacy) {
+		int i = 0;
+		int len = legacy.length();
+		while (i < len && legacy.charAt(i) == ' ') i++;
+
+		if (!hasCodeAt(legacy, i)) return null;
+		char firstCode = legacy.charAt(i + 1);
+		// SkyHanni restricts the icon's own colour to a digit code specifically - every area line
+		// observed uses one, and requiring it is what keeps this from matching arbitrary scoreboard
+		// rows that also happen to have "symbol, space, text" shaped content.
+		if (firstCode < '0' || firstCode > '9') return null;
+		i += 2;
+
+		if (i >= len) return null;
+		int iconPoint = legacy.codePointAt(i);
+		i += Character.charCount(iconPoint);
+
+		if (i >= len || legacy.charAt(i) != ' ') return null;
+		i++;
+
+		if (!hasCodeAt(legacy, i)) return null;
+		i += 2;
+
+		String area = printable(legacy.substring(i));
+		return area.isEmpty() ? null : area;
+	}
+
+	private static boolean hasCodeAt(String text, int index) {
+		return index + 1 < text.length() && text.charAt(index) == ChatFormatting.PREFIX_CODE;
 	}
 
 	/**
-	 * Reduces a sidebar line to the text a player actually sees. Hypixel pads lines with invisible
-	 * characters to keep score holders unique, and the area marker itself is decoration - keeping
-	 * only printable ASCII drops all of it, the marker included, without a list of exceptions.
+	 * Rebuilds legacy-style formatting codes from a component's style runs, since Fabric's chat
+	 * components carry {@link TextColor} rather than raw § codes. Only colour is reproduced - the
+	 * shape this is matched against never depends on bold, italic or the like.
 	 */
-	private static String clean(String raw) {
-		String stripped = ChatFormatting.stripFormatting(raw);
-		if (stripped == null) return "";
-		StringBuilder out = new StringBuilder(stripped.length());
-		for (int i = 0; i < stripped.length(); i++) {
-			char c = stripped.charAt(i);
+	private static String toLegacyText(Component component) {
+		StringBuilder out = new StringBuilder();
+		component.visit((style, text) -> {
+			Character code = colorCode(style.getColor());
+			if (code != null) {
+				out.append(ChatFormatting.PREFIX_CODE).append(code.charValue());
+			}
+			out.append(text);
+			return java.util.Optional.empty();
+		}, Style.EMPTY);
+		return out.toString();
+	}
+
+	private static Character colorCode(TextColor color) {
+		return color == null ? null : LEGACY_COLORS_BY_RGB.get(color.getValue());
+	}
+
+	private static Map<Integer, Character> buildLegacyColorTable() {
+		Map<Integer, Character> table = new HashMap<>();
+		for (ChatFormatting formatting : ChatFormatting.values()) {
+			if (!formatting.isColor()) continue;
+			table.put(formatting.getColor(), formatting.getChar());
+		}
+		return table;
+	}
+
+	/**
+	 * Reduces the area name to the text a player actually sees. Hypixel pads scoreboard lines with
+	 * invisible characters to keep score holders unique; keeping only printable ASCII drops those
+	 * without needing to know what any of them are.
+	 */
+	private static String printable(String text) {
+		StringBuilder out = new StringBuilder(text.length());
+		for (int i = 0; i < text.length(); i++) {
+			char c = text.charAt(i);
 			if (c >= ' ' && c <= '~') out.append(c);
 		}
 		return out.toString().trim();

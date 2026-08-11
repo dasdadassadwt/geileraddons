@@ -18,6 +18,7 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -26,7 +27,11 @@ import java.util.Map;
 /** Persists module enabled-state, settings and the Tiki coordinate list across restarts. */
 public final class ModConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-	private static final Path PATH = FabricLoader.getInstance().getConfigDir().resolve("geileraddons.json");
+	/** Every GeilerAddons file lives under here - just this config today, but not forever. */
+	private static final Path DIR = FabricLoader.getInstance().getConfigDir().resolve("geileraddons");
+	private static final Path PATH = DIR.resolve("config.json");
+	/** Where this file lived before it got its own folder; migrated from on first load. */
+	private static final Path LEGACY_PATH = FabricLoader.getInstance().getConfigDir().resolve("geileraddons.json");
 
 	private ModConfig() {
 	}
@@ -176,19 +181,22 @@ public final class ModConfig {
 	}
 
 	private static Data readData() {
-		if (!Files.exists(PATH)) {
+		boolean legacy = !Files.exists(PATH) && Files.exists(LEGACY_PATH);
+		Path source = legacy ? LEGACY_PATH : PATH;
+		if (!Files.exists(source)) {
 			return new Data();
 		}
+
 		Data data;
-		try (Reader reader = Files.newBufferedReader(PATH)) {
+		try (Reader reader = Files.newBufferedReader(source)) {
 			data = GSON.fromJson(reader, Data.class);
 		} catch (IOException | JsonParseException e) {
 			// A corrupt or unreadable config falls back to defaults rather than blocking startup.
-			GeilerAddons.LOGGER.error("Failed to load GeilerAddons config from {}, using defaults", PATH, e);
+			GeilerAddons.LOGGER.error("Failed to load GeilerAddons config from {}, using defaults", source, e);
 			return new Data();
 		}
 		if (data == null) {
-			return new Data();
+			data = new Data();
 		}
 		// Gson leaves absent fields at their initializers but writes a literal null straight
 		// through, so normalize the maps before anything reads them.
@@ -196,7 +204,30 @@ public final class ModConfig {
 		if (data.colors == null) data.colors = new HashMap<>();
 		if (data.numbers == null) data.numbers = new HashMap<>();
 		if (data.toggles == null) data.toggles = new HashMap<>();
+
+		if (legacy) {
+			migrateLegacyFile();
+		}
 		return data;
+	}
+
+	/**
+	 * Moves the flat geileraddons.json into its own folder alongside whatever else this mod
+	 * starts keeping there later. A straight file copy rather than a re-serialize of {@code data}:
+	 * the parsed object is only a partial read at this point in load(), and the bytes on disk are
+	 * already exactly what should end up at the new path.
+	 */
+	private static void migrateLegacyFile() {
+		try {
+			Files.createDirectories(DIR);
+			Files.copy(LEGACY_PATH, PATH, StandardCopyOption.REPLACE_EXISTING);
+			Files.deleteIfExists(LEGACY_PATH);
+			GeilerAddons.LOGGER.info("Migrated GeilerAddons config from {} to {}", LEGACY_PATH, PATH);
+		} catch (IOException e) {
+			// Not fatal: the data was already parsed from the old file, and save() will simply
+			// write a fresh copy at the new path next time, leaving the old one as an orphan.
+			GeilerAddons.LOGGER.error("Failed to migrate GeilerAddons config from {} to {}", LEGACY_PATH, PATH, e);
+		}
 	}
 
 	private static String settingKey(Module module, String settingName) {
