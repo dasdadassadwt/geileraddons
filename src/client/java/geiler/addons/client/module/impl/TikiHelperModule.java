@@ -4,12 +4,14 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import geiler.addons.client.config.TikiCoords;
 import geiler.addons.client.config.TikiDebugLog;
 import geiler.addons.client.gui.TikiCoordManagerScreen;
+import geiler.addons.client.location.SkyBlockLocation;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.NumberSetting;
+import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.render.WorldToScreen;
@@ -90,6 +92,9 @@ public final class TikiHelperModule extends Module {
 	/** Matched with contains(), so a chat-compacting mod appending a counter still hits. */
 	private static final String AWAKENED_MESSAGE = "Looks like you woke the Tiki up!";
 
+	/** Region stem the module runs in - shared by Torrhus Canyon and Torrhus Heights alike. */
+	private static final String TIKI_AREA = "Torrhus";
+
 	public static final TikiHelperModule INSTANCE = new TikiHelperModule();
 
 	private final BooleanSetting waypoints;
@@ -130,6 +135,8 @@ public final class TikiHelperModule extends Module {
 	private TikiSolver.Plan plan;
 
 	private final Map<BlockPos, Skull> tracked = new HashMap<>();
+	/** Tracks the active edge so leaving the region clears state exactly once. */
+	private boolean wasActive;
 	private boolean armed;
 	private long tick;
 	private int ticksSinceScan;
@@ -147,7 +154,7 @@ public final class TikiHelperModule extends Module {
 			List.of(s.scanInterval, s.tracerWidth, s.range, s.labelHeight, s.trackRadius),
 			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
 				s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
-			List.of(new ModuleAction("Manage Tiki Coords", TikiHelperModule::openCoordManager)));
+			List.of(s.manageCoords));
 		this.waypoints = s.waypoints;
 		this.solver = s.solver;
 		this.debugLogging = s.debugLogging;
@@ -171,6 +178,17 @@ public final class TikiHelperModule extends Module {
 		this.trackChat = s.trackChat;
 		this.verifySolver = s.verifySolver;
 		this.echoToChat = s.echoToChat;
+		// Each section leads with the sub-toggle that switches the whole part on, so the first row
+		// is always the one that decides whether the rest of the section matters.
+		group(
+			new SettingGroup("Waypoints", s.waypoints, s.validColor, s.invalidColor, s.scanInterval,
+				s.tracer, s.tracerColor, s.tracerWidth),
+			new SettingGroup("Solver", s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range,
+				s.labelHeight, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule),
+			new SettingGroup("Debug Logging", s.debugLogging, s.trackRadius, s.trackSounds,
+				s.trackChat, s.verifySolver, s.echoToChat),
+			new SettingGroup("Coordinates", s.manageCoords)
+		);
 	}
 
 	/** Just a carrier so the constructor can both build the settings and keep references to them. */
@@ -203,18 +221,15 @@ public final class TikiHelperModule extends Module {
 		final BooleanSetting trackChat = new BooleanSetting("Track Chat", true);
 		final BooleanSetting verifySolver = new BooleanSetting("Verify Solver", true);
 		final BooleanSetting echoToChat = new BooleanSetting("Echo To Chat", false);
+
+		final ModuleAction manageCoords = new ModuleAction("Manage Tiki Coords", TikiHelperModule::openCoordManager);
 	}
 
 	// ---- lifecycle ----------------------------------------------------------------------
 
 	@Override
 	protected void onEnable() {
-		remembered.clear();
-		woken.clear();
-		clearSolver();
-		tracked.clear();
-		armed = false;
-		pending = null;
+		resetState();
 		tick = 0;
 		ticksSinceScan = 0;
 		ticksSinceDebugScan = 0;
@@ -222,13 +237,39 @@ public final class TikiHelperModule extends Module {
 
 	@Override
 	protected void onDisable() {
+		resetState();
+		TikiDebugLog.close();
+	}
+
+	/**
+	 * Tikis only exist in the Torrhus region, so everywhere else the module stays switched on but
+	 * does nothing. Gating here rather than on the enabled flag means the user's switch keeps
+	 * meaning what they set it to, and the whole per-tick solver scan stops costing anything for
+	 * the rest of SkyBlock.
+	 *
+	 * <p>Matched on the region stem rather than one exact area name: the sub-areas share it, so
+	 * this covers the canyon and the heights alike.
+	 */
+	@Override
+	public boolean isActive() {
+		return isEnabled() && SkyBlockLocation.isIn(TIKI_AREA);
+	}
+
+	@Override
+	public String inactiveReason() {
+		if (!isEnabled() || isActive()) return null;
+		String area = SkyBlockLocation.area();
+		// Naming the detected area makes a mismatch self-diagnosing instead of looking broken.
+		return area == null ? "Waiting for SkyBlock" : "Inactive in " + area;
+	}
+
+	private void resetState() {
 		remembered.clear();
 		woken.clear();
 		clearSolver();
 		tracked.clear();
 		armed = false;
 		pending = null;
-		TikiDebugLog.close();
 	}
 
 	/** Re-reads the waypoints on the next tick - the coordinate list just changed under us. */
@@ -239,6 +280,17 @@ public final class TikiHelperModule extends Module {
 
 	public void tick() {
 		if (!isEnabled()) return;
+		if (!isActive()) {
+			if (wasActive) {
+				wasActive = false;
+				// Leaving the region is not the same as switching the module off, but the
+				// remembered waypoints and the solver plan all describe somewhere we are no
+				// longer standing - drop them instead of flashing stale markers on the way back.
+				resetState();
+			}
+			return;
+		}
+		wasActive = true;
 		tick++;
 
 		Minecraft mc = Minecraft.getInstance();
@@ -460,7 +512,7 @@ public final class TikiHelperModule extends Module {
 	// ---- events -------------------------------------------------------------------------
 
 	public void onBlockChange(BlockPos pos, BlockState state) {
-		if (!isEnabled() || !debugLogging.value() || !armed) return;
+		if (!isActive() || !debugLogging.value() || !armed) return;
 		Minecraft mc = Minecraft.getInstance();
 		ClientLevel level = mc.level;
 		LocalPlayer player = mc.player;
@@ -488,7 +540,7 @@ public final class TikiHelperModule extends Module {
 	}
 
 	public void onClick(boolean rightClick) {
-		if (!isEnabled()) return;
+		if (!isActive()) return;
 		Minecraft mc = Minecraft.getInstance();
 		ClientLevel level = mc.level;
 		LocalPlayer player = mc.player;
@@ -527,7 +579,7 @@ public final class TikiHelperModule extends Module {
 	}
 
 	public void onSound(Holder<SoundEvent> sound, double x, double y, double z, float volume, float pitch) {
-		if (!isEnabled() || !debugLogging.value() || !armed || !trackSounds.value()) return;
+		if (!isActive() || !debugLogging.value() || !armed || !trackSounds.value()) return;
 		LocalPlayer player = Minecraft.getInstance().player;
 		if (player == null) return;
 
@@ -545,7 +597,7 @@ public final class TikiHelperModule extends Module {
 	 * with contains() so a counter suffix or rank prefix still hits.
 	 */
 	public void onChatMessage(String message) {
-		if (!isEnabled()) return;
+		if (!isActive()) return;
 		if (message.contains(AWAKENED_MESSAGE)) {
 			onTikiAwakened();
 		}
@@ -571,7 +623,7 @@ public final class TikiHelperModule extends Module {
 
 	/** Geometry: waypoint boxes, the tracer, and vector labels if the font path is switched off. */
 	public void render(LevelRenderContext context) {
-		if (!isEnabled()) return;
+		if (!isActive()) return;
 
 		Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
 		Vec3 camPos = camera.position();
@@ -626,7 +678,7 @@ public final class TikiHelperModule extends Module {
 	 * the same text call the Click GUI uses.
 	 */
 	public void renderHud(GuiGraphicsExtractor graphics) {
-		if (!isEnabled() || !solver.value() || worldLabels.value()) return;
+		if (!isActive() || !solver.value() || worldLabels.value()) return;
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.level == null || mc.player == null || mc.options.hideGui) return;
 

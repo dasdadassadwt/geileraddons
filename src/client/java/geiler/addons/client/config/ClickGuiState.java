@@ -3,6 +3,11 @@ package geiler.addons.client.config;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
+import geiler.addons.client.module.SettingGroup;
+
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * Where the Click GUI was left: which category was selected, which module's settings were open
@@ -14,6 +19,11 @@ public final class ClickGuiState {
 	private static Module openModule;
 	private static ColorSetting expandedColor;
 	private static int settingsScroll;
+	/**
+	 * Folded-shut sections, stored as keys rather than flags on the group so the record stays
+	 * immutable and unknown keys from an older config are simply ignored.
+	 */
+	private static final Set<String> collapsedGroups = new LinkedHashSet<>();
 
 	private ClickGuiState() {
 	}
@@ -48,5 +58,32 @@ public final class ClickGuiState {
 
 	public static void setSettingsScroll(int value) {
 		settingsScroll = value;
+	}
+
+	/** Unnamed sections have no header to click, so they can never be folded shut. */
+	public static boolean isCollapsed(Module module, SettingGroup group) {
+		return group.name() != null && collapsedGroups.contains(key(module, group));
+	}
+
+	public static void toggleCollapsed(Module module, SettingGroup group) {
+		if (group.name() == null) return;
+		String key = key(module, group);
+		if (!collapsedGroups.remove(key)) {
+			collapsedGroups.add(key);
+		}
+	}
+
+	public static Collection<String> collapsedGroups() {
+		return collapsedGroups;
+	}
+
+	public static void setCollapsedGroups(Collection<String> keys) {
+		collapsedGroups.clear();
+		collapsedGroups.addAll(keys);
+	}
+
+	/** Qualified by module so two modules can name a section the same thing. */
+	private static String key(Module module, SettingGroup group) {
+		return module.name() + "." + group.name();
 	}
 }

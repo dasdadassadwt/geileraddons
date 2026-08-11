@@ -1,6 +1,6 @@
 package geiler.addons.client.module;
 
-public final class NumberSetting {
+public final class NumberSetting implements Setting {
 	private final String name;
 	private final float min;
 	private final float max;
@@ -20,6 +20,7 @@ public final class NumberSetting {
 		this.value = clamp(defaultValue);
 	}
 
+	@Override
 	public String name() {
 		return name;
 	}

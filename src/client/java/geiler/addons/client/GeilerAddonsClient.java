@@ -2,9 +2,11 @@ package geiler.addons.client;
 
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
+import geiler.addons.client.location.SkyBlockLocation;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
+import geiler.addons.client.update.UpdateChecker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
@@ -17,8 +19,13 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModuleManager.register(TikiHelperModule.INSTANCE);
 		// Must come after registration: this is what restores saved settings onto the modules.
 		ModConfig.load();
+		// After the config, which is what decides whether the check is allowed to run at all.
+		UpdateChecker.start();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			// First: the modules gate themselves on the area this resolves.
+			SkyBlockLocation.tick();
+			UpdateChecker.tick();
 			I4HelperModule.INSTANCE.tick();
 			TikiHelperModule.INSTANCE.tick();
 		});

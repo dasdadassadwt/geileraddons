@@ -1,5 +1,6 @@
 package geiler.addons.client.module;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public abstract class Module {
@@ -10,6 +11,7 @@ public abstract class Module {
 	private final List<NumberSetting> numberSettings;
 	private final List<BooleanSetting> booleanSettings;
 	private final List<ModuleAction> actions;
+	private List<SettingGroup> groups;
 	private boolean enabled;
 
 	protected Module(String name, String description, Category category, List<ColorSetting> colorSettings) {
@@ -61,12 +63,59 @@ public abstract class Module {
 		return actions;
 	}
 
+	/**
+	 * Declares how the settings panel is sectioned. Call from the subclass constructor.
+	 *
+	 * <p>Presentation only - the flat setting lists stay the source of truth for persistence, so
+	 * regrouping or reordering settings never moves a key in the config file.
+	 */
+	protected final void group(SettingGroup... groups) {
+		this.groups = List.of(groups);
+	}
+
+	/**
+	 * The settings panel's sections. A module that never called {@link #group} gets a single
+	 * unnamed section holding everything, which renders exactly as the panel did before groups
+	 * existed.
+	 */
+	public List<SettingGroup> groups() {
+		if (groups == null) {
+			List<Setting> all = new ArrayList<>();
+			all.addAll(colorSettings);
+			all.addAll(numberSettings);
+			all.addAll(booleanSettings);
+			all.addAll(actions);
+			groups = List.of(new SettingGroup(null, all));
+		}
+		return groups;
+	}
+
 	public boolean hasSettings() {
 		return !colorSettings.isEmpty() || !numberSettings.isEmpty() || !booleanSettings.isEmpty() || !actions.isEmpty();
 	}
 
 	public boolean isEnabled() {
 		return enabled;
+	}
+
+	/**
+	 * Whether the module should actually be doing anything right now.
+	 *
+	 * <p>{@link #isEnabled()} is the user's intent; this is that intent plus context, so a module
+	 * can stay switched on while sitting idle somewhere it does not apply. Overriding this is how
+	 * a module gates itself on location without ever flipping its own switch behind the user's
+	 * back - the Click GUI dims anything enabled but inactive and shows {@link #inactiveReason()}.
+	 */
+	public boolean isActive() {
+		return enabled;
+	}
+
+	/**
+	 * Short explanation of why an enabled module is idle, shown in the Click GUI. Null whenever
+	 * the module is active, or disabled outright - there is nothing to explain in either case.
+	 */
+	public String inactiveReason() {
+		return null;
 	}
 
 	public final void setEnabled(boolean enabled) {

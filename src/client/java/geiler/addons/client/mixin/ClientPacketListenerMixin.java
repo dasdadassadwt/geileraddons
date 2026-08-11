@@ -54,15 +54,19 @@ public abstract class ClientPacketListenerMixin {
 	/**
 	 * HEAD rather than TAIL so this sees the raw server text: a chat-compacting mod that cancels
 	 * or rewrites the message would otherwise hide it entirely, which is exactly what happened to
-	 * the tiki debug log. HEAD also runs once on the netty thread before the packet is rescheduled,
-	 * hence the thread guard for anything that touches level state.
+	 * the tiki debug log.
+	 *
+	 * <p>The guard is doing two jobs. The method first runs on the netty thread, throws to
+	 * reschedule itself, then runs again on the client thread - so this injection fires twice per
+	 * message. Keeping to the client-thread pass both drops the duplicate and makes it safe for
+	 * the handlers to touch GUI, level and module state, none of which the netty thread may read.
 	 */
 	@Inject(method = "handleSystemChat", at = @At("HEAD"))
 	private void geileraddons$onSystemChat(ClientboundSystemChatPacket packet, CallbackInfo ci) {
-		I4HelperModule.INSTANCE.onChatMessage(packet.content().getString());
-		if (Minecraft.getInstance().isSameThread()) {
-			TikiHelperModule.INSTANCE.onChatMessage(packet.content().getString());
-		}
+		if (!Minecraft.getInstance().isSameThread()) return;
+		String content = packet.content().getString();
+		I4HelperModule.INSTANCE.onChatMessage(content);
+		TikiHelperModule.INSTANCE.onChatMessage(content);
 	}
 
 	@Inject(method = "handleSoundEvent", at = @At("TAIL"))

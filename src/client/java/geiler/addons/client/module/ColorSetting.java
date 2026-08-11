@@ -2,7 +2,7 @@ package geiler.addons.client.module;
 
 import net.minecraft.util.ARGB;
 
-public final class ColorSetting {
+public final class ColorSetting implements Setting {
 	public enum Channel { RED, GREEN, BLUE, ALPHA }
 
 	private final String name;
@@ -19,6 +19,7 @@ public final class ColorSetting {
 		this.alpha = clamp(alpha);
 	}
 
+	@Override
 	public String name() {
 		return name;
 	}

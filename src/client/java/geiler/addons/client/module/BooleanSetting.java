@@ -1,6 +1,6 @@
 package geiler.addons.client.module;
 
-public final class BooleanSetting {
+public final class BooleanSetting implements Setting {
 	private final String name;
 	private boolean value;
 
@@ -9,6 +9,7 @@ public final class BooleanSetting {
 		this.value = defaultValue;
 	}
 
+	@Override
 	public String name() {
 		return name;
 	}

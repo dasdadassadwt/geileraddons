@@ -2,6 +2,8 @@ package geiler.addons.client.config;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonParseException;
+import geiler.addons.GeilerAddons;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
@@ -44,6 +46,21 @@ public final class ModConfig {
 		String uiOpenModule;
 		String uiExpandedColor;
 		int uiSettingsScroll;
+		/** Folded-shut settings sections, as "module.group" keys. */
+		List<String> uiCollapsedGroups;
+		/** Absent means "never saved", which keeps the check on by default. */
+		Boolean checkForUpdates;
+	}
+
+	/**
+	 * Whether the mod may contact GitHub once per launch to see if a newer release exists.
+	 * Config-file only: it is the mod's single outbound request and belongs with the other
+	 * one-off preferences rather than in a module's settings panel.
+	 */
+	private static boolean checkForUpdates = true;
+
+	public static boolean checkForUpdates() {
+		return checkForUpdates;
 	}
 
 	public static void load() {
@@ -71,6 +88,9 @@ public final class ModConfig {
 				module.setEnabled(true);
 			}
 		}
+		if (data.checkForUpdates != null) {
+			checkForUpdates = data.checkForUpdates;
+		}
 		loadTikiCoords(data);
 		loadUiState(data);
 	}
@@ -97,13 +117,17 @@ public final class ModConfig {
 		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().name();
 		data.uiExpandedColor = ClickGuiState.expandedColor() == null ? null : ClickGuiState.expandedColor().name();
 		data.uiSettingsScroll = ClickGuiState.settingsScroll();
+		data.uiCollapsedGroups = new ArrayList<>(ClickGuiState.collapsedGroups());
+		data.checkForUpdates = checkForUpdates;
 		try {
 			Files.createDirectories(PATH.getParent());
 			try (Writer writer = Files.newBufferedWriter(PATH)) {
 				GSON.toJson(data, writer);
 			}
 		} catch (IOException e) {
-			throw new RuntimeException("Failed to save GeilerAddons config to " + PATH, e);
+			// Never propagated: save() runs from screen teardown and from every setting toggle, so
+			// a read-only config dir or a full disk would otherwise take the screen down with it.
+			GeilerAddons.LOGGER.error("Failed to save GeilerAddons config to {}", PATH, e);
 		}
 	}
 
@@ -131,6 +155,9 @@ public final class ModConfig {
 				}
 			}
 		}
+		if (data.uiCollapsedGroups != null) {
+			ClickGuiState.setCollapsedGroups(data.uiCollapsedGroups);
+		}
 		if (data.uiOpenModule == null) return;
 		for (Module module : ModuleManager.modules()) {
 			if (!module.name().equals(data.uiOpenModule) || !module.hasSettings()) continue;
@@ -155,8 +182,10 @@ public final class ModConfig {
 		Data data;
 		try (Reader reader = Files.newBufferedReader(PATH)) {
 			data = GSON.fromJson(reader, Data.class);
-		} catch (IOException e) {
-			throw new RuntimeException("Failed to load GeilerAddons config from " + PATH, e);
+		} catch (IOException | JsonParseException e) {
+			// A corrupt or unreadable config falls back to defaults rather than blocking startup.
+			GeilerAddons.LOGGER.error("Failed to load GeilerAddons config from {}, using defaults", PATH, e);
+			return new Data();
 		}
 		if (data == null) {
 			return new Data();

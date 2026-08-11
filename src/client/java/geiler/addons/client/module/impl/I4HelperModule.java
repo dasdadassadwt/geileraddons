@@ -5,6 +5,7 @@ import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.NumberSetting;
+import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
@@ -36,6 +37,10 @@ public final class I4HelperModule extends Module {
 		new BlockPos(68, 128, 50), new BlockPos(66, 128, 50), new BlockPos(64, 128, 50),
 		new BlockPos(68, 126, 50), new BlockPos(66, 126, 50), new BlockPos(64, 126, 50)
 	};
+
+	/** Feet-height band counting as "standing on the device", generous enough to survive a jump. */
+	private static final int DEVICE_MIN_Y = 126;
+	private static final int DEVICE_MAX_Y = 129;
 
 	/** Not on the device, or not yet known - no highlight. */
 	private static final int NONE = 0;
@@ -95,6 +100,12 @@ public final class I4HelperModule extends Module {
 		this.prefireColor = prefireColor;
 		this.aimSphereSize = aimSphereSize;
 		this.prefireSphereSize = prefireSphereSize;
+		// Each sphere's color sits next to its own size slider rather than all colors together,
+		// so a row reads as one thing to adjust instead of two halves in different sections.
+		group(
+			new SettingGroup("Blocks", completedColor, activeColor),
+			new SettingGroup("Aim Spheres", aimColor, aimSphereSize, prefireColor, prefireSphereSize)
+		);
 	}
 
 	@Override
@@ -122,22 +133,51 @@ public final class I4HelperModule extends Module {
 			double x = player.getX();
 			double z = player.getZ();
 			int y = Mth.floor(player.getY());
-			nowOnDevice = x > 62 && x < 65 && y == 127 && z > 33 && z < 37;
+			// A height band rather than an exact y: a jump lifts the player a full block, and
+			// treating that as "left the device" would wipe the board in the middle of a puzzle.
+			nowOnDevice = x > 62 && x < 65 && y >= DEVICE_MIN_Y && y <= DEVICE_MAX_Y && z > 33 && z < 37;
 		}
 
 		if (nowOnDevice != onDevice) {
 			onDevice = nowOnDevice;
 			if (onDevice) {
-				// The whole 3x3 panel is blue terracotta at this point; the server never sends
-				// an update packet for blocks that haven't changed, so we have to assume it here.
+				// The server sends no update packet for blocks that haven't changed, so the panel
+				// is assumed untouched and then corrected against the level below.
 				Arrays.fill(highlighted, REMAINING);
+				syncActiveFromLevel(true);
 			} else {
 				notified = false;
 				Arrays.fill(highlighted, NONE);
 			}
+		} else if (onDevice) {
+			// Picks the emerald back up after a chunk reload or a missed packet. Upgrade-only, so
+			// a block already known COMPLETED is never demoted back to REMAINING.
+			syncActiveFromLevel(false);
 		}
 
 		tickDelayedSounds();
+	}
+
+	/**
+	 * Reads the panel straight out of the level so arriving part-way through a device shows the
+	 * live target instead of a blank board. Only the emerald is recoverable: a completed block
+	 * reverts to the same blue terracotta an untouched one shows, so past progress genuinely
+	 * cannot be read back and those positions stay REMAINING until seen completed.
+	 *
+	 * @param reset when true, every non-emerald position is forced back to REMAINING
+	 */
+	private void syncActiveFromLevel(boolean reset) {
+		var level = Minecraft.getInstance().level;
+		if (level == null) return;
+		for (int i = 0; i < POSITIONS.length; i++) {
+			BlockPos pos = POSITIONS[i];
+			if (!level.isLoaded(pos)) continue;
+			if (level.getBlockState(pos).is(Blocks.EMERALD_BLOCK)) {
+				highlighted[i] = ACTIVE;
+			} else if (reset) {
+				highlighted[i] = REMAINING;
+			}
+		}
 	}
 
 	public void onBlockChange(BlockPos pos, BlockState state) {
@@ -161,7 +201,10 @@ public final class I4HelperModule extends Module {
 
 		LocalPlayer player = Minecraft.getInstance().player;
 		if (player == null) return;
-		if (!matcher.group(1).equals(player.getGameProfile().name())) return;
+		// Defensive: Hypixel usually sends styled components, whose flattened text carries no
+		// section codes, but it does embed legacy codes in some messages - strip either way.
+		String name = ChatFormatting.stripFormatting(matcher.group(1));
+		if (name == null || !name.equals(player.getGameProfile().name())) return;
 
 		notifyDone();
 	}

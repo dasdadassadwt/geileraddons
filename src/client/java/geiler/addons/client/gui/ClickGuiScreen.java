@@ -9,11 +9,15 @@ import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.NumberSetting;
+import geiler.addons.client.module.Setting;
+import geiler.addons.client.module.SettingGroup;
+import geiler.addons.client.update.UpdateChecker;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.FormattedCharSequence;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,12 +33,24 @@ public class ClickGuiScreen extends Screen {
 	/** Left panel's share of the total width; the module panel takes the rest. */
 	private static final int CATEGORY_WIDTH_DIVISOR = 3;
 
-	private static final int ROW_HEIGHT = 26;
-	private static final int PADDING = 6;
+	private static final int ROW_HEIGHT = 24;
+	private static final int GROUP_HEADER_HEIGHT = 20;
+	private static final int PADDING = 8;
 	private static final int CHANNEL_ROW_HEIGHT = 14;
 	private static final int SCROLLBAR_WIDTH = 3;
-	/** Room reserved on a setting row's right for the swatch, toggle or value read-out. */
-	private static final int VALUE_GUTTER = 34;
+	/** Room reserved on a setting row's right for the swatch, switch or value read-out. */
+	private static final int VALUE_GUTTER = 36;
+
+	private static final int LINE_HEIGHT = 9;
+	private static final int TEXT_HEIGHT = 8;
+
+	private static final int CARD_COLUMNS = 2;
+	private static final int CARD_GAP = 6;
+	private static final int CARD_INSET = 8;
+	/** Descriptions longer than this are clipped rather than pushing every card taller. */
+	private static final int CARD_MAX_DESC_LINES = 3;
+	private static final int SWITCH_WIDTH = 20;
+	private static final int SWITCH_HEIGHT = 11;
 
 	private Category selectedCategory;
 	private Module openSettingsModule;
@@ -42,6 +58,7 @@ public class ClickGuiScreen extends Screen {
 	private ColorSetting.Channel draggingChannel;
 	private NumberSetting draggingNumberSetting;
 	private int settingsScroll;
+	private int gridScroll;
 
 	public ClickGuiScreen() {
 		super(Component.literal("GeilerAddons"));
@@ -115,12 +132,21 @@ public class ClickGuiScreen extends Screen {
 		int rightX = panelX + categoryWidth;
 		Font font = this.font;
 
-		roundedRect(graphics, panelX, panelY, categoryWidth, panelHeight, RADIUS, PANEL_TOP, PANEL_BOTTOM);
-		outline(graphics, panelX, panelY, categoryWidth, panelHeight, RADIUS, BORDER);
+		roundedRectBordered(graphics, panelX, panelY, categoryWidth, panelHeight, RADIUS, PANEL_TOP, PANEL_BOTTOM, BORDER);
+		roundedRectBordered(graphics, rightX, panelY, moduleWidth, panelHeight, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM, BORDER);
 
-		roundedRect(graphics, rightX, panelY, moduleWidth, panelHeight, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM);
-		outline(graphics, rightX, panelY, moduleWidth, panelHeight, RADIUS, BORDER);
+		renderCategories(graphics, font, mouseX, mouseY, panelX, panelY);
 
+		List<Module> modules = ModuleManager.modules(selectedCategory);
+		if (openSettingsModule != null && modules.contains(openSettingsModule)) {
+			renderSettingsView(graphics, font, mouseX, mouseY, rightX, panelY);
+		} else {
+			openSettingsModule = null;
+			renderModuleGrid(graphics, font, mouseX, mouseY, modules, rightX, panelY);
+		}
+	}
+
+	private void renderCategories(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, int panelX, int panelY) {
 		List<Rect> categoryRows = categoryRows(panelX, panelY);
 		Category[] categories = Category.values();
 		for (int i = 0; i < categories.length; i++) {
@@ -129,53 +155,141 @@ public class ClickGuiScreen extends Screen {
 			boolean selected = category == selectedCategory;
 			boolean hovered = row.contains(mouseX, mouseY);
 			if (selected) {
-				roundedRect(graphics, row.x + 4, row.y, row.w - 8, row.h - 2, 4, CATEGORY_SELECTED, CATEGORY_SELECTED);
+				roundedRect(graphics, row.x + 5, row.y, row.w - 10, row.h - 2, RADIUS_SMALL, CATEGORY_SELECTED);
 			} else if (hovered) {
-				roundedRect(graphics, row.x + 4, row.y, row.w - 8, row.h - 2, 4, CATEGORY_HOVER, CATEGORY_HOVER);
+				roundedRect(graphics, row.x + 5, row.y, row.w - 10, row.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 			}
 			int color = selected ? TEXT_PRIMARY : TEXT_SECONDARY;
-			graphics.text(font, category.displayName(), row.x + 12, row.y + (row.h - 8) / 2, color);
+			graphics.text(font, category.displayName(), row.x + 14, row.y + (row.h - TEXT_HEIGHT) / 2, color);
 		}
 
-		List<Module> modules = ModuleManager.modules(selectedCategory);
-		if (openSettingsModule != null && modules.contains(openSettingsModule)) {
-			renderSettingsView(graphics, font, mouseX, mouseY, rightX, panelY);
-		} else {
-			openSettingsModule = null;
-			renderModuleList(graphics, font, mouseX, mouseY, modules, panelX, panelY);
+		// The update notice sits under the categories. Clipped to the panel rather than left to
+		// spill across the module list, since this column is narrow on a small screen.
+		String notice = UpdateChecker.bannerText();
+		if (notice != null) {
+			int available = categoryWidth() - 28;
+			String text = font.width(notice) <= available ? notice : font.plainSubstrByWidth(notice, available);
+			graphics.text(font, text, panelX + 14, panelY + panelHeight() - PADDING - TEXT_HEIGHT, TEXT_WARN);
 		}
 	}
 
-	private void renderModuleList(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, List<Module> modules, int panelX, int panelY) {
-		List<Rect> moduleRows = moduleRows(panelX, panelY, modules.size());
-		boolean anySettings = false;
+	// ---- module grid --------------------------------------------------------------------
+
+	private void renderModuleGrid(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, List<Module> modules, int x, int panelY) {
+		Rect viewport = gridViewport(x, panelY);
+		List<CardRect> cards = cardRects(modules, x, panelY);
+		boolean hoverable = viewport.contains(mouseX, mouseY);
+
+		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
+		for (CardRect card : cards) {
+			renderCard(graphics, font, mouseX, mouseY, card, hoverable);
+		}
+		graphics.disableScissor();
+
+		renderScrollbar(graphics, viewport, gridContentHeight(modules), gridScroll);
+	}
+
+	private void renderCard(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, CardRect card, boolean hoverable) {
+		Module module = card.module;
+		Rect bounds = card.bounds;
+		boolean enabled = module.isEnabled();
+		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
+
+		int background = enabled ? CARD_BG_ENABLED : (hovered ? CARD_BG_HOVER : CARD_BG);
+		int border = enabled ? CARD_BORDER_ENABLED : CARD_BORDER;
+		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL, background, background, border);
+
+		// An enabled module that its own context has switched off is drawn muted, so "on but doing
+		// nothing" never looks the same as "on and working".
+		boolean dimmed = enabled && !module.isActive();
+		int nameColor = dimmed ? TEXT_MUTED : TEXT_PRIMARY;
+
+		int textX = bounds.x + CARD_INSET;
+		int textWidth = bounds.w - CARD_INSET * 2;
+		graphics.text(font, module.name(), textX, bounds.y + CARD_INSET, nameColor);
+
+		int descY = bounds.y + CARD_INSET + LINE_HEIGHT + 3;
+		for (FormattedCharSequence line : descriptionLines(font, module, textWidth)) {
+			graphics.text(font, line, textX, descY, TEXT_MUTED);
+			descY += LINE_HEIGHT;
+		}
+
+		String status = module.inactiveReason();
+		if (status != null) {
+			graphics.text(font, status, textX, bounds.y + bounds.h - CARD_INSET - TEXT_HEIGHT, TEXT_WARN);
+		}
+
+		Rect toggle = switchRect(bounds);
+		toggleSwitch(graphics, toggle.x, toggle.y, toggle.w, toggle.h, enabled);
+
+		if (module.hasSettings()) {
+			graphics.text(font, "⚙", bounds.x + bounds.w - CARD_INSET - 6,
+				bounds.y + bounds.h - CARD_INSET - TEXT_HEIGHT, TEXT_MUTED);
+		}
+	}
+
+	private Rect switchRect(Rect card) {
+		return new Rect(card.x + card.w - SWITCH_WIDTH - CARD_INSET, card.y + CARD_INSET - 1, SWITCH_WIDTH, SWITCH_HEIGHT);
+	}
+
+	private List<FormattedCharSequence> descriptionLines(Font font, Module module, int width) {
+		List<FormattedCharSequence> lines = font.split(Component.literal(module.description()), width);
+		return lines.size() > CARD_MAX_DESC_LINES ? lines.subList(0, CARD_MAX_DESC_LINES) : lines;
+	}
+
+	/** Uniform across the category so the grid stays on a shared baseline. */
+	private int cardHeight(List<Module> modules) {
+		int width = cardWidth() - CARD_INSET * 2;
+		int descLines = 1;
+		for (Module module : modules) {
+			descLines = Math.max(descLines, descriptionLines(this.font, module, width).size());
+		}
+		// Name, description, then a reserved status line: reserved rather than conditional so a
+		// module going inactive does not resize the whole grid under the cursor.
+		return CARD_INSET + LINE_HEIGHT + 3 + descLines * LINE_HEIGHT + 3 + TEXT_HEIGHT + CARD_INSET;
+	}
+
+	private int cardWidth() {
+		int available = moduleWidth() - PADDING * 2 - CARD_GAP * (CARD_COLUMNS - 1);
+		return available / CARD_COLUMNS;
+	}
+
+	private Rect gridViewport(int x, int panelY) {
+		return new Rect(x, panelY + PADDING, moduleWidth(), panelHeight() - PADDING * 2);
+	}
+
+	private int gridContentHeight(List<Module> modules) {
+		if (modules.isEmpty()) return 0;
+		int rows = (modules.size() + CARD_COLUMNS - 1) / CARD_COLUMNS;
+		return rows * cardHeight(modules) + (rows - 1) * CARD_GAP;
+	}
+
+	private List<CardRect> cardRects(List<Module> modules, int x, int panelY) {
+		Rect viewport = gridViewport(x, panelY);
+		int maxScroll = Math.max(0, gridContentHeight(modules) - viewport.h);
+		gridScroll = Math.max(0, Math.min(maxScroll, gridScroll));
+
+		int cardWidth = cardWidth();
+		int cardHeight = cardHeight(modules);
+		List<CardRect> cards = new ArrayList<>();
 		for (int i = 0; i < modules.size(); i++) {
-			Module module = modules.get(i);
-			Rect row = moduleRows.get(i);
-			boolean hovered = row.contains(mouseX, mouseY);
-			if (module.isEnabled()) {
-				roundedRect(graphics, row.x + 4, row.y, row.w - 8, row.h - 2, 4, MODULE_ENABLED_BG, MODULE_ENABLED_BG);
-			} else if (hovered) {
-				roundedRect(graphics, row.x + 4, row.y, row.w - 8, row.h - 2, 4, CATEGORY_HOVER, CATEGORY_HOVER);
-			}
-			int color = module.isEnabled() ? TEXT_PRIMARY : TEXT_SECONDARY;
-			graphics.text(font, module.name(), row.x + 12, row.y + (row.h - 8) / 2, color);
-			if (module.hasSettings()) {
-				graphics.text(font, "⚙", row.x + row.w - 18, row.y + (row.h - 8) / 2, TEXT_MUTED);
-				anySettings = true;
-			}
+			int column = i % CARD_COLUMNS;
+			int row = i / CARD_COLUMNS;
+			int cardX = x + PADDING + column * (cardWidth + CARD_GAP);
+			int cardY = viewport.y + row * (cardHeight + CARD_GAP) - gridScroll;
+			cards.add(new CardRect(modules.get(i), new Rect(cardX, cardY, cardWidth, cardHeight)));
 		}
-		if (anySettings) {
-			graphics.text(font, "Right-click for settings", panelX + categoryWidth() + 10, panelY + panelHeight() - 16, TEXT_MUTED);
-		}
+		return cards;
 	}
+
+	// ---- settings view ------------------------------------------------------------------
 
 	private void renderSettingsView(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, int x, int y) {
 		Rect header = headerRow(x, y);
 		if (header.contains(mouseX, mouseY)) {
-			roundedRect(graphics, header.x + 4, header.y, header.w - 8, header.h - 2, 4, CATEGORY_HOVER, CATEGORY_HOVER);
+			roundedRect(graphics, header.x + 5, header.y, header.w - 10, header.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, "< " + openSettingsModule.name(), header.x + 12, header.y + (header.h - 8) / 2, TEXT_PRIMARY);
+		graphics.text(font, "< " + openSettingsModule.name(), header.x + 14, header.y + (header.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 
 		Rect viewport = settingsViewport(x, y);
 		List<Row> rows = settingsRows(openSettingsModule, x, y);
@@ -184,6 +298,7 @@ public class ClickGuiScreen extends Screen {
 		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
 		for (Row row : rows) {
 			switch (row) {
+				case GroupRow groupRow -> renderGroupRow(graphics, font, mouseX, mouseY, groupRow, hoverable);
 				case ColorRow colorRow -> renderColorRow(graphics, font, mouseX, mouseY, colorRow, hoverable);
 				case NumberRow numberRow -> renderNumberRow(graphics, font, numberRow);
 				case ToggleRow toggleRow -> renderToggleRow(graphics, font, mouseX, mouseY, toggleRow, hoverable);
@@ -192,81 +307,85 @@ public class ClickGuiScreen extends Screen {
 		}
 		graphics.disableScissor();
 
-		renderScrollbar(graphics, viewport, settingsContentHeight(openSettingsModule));
+		renderScrollbar(graphics, viewport, settingsContentHeight(openSettingsModule, x), settingsScroll);
+	}
+
+	private void renderGroupRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, GroupRow groupRow, boolean hoverable) {
+		Rect bounds = groupRow.bounds;
+		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
+		roundedRect(graphics, bounds.x + 5, bounds.y + 1, bounds.w - 10, bounds.h - 3, RADIUS_SMALL,
+			hovered ? CARD_BG_HOVER : GROUP_HEADER);
+		boolean collapsed = ClickGuiState.isCollapsed(openSettingsModule, groupRow.group);
+		graphics.text(font, collapsed ? "▸" : "▾", bounds.x + 12, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+		graphics.text(font, groupRow.group.name(), bounds.x + 24, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 	}
 
 	private void renderColorRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, ColorRow colorRow, boolean hoverable) {
 		Rect bounds = colorRow.bounds;
 		// Only the label strip is clickable, not the slider area an expanded row adds below it.
 		if (hoverable && new Rect(bounds.x, bounds.y, bounds.w, ROW_HEIGHT).contains(mouseX, mouseY)) {
-			roundedRect(graphics, bounds.x + 4, bounds.y, bounds.w - 8, ROW_HEIGHT - 2, 4, CATEGORY_HOVER, CATEGORY_HOVER);
+			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, ROW_HEIGHT - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, colorRow.setting.name(), bounds.x + 10, bounds.y + (ROW_HEIGHT - 8) / 2, TEXT_SECONDARY);
+		graphics.text(font, colorRow.setting.name(), bounds.x + 16, bounds.y + (ROW_HEIGHT - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		int swatchSize = 12;
-		int swatchX = bounds.x + bounds.w - swatchSize - 10;
+		int swatchX = bounds.x + bounds.w - swatchSize - 14;
 		int swatchY = bounds.y + (ROW_HEIGHT - swatchSize) / 2;
-		roundedRect(graphics, swatchX, swatchY, swatchSize, swatchSize, 3, colorRow.setting.opaqueArgb(), colorRow.setting.opaqueArgb());
-		outline(graphics, swatchX, swatchY, swatchSize, swatchSize, 3, BORDER);
+		roundedRectBordered(graphics, swatchX, swatchY, swatchSize, swatchSize, 3,
+			colorRow.setting.opaqueArgb(), colorRow.setting.opaqueArgb(), BORDER);
 
 		if (colorRow.sliders == null) return;
 		for (SliderRect slider : colorRow.sliders) {
 			int value = colorRow.setting.channel(slider.channel);
 			graphics.text(font, channelLabel(slider.channel), slider.rect.x - 12, slider.rect.y + 1, TEXT_MUTED);
-			graphics.fill(slider.rect.x, slider.rect.y, slider.rect.x + slider.rect.w, slider.rect.y + slider.rect.h, SLIDER_TRACK);
+			roundedRect(graphics, slider.rect.x, slider.rect.y, slider.rect.w, slider.rect.h, slider.rect.h / 2, SLIDER_TRACK);
 			int fillWidth = Math.round(slider.rect.w * (value / 255.0f));
 			if (fillWidth > 0) {
-				graphics.fill(slider.rect.x, slider.rect.y, slider.rect.x + fillWidth, slider.rect.y + slider.rect.h, SLIDER_FILL);
+				roundedRect(graphics, slider.rect.x, slider.rect.y, fillWidth, slider.rect.h, slider.rect.h / 2, SLIDER_FILL);
 			}
 			graphics.text(font, String.valueOf(value), slider.rect.x + slider.rect.w + 6, slider.rect.y + 1, TEXT_MUTED);
 		}
 	}
 
 	private void renderNumberRow(GuiGraphicsExtractor graphics, Font font, NumberRow numberRow) {
-		graphics.text(font, numberRow.setting.name(), numberRow.bounds.x + 10, numberRow.bounds.y, TEXT_SECONDARY);
+		graphics.text(font, numberRow.setting.name(), numberRow.bounds.x + 16, numberRow.bounds.y + 1, TEXT_SECONDARY);
 		Rect slider = numberRow.slider;
-		graphics.fill(slider.x, slider.y, slider.x + slider.w, slider.y + slider.h, SLIDER_TRACK);
+		roundedRect(graphics, slider.x, slider.y, slider.w, slider.h, slider.h / 2, SLIDER_TRACK);
 		int fillWidth = Math.round(slider.w * numberRow.setting.fraction());
 		if (fillWidth > 0) {
-			graphics.fill(slider.x, slider.y, slider.x + fillWidth, slider.y + slider.h, SLIDER_FILL);
+			roundedRect(graphics, slider.x, slider.y, fillWidth, slider.h, slider.h / 2, SLIDER_FILL);
 		}
-		graphics.text(font, numberRow.setting.display(), slider.x + slider.w + 6, slider.y - 2, TEXT_MUTED);
+		graphics.text(font, numberRow.setting.display(), slider.x + slider.w + 8, slider.y - 2, TEXT_MUTED);
 	}
 
 	private void renderToggleRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, ToggleRow toggleRow, boolean hoverable) {
 		Rect bounds = toggleRow.bounds;
 		if (hoverable && bounds.contains(mouseX, mouseY)) {
-			roundedRect(graphics, bounds.x + 4, bounds.y, bounds.w - 8, bounds.h - 2, 4, CATEGORY_HOVER, CATEGORY_HOVER);
+			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, bounds.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, toggleRow.setting.name(), bounds.x + 10, bounds.y + (bounds.h - 8) / 2, TEXT_SECONDARY);
+		graphics.text(font, toggleRow.setting.name(), bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
-		boolean on = toggleRow.setting.value();
-		int pillWidth = 22;
-		int pillHeight = 12;
-		int pillX = bounds.x + bounds.w - pillWidth - 10;
-		int pillY = bounds.y + (bounds.h - pillHeight) / 2;
-		int track = on ? MODULE_ENABLED_BG : SLIDER_TRACK;
-		roundedRect(graphics, pillX, pillY, pillWidth, pillHeight, 4, track, track);
-		int knobX = on ? pillX + pillWidth - 10 : pillX + 2;
-		roundedRect(graphics, knobX, pillY + 2, 8, 8, 3, TEXT_PRIMARY, TEXT_PRIMARY);
+		int switchX = bounds.x + bounds.w - SWITCH_WIDTH - 14;
+		int switchY = bounds.y + (bounds.h - SWITCH_HEIGHT) / 2;
+		toggleSwitch(graphics, switchX, switchY, SWITCH_WIDTH, SWITCH_HEIGHT, toggleRow.setting.value());
 	}
 
 	private void renderActionRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, ActionRow actionRow, boolean hoverable) {
 		Rect bounds = actionRow.bounds;
 		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
 		int background = hovered ? BUTTON_HOVER : BUTTON_BG;
-		roundedRect(graphics, bounds.x + 8, bounds.y + 3, bounds.w - 16, bounds.h - 8, 4, background, background);
-		graphics.centeredText(font, actionRow.action.label(), bounds.x + bounds.w / 2, bounds.y + (bounds.h - 8) / 2, TEXT_PRIMARY);
+		roundedRect(graphics, bounds.x + 14, bounds.y + 2, bounds.w - 28, bounds.h - 6, RADIUS_SMALL, background);
+		graphics.centeredText(font, actionRow.action.label(), bounds.x + bounds.w / 2, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 	}
 
-	private void renderScrollbar(GuiGraphicsExtractor graphics, Rect viewport, int contentHeight) {
+	private void renderScrollbar(GuiGraphicsExtractor graphics, Rect viewport, int contentHeight, int scroll) {
 		if (contentHeight <= viewport.h) return;
-		int trackX = viewport.x + viewport.w - SCROLLBAR_WIDTH - 2;
+		int trackX = viewport.x + viewport.w - SCROLLBAR_WIDTH - 3;
 		int thumbHeight = Math.max(16, viewport.h * viewport.h / contentHeight);
 		int travel = viewport.h - thumbHeight;
 		int maxScroll = contentHeight - viewport.h;
-		int thumbY = viewport.y + travel * settingsScroll / maxScroll;
-		graphics.fill(trackX, thumbY, trackX + SCROLLBAR_WIDTH, thumbY + thumbHeight, SCROLLBAR);
+		int thumbY = viewport.y + travel * scroll / maxScroll;
+		roundedRect(graphics, trackX, thumbY, SCROLLBAR_WIDTH, thumbHeight, SCROLLBAR_WIDTH / 2, SCROLLBAR);
 	}
 
 	private Rect headerRow(int x, int y) {
@@ -283,20 +402,20 @@ public class ClickGuiScreen extends Screen {
 	/** Setting rows with the current scroll already applied, so callers can hit-test them directly. */
 	private List<Row> settingsRows(Module module, int x, int panelY) {
 		Rect viewport = settingsViewport(x, panelY);
-		int maxScroll = Math.max(0, settingsContentHeight(module) - viewport.h);
+		int maxScroll = Math.max(0, settingsContentHeight(module, x) - viewport.h);
 		settingsScroll = Math.max(0, Math.min(maxScroll, settingsScroll));
 		return layoutRows(module, x, viewport.y - settingsScroll);
 	}
 
-	private int settingsContentHeight(Module module) {
-		int height = 0;
-		for (ColorSetting setting : module.colorSettings()) {
-			height += colorRowHeight(setting);
+	/** Measured by running the same layout, so it can never drift from what is drawn. */
+	private int settingsContentHeight(Module module, int x) {
+		List<Row> rows = layoutRows(module, x, 0);
+		int bottom = 0;
+		for (Row row : rows) {
+			Rect bounds = row.bounds();
+			bottom = Math.max(bottom, bounds.y + bounds.h);
 		}
-		height += module.numberSettings().size() * ROW_HEIGHT;
-		height += module.booleanSettings().size() * ROW_HEIGHT;
-		height += module.actions().size() * ROW_HEIGHT;
-		return height;
+		return bottom;
 	}
 
 	private int colorRowHeight(ColorSetting setting) {
@@ -309,41 +428,54 @@ public class ClickGuiScreen extends Screen {
 		int moduleWidth = moduleWidth();
 		int cursorY = startY;
 
-		for (ColorSetting setting : module.colorSettings()) {
-			int rowHeight = colorRowHeight(setting);
-			List<SliderRect> sliders = null;
-			if (setting == expandedColorSetting) {
-				sliders = new ArrayList<>();
-				ColorSetting.Channel[] channels = {ColorSetting.Channel.RED, ColorSetting.Channel.GREEN, ColorSetting.Channel.BLUE, ColorSetting.Channel.ALPHA};
-				int sliderY = cursorY + ROW_HEIGHT + 2;
-				int sliderX = x + 22;
-				int sliderWidth = moduleWidth - 22 - VALUE_GUTTER;
-				for (ColorSetting.Channel channel : channels) {
-					sliders.add(new SliderRect(channel, new Rect(sliderX, sliderY, sliderWidth, 6)));
-					sliderY += CHANNEL_ROW_HEIGHT;
+		for (SettingGroup group : module.groups()) {
+			if (group.name() != null) {
+				rows.add(new GroupRow(group, new Rect(x, cursorY, moduleWidth, GROUP_HEADER_HEIGHT)));
+				cursorY += GROUP_HEADER_HEIGHT;
+				if (ClickGuiState.isCollapsed(module, group)) continue;
+			}
+			for (Setting setting : group.settings()) {
+				switch (setting) {
+					case ColorSetting colorSetting -> {
+						int rowHeight = colorRowHeight(colorSetting);
+						rows.add(new ColorRow(colorSetting, new Rect(x, cursorY, moduleWidth, rowHeight),
+							colorSliders(colorSetting, x, cursorY, moduleWidth)));
+						cursorY += rowHeight;
+					}
+					case NumberSetting numberSetting -> {
+						Rect slider = new Rect(x + 16, cursorY + 13, moduleWidth - 32 - VALUE_GUTTER, 6);
+						rows.add(new NumberRow(numberSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), slider));
+						cursorY += ROW_HEIGHT;
+					}
+					case BooleanSetting booleanSetting -> {
+						rows.add(new ToggleRow(booleanSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
+						cursorY += ROW_HEIGHT;
+					}
+					case ModuleAction action -> {
+						rows.add(new ActionRow(action, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
+						cursorY += ROW_HEIGHT;
+					}
 				}
 			}
-			rows.add(new ColorRow(setting, new Rect(x, cursorY, moduleWidth, rowHeight), sliders));
-			cursorY += rowHeight;
-		}
-
-		for (NumberSetting setting : module.numberSettings()) {
-			Rect slider = new Rect(x + 10, cursorY + 15, moduleWidth - 20 - VALUE_GUTTER, 6);
-			rows.add(new NumberRow(setting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), slider));
-			cursorY += ROW_HEIGHT;
-		}
-
-		for (BooleanSetting setting : module.booleanSettings()) {
-			rows.add(new ToggleRow(setting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
-			cursorY += ROW_HEIGHT;
-		}
-
-		for (ModuleAction action : module.actions()) {
-			rows.add(new ActionRow(action, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
-			cursorY += ROW_HEIGHT;
 		}
 
 		return rows;
+	}
+
+	private List<SliderRect> colorSliders(ColorSetting setting, int x, int cursorY, int moduleWidth) {
+		if (setting != expandedColorSetting) return null;
+		List<SliderRect> sliders = new ArrayList<>();
+		ColorSetting.Channel[] channels = {
+			ColorSetting.Channel.RED, ColorSetting.Channel.GREEN, ColorSetting.Channel.BLUE, ColorSetting.Channel.ALPHA
+		};
+		int sliderY = cursorY + ROW_HEIGHT + 2;
+		int sliderX = x + 28;
+		int sliderWidth = moduleWidth - 28 - VALUE_GUTTER;
+		for (ColorSetting.Channel channel : channels) {
+			sliders.add(new SliderRect(channel, new Rect(sliderX, sliderY, sliderWidth, 6)));
+			sliderY += CHANNEL_ROW_HEIGHT;
+		}
+		return sliders;
 	}
 
 	// ---- input --------------------------------------------------------------------------
@@ -357,6 +489,7 @@ public class ClickGuiScreen extends Screen {
 		int rightX = panelX + categoryWidth();
 		boolean left = event.button() == 0;
 		boolean right = event.button() == 1;
+		if (!left && !right) return super.mouseClicked(event, doubleClick);
 
 		List<Rect> categoryRows = categoryRows(panelX, panelY);
 		Category[] categories = Category.values();
@@ -364,6 +497,7 @@ public class ClickGuiScreen extends Screen {
 			if (left && categoryRows.get(i).contains(mouseX, mouseY)) {
 				selectedCategory = categories[i];
 				closeSettings();
+				gridScroll = 0;
 				return true;
 			}
 		}
@@ -374,17 +508,16 @@ public class ClickGuiScreen extends Screen {
 			return settingsClicked(openSettingsModule, mouseX, mouseY, rightX, panelY, left);
 		}
 
-		List<Rect> moduleRows = moduleRows(panelX, panelY, modules.size());
-		for (int i = 0; i < modules.size(); i++) {
-			Rect row = moduleRows.get(i);
-			if (!row.contains(mouseX, mouseY)) continue;
-			Module module = modules.get(i);
-			if (left) {
-				module.toggle();
+		for (CardRect card : cardRects(modules, rightX, panelY)) {
+			if (!card.bounds.contains(mouseX, mouseY)) continue;
+			// The switch is the only thing that toggles the module; anywhere else on the card
+			// opens its settings, on either button, so there is no hidden right-click gesture.
+			if (left && switchRect(card.bounds).contains(mouseX, mouseY)) {
+				card.module.toggle();
 				persistView();
 				ModConfig.save();
-			} else if (right && module.hasSettings()) {
-				openSettingsModule = module;
+			} else if (card.module.hasSettings()) {
+				openSettingsModule = card.module;
 				expandedColorSetting = null;
 				settingsScroll = 0;
 				persistView();
@@ -410,6 +543,13 @@ public class ClickGuiScreen extends Screen {
 
 		for (Row row : settingsRows(module, x, panelY)) {
 			switch (row) {
+				case GroupRow groupRow -> {
+					if (groupRow.bounds.contains(mouseX, mouseY)) {
+						ClickGuiState.toggleCollapsed(module, groupRow.group);
+						ModConfig.save();
+						return true;
+					}
+				}
 				case ColorRow colorRow -> {
 					if (colorRow.sliders != null) {
 						for (SliderRect slider : colorRow.sliders) {
@@ -495,12 +635,23 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+		int rightX = panelX() + categoryWidth();
+		int notch = (int) Math.round(scrollY * CHANNEL_ROW_HEIGHT);
+
 		if (openSettingsModule != null) {
-			Rect viewport = settingsViewport(panelX() + categoryWidth(), panelY());
+			Rect viewport = settingsViewport(rightX, panelY());
 			if (viewport.contains(mouseX, mouseY)) {
-				int maxScroll = Math.max(0, settingsContentHeight(openSettingsModule) - viewport.h);
-				settingsScroll = Math.max(0, Math.min(maxScroll, settingsScroll - (int) Math.round(scrollY * CHANNEL_ROW_HEIGHT)));
+				int maxScroll = Math.max(0, settingsContentHeight(openSettingsModule, rightX) - viewport.h);
+				settingsScroll = Math.max(0, Math.min(maxScroll, settingsScroll - notch));
 				persistView();
+				return true;
+			}
+		} else {
+			List<Module> modules = ModuleManager.modules(selectedCategory);
+			Rect viewport = gridViewport(rightX, panelY());
+			if (viewport.contains(mouseX, mouseY)) {
+				int maxScroll = Math.max(0, gridContentHeight(modules) - viewport.h);
+				gridScroll = Math.max(0, Math.min(maxScroll, gridScroll - notch));
 				return true;
 			}
 		}
@@ -535,16 +686,6 @@ public class ClickGuiScreen extends Screen {
 		return rows;
 	}
 
-	private List<Rect> moduleRows(int panelX, int panelY, int count) {
-		List<Rect> rows = new ArrayList<>();
-		int x = panelX + categoryWidth();
-		int moduleWidth = moduleWidth();
-		for (int i = 0; i < count; i++) {
-			rows.add(new Rect(x, panelY + PADDING + i * ROW_HEIGHT, moduleWidth, ROW_HEIGHT));
-		}
-		return rows;
-	}
-
 	private static String channelLabel(ColorSetting.Channel channel) {
 		return switch (channel) {
 			case RED -> "R";
@@ -563,8 +704,15 @@ public class ClickGuiScreen extends Screen {
 	private record SliderRect(ColorSetting.Channel channel, Rect rect) {
 	}
 
+	private record CardRect(Module module, Rect bounds) {
+	}
+
 	/** One laid-out line in the settings panel. */
-	private sealed interface Row permits ColorRow, NumberRow, ToggleRow, ActionRow {
+	private sealed interface Row permits GroupRow, ColorRow, NumberRow, ToggleRow, ActionRow {
+		Rect bounds();
+	}
+
+	private record GroupRow(SettingGroup group, Rect bounds) implements Row {
 	}
 
 	private record ColorRow(ColorSetting setting, Rect bounds, List<SliderRect> sliders) implements Row {

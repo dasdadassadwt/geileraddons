@@ -105,8 +105,7 @@ public class TikiCoordManagerScreen extends Screen {
 		// While the add dialog is up nothing behind it should react to the cursor.
 		boolean hoverable = !addMode;
 
-		roundedRect(graphics, panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT, RADIUS, PANEL_TOP, PANEL_BOTTOM);
-		outline(graphics, panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT, RADIUS, BORDER);
+		roundedRectBordered(graphics, panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT, RADIUS, PANEL_TOP, PANEL_BOTTOM, BORDER);
 
 		List<BlockPos> coords = TikiCoords.all();
 		graphics.text(font, "Tiki Coordinates", panelX + PADDING + 4, panelY + 9, TEXT_PRIMARY);
@@ -150,8 +149,7 @@ public class TikiCoordManagerScreen extends Screen {
 		graphics.fill(0, 0, this.width, this.height, DIALOG_SHADE);
 
 		Rect dialog = dialogRect();
-		roundedRect(graphics, dialog.x, dialog.y, dialog.w, dialog.h, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM);
-		outline(graphics, dialog.x, dialog.y, dialog.w, dialog.h, RADIUS, BORDER);
+		roundedRectBordered(graphics, dialog.x, dialog.y, dialog.w, dialog.h, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM, BORDER);
 
 		graphics.centeredText(font, "Add Coordinate", dialog.x + dialog.w / 2, dialog.y + 9, TEXT_PRIMARY);
 
