@@ -213,6 +213,36 @@ public final class TikiSolver {
 	}
 
 	/**
+	 * Every run of clicks from here to solved, {@link #solve} repeated on the state each run
+	 * leaves behind. The first entry is identical to calling {@link #solve} directly.
+	 *
+	 * <p>Only meaningful for a fully readable tiki - there is no equivalent walk for
+	 * {@link #solveWithHidden}, since that method solves without ever learning the hidden slot's
+	 * actual rotation, so no future state can be predicted from it.
+	 */
+	public static List<Plan> solveSequence(int[] rotations, Rule rule) {
+		List<Plan> plans = new ArrayList<>();
+		int[] state = rotations;
+		// Bounded defensively rather than trusting the "<=5 clicks" guarantee outright: each run
+		// is at least one click, so the guarantee already caps this at 5 iterations.
+		for (int guard = 0; guard < SLOTS; guard++) {
+			Plan plan = solve(state, rule);
+			if (plan == null) break;
+			plans.add(plan);
+			state = applyRun(state, plan, rule);
+		}
+		return plans;
+	}
+
+	private static int[] applyRun(int[] rotations, Plan plan, Rule rule) {
+		int[] state = rotations;
+		for (int c = 0; c < plan.clicks(); c++) {
+			state = rule.apply(state, plan.index(), plan.direction());
+		}
+		return state;
+	}
+
+	/**
 	 * Plan for a tiki where one slot's rotation can't be read - the server sometimes puts an
 	 * ordinary block in a slot, and it still rotates and still counts.
 	 *

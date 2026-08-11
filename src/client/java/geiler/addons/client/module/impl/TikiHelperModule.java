@@ -81,6 +81,8 @@ public final class TikiHelperModule extends Module {
 	/** Sideways, not toward the camera: a nearer label parallaxes onto the neighbouring head. */
 	private static final double LABEL_OFFSET = 0.8;
 	private static final double LABEL_ANCHOR = 0.25;
+	/** World-Y drop per future label sharing a head another label already occupies. */
+	private static final double FUTURE_STACK_STEP = 0.18;
 	/** Half a line of text, so the HUD label centres on the projected point. */
 	private static final int HUD_LABEL_HALF_HEIGHT = 4;
 
@@ -117,6 +119,8 @@ public final class TikiHelperModule extends Module {
 	private final BooleanSetting showUnknown;
 	private final BooleanSetting worldLabels;
 	private final BooleanSetting hypixelRule;
+	private final BooleanSetting showFuturePlan;
+	private final ColorSetting futureColor;
 
 	private final NumberSetting trackRadius;
 	private final BooleanSetting trackSounds;
@@ -133,6 +137,8 @@ public final class TikiHelperModule extends Module {
 	private int[] rotations;
 	private int hiddenIndex = -1;
 	private TikiSolver.Plan plan;
+	/** Remaining runs after {@link #plan}, greyed out - empty rather than null when there are none. */
+	private List<TikiSolver.Plan> futurePlans = List.of();
 
 	private final Map<BlockPos, Skull> tracked = new HashMap<>();
 	/** Tracks the active edge so leaving the region clears state exactly once. */
@@ -150,10 +156,10 @@ public final class TikiHelperModule extends Module {
 
 	private TikiHelperModule(Settings s) {
 		super("Tiki Helper", "Waypoints, click solver and research logging for Sneaky Tikis.", Category.HUNTING,
-			List.of(s.validColor, s.invalidColor, s.tracerColor, s.leftColor, s.rightColor, s.lockedColor),
+			List.of(s.validColor, s.invalidColor, s.tracerColor, s.leftColor, s.rightColor, s.lockedColor, s.futureColor),
 			List.of(s.scanInterval, s.tracerWidth, s.range, s.labelHeight, s.trackRadius),
 			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
-				s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
+				s.showFuturePlan, s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
 			List.of(s.manageCoords));
 		this.waypoints = s.waypoints;
 		this.solver = s.solver;
@@ -173,6 +179,8 @@ public final class TikiHelperModule extends Module {
 		this.showUnknown = s.showUnknown;
 		this.worldLabels = s.worldLabels;
 		this.hypixelRule = s.hypixelRule;
+		this.showFuturePlan = s.showFuturePlan;
+		this.futureColor = s.futureColor;
 		this.trackRadius = s.trackRadius;
 		this.trackSounds = s.trackSounds;
 		this.trackChat = s.trackChat;
@@ -184,7 +192,8 @@ public final class TikiHelperModule extends Module {
 			new SettingGroup("Waypoints", s.waypoints, s.validColor, s.invalidColor, s.scanInterval,
 				s.tracer, s.tracerColor, s.tracerWidth),
 			new SettingGroup("Solver", s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range,
-				s.labelHeight, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule),
+				s.labelHeight, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
+				s.showFuturePlan, s.futureColor),
 			new SettingGroup("Debug Logging", s.debugLogging, s.trackRadius, s.trackSounds,
 				s.trackChat, s.verifySolver, s.echoToChat),
 			new SettingGroup("Coordinates", s.manageCoords)
@@ -215,6 +224,8 @@ public final class TikiHelperModule extends Module {
 		final BooleanSetting worldLabels = new BooleanSetting("World Labels", false);
 		/** Plan against the wiki's wording instead of the rule the logs actually show. */
 		final BooleanSetting hypixelRule = new BooleanSetting("Hypixel Rule", false);
+		final BooleanSetting showFuturePlan = new BooleanSetting("Show Future Clicks", true);
+		final ColorSetting futureColor = new ColorSetting("Future Color", 200, 200, 200, 130);
 
 		final NumberSetting trackRadius = new NumberSetting("Track Radius", 2, 32, 8, true);
 		final BooleanSetting trackSounds = new BooleanSetting("Track Sounds", true);
@@ -379,11 +390,19 @@ public final class TikiHelperModule extends Module {
 		}
 		rotations = read;
 		hiddenIndex = hiddenCount == 1 ? hidden : -1;
-		plan = switch (hiddenCount) {
-			case 0 -> TikiSolver.solve(read, rule());
-			case 1 -> TikiSolver.solveWithHidden(read, hidden);
-			default -> null;
-		};
+		if (hiddenCount == 0) {
+			// solveWithHidden has no equivalent walk-forward - it solves without ever learning the
+			// hidden slot's real rotation, so there is no predictable future state to preview.
+			List<TikiSolver.Plan> sequence = TikiSolver.solveSequence(read, rule());
+			plan = sequence.isEmpty() ? null : sequence.get(0);
+			futurePlans = sequence.size() > 1 ? sequence.subList(1, sequence.size()) : List.of();
+		} else if (hiddenCount == 1) {
+			plan = TikiSolver.solveWithHidden(read, hidden);
+			futurePlans = List.of();
+		} else {
+			plan = null;
+			futurePlans = List.of();
+		}
 	}
 
 	/** The three blocks above the nearest stored coordinate that still holds a tiki. */
@@ -413,6 +432,7 @@ public final class TikiHelperModule extends Module {
 		rotations = null;
 		hiddenIndex = -1;
 		plan = null;
+		futurePlans = List.of();
 	}
 
 	// ---- debug --------------------------------------------------------------------------
@@ -646,9 +666,9 @@ public final class TikiHelperModule extends Module {
 			}
 		}
 
-		if (solver.value() && worldLabels.value() && eachSolverLabel((index, text, color, height) ->
+		if (solver.value() && worldLabels.value() && eachSolverLabel((index, text, color, height, verticalOffset) ->
 			EspRenderer.renderLabel(poseStack, bufferSource, camera.rotation(),
-				labelX(index, camPos), labelY(index, height, camPos), labelZ(index, camPos),
+				labelX(index, camPos), labelY(index, height, camPos) + verticalOffset, labelZ(index, camPos),
 				text, color, height, LABEL_LINE_WIDTH))) {
 			drew = true;
 		}
@@ -684,8 +704,8 @@ public final class TikiHelperModule extends Module {
 
 		Camera camera = mc.gameRenderer.getMainCamera();
 		Font font = mc.font;
-		eachSolverLabel((index, text, color, height) -> {
-			Vec3 world = new Vec3(slotBase.getX() + 0.5, slotBase.getY() + index + LABEL_ANCHOR, slotBase.getZ() + 0.5);
+		eachSolverLabel((index, text, color, height, verticalOffset) -> {
+			Vec3 world = new Vec3(slotBase.getX() + 0.5, slotBase.getY() + index + LABEL_ANCHOR + verticalOffset, slotBase.getZ() + 0.5);
 			float[] screen = WorldToScreen.project(camera, world);
 			if (screen == null) return;
 			graphics.text(font, text, Math.round(screen[0]) - font.width(text) / 2, Math.round(screen[1]) - HUD_LABEL_HALF_HEIGHT, color);
@@ -698,10 +718,13 @@ public final class TikiHelperModule extends Module {
 
 		if (plan == null) {
 			if (!showUnknown.value()) return false;
-			sink.accept(1, UNKNOWN_LABEL, rightColor.argb(), labelHeight.value());
+			sink.accept(1, UNKNOWN_LABEL, rightColor.argb(), labelHeight.value(), 0);
 			return true;
 		}
 
+		// How many labels already sit on each head, so a future run landing on an occupied head
+		// stacks below the ones already there instead of overlapping them.
+		int[] stack = new int[SCAN_HEIGHT];
 		boolean any = false;
 		for (int i = 0; i < SCAN_HEIGHT; i++) {
 			String text;
@@ -718,14 +741,29 @@ public final class TikiHelperModule extends Module {
 			} else {
 				continue;
 			}
-			sink.accept(i, text, color, height);
+			sink.accept(i, text, color, height, 0);
+			stack[i]++;
 			any = true;
 		}
+
+		if (showFuturePlan.value() && !futurePlans.isEmpty()) {
+			for (TikiSolver.Plan future : futurePlans) {
+				int index = future.index();
+				String count = String.valueOf(future.clicks());
+				String text = (future.direction() > 0 ? "+" : "-") + count;
+				double verticalOffset = -stack[index] * FUTURE_STACK_STEP;
+				sink.accept(index, text, futureColor.argb(), labelHeight.value(), verticalOffset);
+				stack[index]++;
+				any = true;
+			}
+		}
+
 		return any;
 	}
 
 	private interface LabelSink {
-		void accept(int index, String text, int color, float height);
+		/** @param verticalOffset added straight into the world Y the label is placed at */
+		void accept(int index, String text, int color, float height, double verticalOffset);
 	}
 
 	private double labelOffsetX(Vec3 camPos) {

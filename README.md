@@ -14,7 +14,7 @@ Fully client-side. Nothing is automated, nothing is sent to the server.
 
 ---
 
-GeilerAddons draws things on your screen and does the maths you'd otherwise do in your head. It reads what your client already knows and renders on top of it — it never clicks for you, never sends a packet, and never reads anything the server hasn't already told your client.
+Two modules for SkyBlock: one for the Catacombs 4th-device puzzle, one for hunting Sneaky Tikis. Both are pure overlays on top of information your client already has.
 
 Open the menu in-game with **`/ga`**.
 
@@ -55,7 +55,7 @@ The module switches itself on only in Torrhus, and sits idle everywhere else in 
 </details>
 
 <details>
-<summary>How the tiki puzzle actually works</summary>
+<summary>The tiki rotation rule, in detail</summary>
 
 <br>
 
@@ -68,7 +68,7 @@ This rule wasn't taken from documentation — it was reverse-engineered from sev
 </details>
 
 <details>
-<summary>The menu</summary>
+<summary>Using the click GUI</summary>
 
 <br>
 
