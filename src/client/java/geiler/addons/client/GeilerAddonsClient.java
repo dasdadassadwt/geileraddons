@@ -7,7 +7,9 @@ import geiler.addons.client.location.TorrhusPresence;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
+import geiler.addons.client.module.impl.TreeNotifierModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
+import geiler.addons.client.module.impl.VisualModule;
 import geiler.addons.client.update.UpdateChecker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
@@ -21,7 +23,10 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModuleManager.register(I4HelperModule.INSTANCE);
 		ModuleManager.register(TikiHelperModule.INSTANCE);
 		ModuleManager.register(TreeTrackerModule.INSTANCE);
+		ModuleManager.register(TreeNotifierModule.INSTANCE);
+		ModuleManager.register(VisualModule.INSTANCE);
 		HudManager.register(TreeTrackerModule.INSTANCE, 0.01f, 0.10f);
+		HudManager.register(TreeNotifierModule.INSTANCE, 0.5f, 0.28f);
 		// Must come after registration: this is what restores saved settings, HUD positions and
 		// gift counts onto the things that were just registered.
 		ModConfig.load();
@@ -34,6 +39,9 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			UpdateChecker.tick();
 			I4HelperModule.INSTANCE.tick();
 			TikiHelperModule.INSTANCE.tick();
+			// Releases any chat line held back while the mod worked out whether it opened a gift
+			// block, so nothing can be withheld for longer than a tick.
+			TreeNotifierModule.INSTANCE.tick();
 			ModConfig.flushIfDirty();
 		});
 		// Quitting cleanly must not drop the gifts counted since the last debounced write.

@@ -2,46 +2,145 @@ package geiler.addons.client.gui;
 
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 
-/** Shared palette and panel drawing for the mod's screens, so they look like one GUI. */
+/**
+ * Shared palette and panel drawing for the mod's screens, so they look like one GUI.
+ *
+ * <p>The palette is derived from five colours rather than stored as thirty. Every hover tint,
+ * card fill and slider track is a function of those five, so a theme cannot be half-applied and a
+ * new colour can never be left behind on the old scheme. {@code VisualModule} owns the five and
+ * calls {@link #apply}; nothing else should write these fields.
+ */
 public final class GuiTheme {
 	public static final int RADIUS = 8;
 	/** Corner radius for the small stuff - rows, cards, swatches, buttons. */
 	public static final int RADIUS_SMALL = 5;
 
-	public static final int PANEL_TOP = 0xF0261434;
-	public static final int PANEL_BOTTOM = 0xF0140A1E;
-	public static final int MODULE_PANEL_TOP = 0xF02D1740;
-	public static final int MODULE_PANEL_BOTTOM = 0xF0170B24;
-	public static final int BORDER = 0x33FFFFFF;
-	public static final int CATEGORY_SELECTED = 0xFF6C2BD9;
-	public static final int CATEGORY_HOVER = 0x30FFFFFF;
-	public static final int MODULE_ENABLED_BG = 0xFF6C2BD9;
-	/** Card background: raised just enough off the panel to read as a separate surface. */
-	public static final int CARD_BG = 0x38FFFFFF;
-	public static final int CARD_BG_HOVER = 0x50FFFFFF;
-	public static final int CARD_BG_ENABLED = 0x666C2BD9;
-	public static final int CARD_BORDER = 0x22FFFFFF;
-	public static final int CARD_BORDER_ENABLED = 0xAA9B59F6;
-	public static final int GROUP_HEADER = 0x24FFFFFF;
-	public static final int TEXT_PRIMARY = 0xFFFFFFFF;
-	public static final int TEXT_SECONDARY = 0xFFB8AFC7;
-	public static final int TEXT_MUTED = 0xFF8A7FA0;
+	/** Meaning, not decoration: a warning stops reading as one if the theme can recolour it. */
 	public static final int TEXT_ERROR = 0xFFFF6B6B;
 	public static final int TEXT_WARN = 0xFFFFC55C;
-	public static final int SLIDER_TRACK = 0xA0000000;
-	public static final int SLIDER_FILL = 0xFF9B59F6;
-	public static final int SWITCH_OFF = 0xFF3A3145;
-	public static final int SWITCH_ON = 0xFFB44FD6;
-	public static final int SWITCH_KNOB = 0xFFFFFFFF;
-	public static final int BUTTON_BG = 0xFF4A2185;
-	public static final int BUTTON_HOVER = 0xFF6C2BD9;
 	public static final int DANGER_BG = 0xFF7A1F2B;
 	public static final int DANGER_HOVER = 0xFFC0303F;
-	public static final int SCROLLBAR = 0x60FFFFFF;
 	/** Dims the screen behind a modal dialog. */
 	public static final int DIALOG_SHADE = 0xB0000000;
+	public static final int SLIDER_TRACK = 0xA0000000;
+
+	public static int PANEL_TOP;
+	public static int PANEL_BOTTOM;
+	public static int MODULE_PANEL_TOP;
+	public static int MODULE_PANEL_BOTTOM;
+	public static int BORDER;
+	public static int CATEGORY_SELECTED;
+	public static int CATEGORY_HOVER;
+	/** Card background: raised just enough off the panel to read as a separate surface. */
+	public static int CARD_BG;
+	public static int CARD_BG_HOVER;
+	public static int CARD_BG_ENABLED;
+	public static int CARD_BORDER;
+	public static int CARD_BORDER_ENABLED;
+	public static int GROUP_HEADER;
+	public static int TEXT_PRIMARY;
+	public static int TEXT_SECONDARY;
+	public static int TEXT_MUTED;
+	/** Readable on top of the accent, whichever way the accent's brightness went. */
+	public static int TEXT_ON_ACCENT;
+	public static int SLIDER_FILL;
+	public static int SWITCH_OFF;
+	public static int SWITCH_ON;
+	public static int SWITCH_KNOB;
+	public static int BUTTON_BG;
+	public static int BUTTON_HOVER;
+	public static int SCROLLBAR;
+
+	static {
+		// Something has to be on the palette before the config is read, since a screen could be
+		// drawn first. VisualModule overwrites this the moment its settings load.
+		apply(0xE60E0E12, 0x33FFFFFF, 0xFFCFCFD6, 0xFFFFFFFF, 0xFF8C8C99);
+	}
 
 	private GuiTheme() {
+	}
+
+	/**
+	 * Rebuilds the palette from the five colours a theme is made of.
+	 *
+	 * @param background panel fill, alpha included - this is what makes the GUI see-through
+	 * @param border     panel and card outlines
+	 * @param accent     selection, toggles, sliders and buttons
+	 * @param text       primary text, and the tint every translucent overlay is mixed from
+	 * @param muted      secondary text
+	 */
+	public static void apply(int background, int border, int accent, int text, int muted) {
+		PANEL_TOP = background;
+		PANEL_BOTTOM = shade(background, -0.22f);
+		MODULE_PANEL_TOP = shade(background, 0.10f);
+		MODULE_PANEL_BOTTOM = shade(background, -0.10f);
+		BORDER = border;
+
+		CATEGORY_SELECTED = opaque(accent);
+		CATEGORY_HOVER = withAlpha(text, 48);
+		// Overlays are tinted from the text colour rather than hardcoded white, so a light theme
+		// gets darker cards instead of invisible ones.
+		CARD_BG = withAlpha(text, 40);
+		CARD_BG_HOVER = withAlpha(text, 64);
+		CARD_BG_ENABLED = withAlpha(accent, 110);
+		CARD_BORDER = withAlpha(border, alpha(border) / 2);
+		CARD_BORDER_ENABLED = opaque(accent);
+		GROUP_HEADER = withAlpha(text, 28);
+
+		TEXT_PRIMARY = opaque(text);
+		TEXT_SECONDARY = lerpColor(opaque(text), opaque(muted), 0.5f);
+		TEXT_MUTED = opaque(muted);
+		TEXT_ON_ACCENT = luminance(accent) > 0.55f ? 0xFF101014 : 0xFFFFFFFF;
+
+		SLIDER_FILL = opaque(accent);
+		SWITCH_OFF = opaque(shade(background, 0.45f));
+		SWITCH_ON = opaque(accent);
+		SWITCH_KNOB = opaque(text);
+		BUTTON_BG = opaque(shade(accent, -0.38f));
+		BUTTON_HOVER = opaque(accent);
+		SCROLLBAR = withAlpha(text, 96);
+	}
+
+	/** Toward white for a positive amount, toward black for a negative one; alpha is kept. */
+	private static int shade(int color, float amount) {
+		int r = channel(color, 16);
+		int g = channel(color, 8);
+		int b = channel(color, 0);
+		if (amount >= 0) {
+			r += Math.round((255 - r) * amount);
+			g += Math.round((255 - g) * amount);
+			b += Math.round((255 - b) * amount);
+		} else {
+			r += Math.round(r * amount);
+			g += Math.round(g * amount);
+			b += Math.round(b * amount);
+		}
+		return (color & 0xFF000000) | (clamp(r) << 16) | (clamp(g) << 8) | clamp(b);
+	}
+
+	private static int withAlpha(int color, int newAlpha) {
+		return (clamp(newAlpha) << 24) | (color & 0x00FFFFFF);
+	}
+
+	private static int opaque(int color) {
+		return 0xFF000000 | (color & 0x00FFFFFF);
+	}
+
+	private static int alpha(int color) {
+		return (color >>> 24) & 0xFF;
+	}
+
+	private static int channel(int color, int shift) {
+		return (color >>> shift) & 0xFF;
+	}
+
+	/** Perceptual, so a yellow accent counts as light even though its blue channel is nothing. */
+	private static float luminance(int color) {
+		return (0.2126f * channel(color, 16) + 0.7152f * channel(color, 8) + 0.0722f * channel(color, 0)) / 255.0f;
+	}
+
+	private static int clamp(int value) {
+		return Math.max(0, Math.min(255, value));
 	}
 
 	public static void roundedRect(GuiGraphicsExtractor graphics, int x, int y, int w, int h, int radius, int color) {

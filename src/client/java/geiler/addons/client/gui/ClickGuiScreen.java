@@ -12,6 +12,7 @@ import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
+import geiler.addons.client.module.impl.VisualModule;
 import geiler.addons.client.update.UpdateChecker;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -42,6 +43,18 @@ public class ClickGuiScreen extends Screen {
 	private static final int PADDING = 8;
 	private static final int CHANNEL_ROW_HEIGHT = 14;
 	private static final int SCROLLBAR_WIDTH = 3;
+
+	/** Colour picker geometry, all measured from the top of the expanded area. */
+	private static final int PICKER_INSET = 16;
+	private static final int PICKER_SQUARE_HEIGHT = 64;
+	private static final int PICKER_BAR_HEIGHT = 8;
+	private static final int PICKER_GAP = 5;
+	private static final int PICKER_HEX_HEIGHT = 13;
+	private static final int PICKER_HEX_WIDTH = 74;
+	private static final int PICKER_HEIGHT = PICKER_SQUARE_HEIGHT + PICKER_GAP + PICKER_BAR_HEIGHT
+		+ PICKER_GAP + PICKER_BAR_HEIGHT + PICKER_GAP + PICKER_HEX_HEIGHT + PADDING;
+	/** Side of the light/dark squares behind a partly transparent colour. */
+	private static final int CHECKER_SIZE = 4;
 	/** Room reserved on a setting row's right for the swatch, switch or value read-out. */
 	private static final int VALUE_GUTTER = 36;
 
@@ -61,12 +74,18 @@ public class ClickGuiScreen extends Screen {
 	/** Caret on for this long, then off for as long again. */
 	private static final long CARET_BLINK_MILLIS = 500;
 
+	/** Which part of the colour picker the mouse is currently dragging. */
+	private enum PickerPart { SQUARE, HUE, ALPHA }
+
 	private Category selectedCategory;
 	private Module openSettingsModule;
 	private ColorSetting expandedColorSetting;
-	private ColorSetting.Channel draggingChannel;
+	private PickerPart draggingPicker;
 	private NumberSetting draggingNumberSetting;
 	private TextSetting focusedTextSetting;
+	/** The colour whose hex field has focus, and what has been typed into it so far. */
+	private ColorSetting focusedHexSetting;
+	private String hexInput = "";
 	private int settingsScroll;
 	private int gridScroll;
 
@@ -134,6 +153,9 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+		// Before anything reads the palette: dragging a theme colour has to redraw the menu in it
+		// on the same frame, which is the whole point of editing a theme from inside the menu.
+		VisualModule.INSTANCE.refreshTheme();
 		int panelX = panelX();
 		int panelY = panelY();
 		int categoryWidth = categoryWidth();
@@ -343,29 +365,121 @@ public class ClickGuiScreen extends Screen {
 
 	private void renderColorRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, ColorRow colorRow, boolean hoverable) {
 		Rect bounds = colorRow.bounds;
-		// Only the label strip is clickable, not the slider area an expanded row adds below it.
+		ColorSetting setting = colorRow.setting;
+		// Only the label strip is clickable, not the picker an expanded row adds below it.
 		if (hoverable && new Rect(bounds.x, bounds.y, bounds.w, ROW_HEIGHT).contains(mouseX, mouseY)) {
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, ROW_HEIGHT - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, colorRow.setting.name(), bounds.x + 16, bounds.y + (ROW_HEIGHT - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+		graphics.text(font, setting.name(), bounds.x + 16, bounds.y + (ROW_HEIGHT - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		int swatchSize = 12;
 		int swatchX = bounds.x + bounds.w - swatchSize - 14;
 		int swatchY = bounds.y + (ROW_HEIGHT - swatchSize) / 2;
+		checkerboard(graphics, swatchX, swatchY, swatchSize, swatchSize);
 		roundedRectBordered(graphics, swatchX, swatchY, swatchSize, swatchSize, 3,
-			colorRow.setting.opaqueArgb(), colorRow.setting.opaqueArgb(), BORDER);
+			setting.argb(), setting.argb(), BORDER);
 
-		if (colorRow.sliders == null) return;
-		for (SliderRect slider : colorRow.sliders) {
-			int value = colorRow.setting.channel(slider.channel);
-			graphics.text(font, channelLabel(slider.channel), slider.rect.x - 12, slider.rect.y + 1, TEXT_MUTED);
-			roundedRect(graphics, slider.rect.x, slider.rect.y, slider.rect.w, slider.rect.h, slider.rect.h / 2, SLIDER_TRACK);
-			int fillWidth = Math.round(slider.rect.w * (value / 255.0f));
-			if (fillWidth > 0) {
-				roundedRect(graphics, slider.rect.x, slider.rect.y, fillWidth, slider.rect.h, slider.rect.h / 2, SLIDER_FILL);
-			}
-			graphics.text(font, String.valueOf(value), slider.rect.x + slider.rect.w + 6, slider.rect.y + 1, TEXT_MUTED);
+		Picker picker = colorRow.picker;
+		if (picker == null) return;
+		renderSaturationSquare(graphics, picker.square, setting);
+		renderHueBar(graphics, picker.hue, setting);
+		renderAlphaBar(graphics, picker.alpha, setting);
+		renderHexField(graphics, font, picker.hex, setting);
+	}
+
+	/**
+	 * The saturation/brightness square, drawn as one vertical gradient per column.
+	 *
+	 * <p>A column runs from its own saturation at full brightness down to black, and the columns
+	 * run from white to the pure hue - which is exactly the standard picker square. Per column
+	 * rather than per pixel because the fill API only gradients vertically, and a few hundred
+	 * quads on a screen that is already open costs nothing.
+	 */
+	private void renderSaturationSquare(GuiGraphicsExtractor graphics, Rect square, ColorSetting setting) {
+		int pure = hueColor(setting.hue());
+		for (int i = 0; i < square.w; i++) {
+			int top = lerpColor(0xFFFFFFFF, pure, i / (float) Math.max(1, square.w - 1));
+			graphics.fillGradient(square.x + i, square.y, square.x + i + 1, square.y + square.h, top, 0xFF000000);
 		}
+		crosshair(graphics, square.x + Math.round(setting.saturation() * (square.w - 1)),
+			square.y + Math.round((1 - setting.brightness()) * (square.h - 1)));
+	}
+
+	private void renderHueBar(GuiGraphicsExtractor graphics, Rect bar, ColorSetting setting) {
+		for (int i = 0; i < bar.w; i++) {
+			graphics.fill(bar.x + i, bar.y, bar.x + i + 1, bar.y + bar.h, hueColor(i / (float) bar.w));
+		}
+		marker(graphics, bar, Math.round(setting.hue() * (bar.w - 1)));
+	}
+
+	private void renderAlphaBar(GuiGraphicsExtractor graphics, Rect bar, ColorSetting setting) {
+		checkerboard(graphics, bar.x, bar.y, bar.w, bar.h);
+		int opaque = setting.opaqueArgb();
+		for (int i = 0; i < bar.w; i++) {
+			int alpha = Math.round(255 * i / (float) Math.max(1, bar.w - 1));
+			graphics.fill(bar.x + i, bar.y, bar.x + i + 1, bar.y + bar.h, (alpha << 24) | (opaque & 0x00FFFFFF));
+		}
+		marker(graphics, bar, Math.round(setting.alpha() / 255.0f * (bar.w - 1)));
+	}
+
+	private void renderHexField(GuiGraphicsExtractor graphics, Font font, Rect field, ColorSetting setting) {
+		boolean focused = setting == focusedHexSetting;
+		roundedRectBordered(graphics, field.x, field.y, field.w, field.h, 3, SLIDER_TRACK, SLIDER_TRACK,
+			focused ? SLIDER_FILL : BORDER);
+		String shown = focused ? hexInput : setting.hex();
+		int textY = field.y + (field.h - TEXT_HEIGHT) / 2;
+		graphics.text(font, shown, field.x + 4, textY, TEXT_PRIMARY);
+		if (focused && (System.currentTimeMillis() / CARET_BLINK_MILLIS) % 2 == 0) {
+			int caretX = field.x + 4 + font.width(shown);
+			graphics.fill(caretX, textY - 1, caretX + 1, textY + TEXT_HEIGHT + 1, TEXT_PRIMARY);
+		}
+	}
+
+	/** Ring rather than a dot, so the selected colour stays visible underneath it. */
+	private void crosshair(GuiGraphicsExtractor graphics, int x, int y) {
+		int outline = 0xFF000000;
+		graphics.fill(x - 3, y - 1, x - 1, y, outline);
+		graphics.fill(x + 2, y - 1, x + 4, y, outline);
+		graphics.fill(x - 1, y - 3, x, y - 1, outline);
+		graphics.fill(x - 1, y + 2, x, y + 4, outline);
+		graphics.fill(x - 2, y - 2, x + 3, y - 1, 0xFFFFFFFF);
+		graphics.fill(x - 2, y + 1, x + 3, y + 2, 0xFFFFFFFF);
+		graphics.fill(x - 2, y - 1, x - 1, y + 1, 0xFFFFFFFF);
+		graphics.fill(x + 2, y - 1, x + 3, y + 1, 0xFFFFFFFF);
+	}
+
+	private void marker(GuiGraphicsExtractor graphics, Rect bar, int offset) {
+		int x = bar.x + offset;
+		graphics.fill(x - 1, bar.y - 2, x + 2, bar.y + bar.h + 2, 0xFF000000);
+		graphics.fill(x, bar.y - 1, x + 1, bar.y + bar.h + 1, 0xFFFFFFFF);
+	}
+
+	/** The usual two-tone grid, so "transparent" doesn't read as "black". */
+	private void checkerboard(GuiGraphicsExtractor graphics, int x, int y, int w, int h) {
+		for (int row = 0; row < h; row += CHECKER_SIZE) {
+			for (int column = 0; column < w; column += CHECKER_SIZE) {
+				boolean light = ((row / CHECKER_SIZE) + (column / CHECKER_SIZE)) % 2 == 0;
+				graphics.fill(x + column, y + row,
+					Math.min(x + column + CHECKER_SIZE, x + w), Math.min(y + row + CHECKER_SIZE, y + h),
+					light ? 0xFF9A9A9A : 0xFF5E5E5E);
+			}
+		}
+	}
+
+	/** Fully saturated, fully bright colour at the given hue. */
+	private static int hueColor(float hue) {
+		float sector = (hue - (float) Math.floor(hue)) * 6.0f;
+		float rising = sector % 1;
+		int up = Math.round(rising * 255);
+		int down = 255 - up;
+		return switch ((int) sector) {
+			case 0 -> 0xFFFF0000 | (up << 8);
+			case 1 -> 0xFF00FF00 | (down << 16);
+			case 2 -> 0xFF00FF00 | up;
+			case 3 -> 0xFF0000FF | (down << 8);
+			case 4 -> 0xFF0000FF | (up << 16);
+			default -> 0xFFFF0000 | down;
+		};
 	}
 
 	private void renderNumberRow(GuiGraphicsExtractor graphics, Font font, NumberRow numberRow) {
@@ -465,7 +579,7 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private int colorRowHeight(ColorSetting setting) {
-		return ROW_HEIGHT + (setting == expandedColorSetting ? 4 * CHANNEL_ROW_HEIGHT + PADDING : 0);
+		return ROW_HEIGHT + (setting == expandedColorSetting ? PICKER_HEIGHT : 0);
 	}
 
 	/** @param startY where the first row begins; already offset by the scroll position */
@@ -485,7 +599,7 @@ public class ClickGuiScreen extends Screen {
 					case ColorSetting colorSetting -> {
 						int rowHeight = colorRowHeight(colorSetting);
 						rows.add(new ColorRow(colorSetting, new Rect(x, cursorY, moduleWidth, rowHeight),
-							colorSliders(colorSetting, x, cursorY, moduleWidth)));
+							picker(colorSetting, x, cursorY, moduleWidth)));
 						cursorY += rowHeight;
 					}
 					case NumberSetting numberSetting -> {
@@ -514,20 +628,18 @@ public class ClickGuiScreen extends Screen {
 		return rows;
 	}
 
-	private List<SliderRect> colorSliders(ColorSetting setting, int x, int cursorY, int moduleWidth) {
+	private Picker picker(ColorSetting setting, int x, int cursorY, int moduleWidth) {
 		if (setting != expandedColorSetting) return null;
-		List<SliderRect> sliders = new ArrayList<>();
-		ColorSetting.Channel[] channels = {
-			ColorSetting.Channel.RED, ColorSetting.Channel.GREEN, ColorSetting.Channel.BLUE, ColorSetting.Channel.ALPHA
-		};
-		int sliderY = cursorY + ROW_HEIGHT + 2;
-		int sliderX = x + 28;
-		int sliderWidth = moduleWidth - 28 - VALUE_GUTTER;
-		for (ColorSetting.Channel channel : channels) {
-			sliders.add(new SliderRect(channel, new Rect(sliderX, sliderY, sliderWidth, 6)));
-			sliderY += CHANNEL_ROW_HEIGHT;
-		}
-		return sliders;
+		int left = x + PICKER_INSET;
+		int width = moduleWidth - PICKER_INSET * 2;
+		int top = cursorY + ROW_HEIGHT;
+		Rect square = new Rect(left, top, width, PICKER_SQUARE_HEIGHT);
+		int hueY = square.y + square.h + PICKER_GAP;
+		Rect hue = new Rect(left, hueY, width, PICKER_BAR_HEIGHT);
+		int alphaY = hueY + PICKER_BAR_HEIGHT + PICKER_GAP;
+		Rect alpha = new Rect(left, alphaY, width, PICKER_BAR_HEIGHT);
+		Rect hex = new Rect(left, alphaY + PICKER_BAR_HEIGHT + PICKER_GAP, PICKER_HEX_WIDTH, PICKER_HEX_HEIGHT);
+		return new Picker(square, hue, alpha, hex);
 	}
 
 	// ---- input --------------------------------------------------------------------------
@@ -613,13 +725,27 @@ public class ClickGuiScreen extends Screen {
 					}
 				}
 				case ColorRow colorRow -> {
-					if (colorRow.sliders != null) {
-						for (SliderRect slider : colorRow.sliders) {
-							if (slider.rect.contains(mouseX, mouseY)) {
-								draggingChannel = slider.channel;
-								applySlider(colorRow.setting, slider, mouseX);
-								return true;
-							}
+					Picker picker = colorRow.picker;
+					if (picker != null) {
+						if (picker.square.contains(mouseX, mouseY)) {
+							draggingPicker = PickerPart.SQUARE;
+							applyPicker(colorRow.setting, picker, mouseX, mouseY);
+							return true;
+						}
+						if (picker.hue.contains(mouseX, mouseY)) {
+							draggingPicker = PickerPart.HUE;
+							applyPicker(colorRow.setting, picker, mouseX, mouseY);
+							return true;
+						}
+						if (picker.alpha.contains(mouseX, mouseY)) {
+							draggingPicker = PickerPart.ALPHA;
+							applyPicker(colorRow.setting, picker, mouseX, mouseY);
+							return true;
+						}
+						if (picker.hex.contains(mouseX, mouseY)) {
+							focusedHexSetting = colorRow.setting;
+							hexInput = colorRow.setting.hex();
+							return true;
 						}
 					}
 					if (new Rect(colorRow.bounds.x, colorRow.bounds.y, colorRow.bounds.w, ROW_HEIGHT).contains(mouseX, mouseY)) {
@@ -668,16 +794,14 @@ public class ClickGuiScreen extends Screen {
 		}
 		int rightX = panelX() + categoryWidth();
 		int mouseX = (int) event.x();
+		int mouseY = (int) event.y();
 
-		if (draggingChannel != null || draggingNumberSetting != null) {
+		if (draggingPicker != null || draggingNumberSetting != null) {
 			for (Row row : settingsRows(openSettingsModule, rightX, panelY())) {
-				if (draggingChannel != null && row instanceof ColorRow colorRow && colorRow.setting == expandedColorSetting && colorRow.sliders != null) {
-					for (SliderRect slider : colorRow.sliders) {
-						if (slider.channel == draggingChannel) {
-							applySlider(colorRow.setting, slider, mouseX);
-							return true;
-						}
-					}
+				if (draggingPicker != null && row instanceof ColorRow colorRow
+					&& colorRow.setting == expandedColorSetting && colorRow.picker != null) {
+					applyPicker(colorRow.setting, colorRow.picker, mouseX, mouseY);
+					return true;
 				}
 				if (row instanceof NumberRow numberRow && numberRow.setting == draggingNumberSetting) {
 					applyNumberSlider(numberRow.setting, numberRow.slider, mouseX);
@@ -691,8 +815,8 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean mouseReleased(MouseButtonEvent event) {
-		if (draggingChannel != null || draggingNumberSetting != null) {
-			draggingChannel = null;
+		if (draggingPicker != null || draggingNumberSetting != null) {
+			draggingPicker = null;
 			draggingNumberSetting = null;
 			persistView();
 			ModConfig.save();
@@ -703,15 +827,42 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean charTyped(CharacterEvent event) {
-		if (focusedTextSetting == null) return super.charTyped(event);
 		int codepoint = event.codepoint();
-		if (Character.isISOControl(codepoint)) return true;
-		focusedTextSetting.setValue(focusedTextSetting.value() + Character.toString(codepoint));
-		return true;
+		if (Character.isISOControl(codepoint)) {
+			return focusedTextSetting != null || focusedHexSetting != null || super.charTyped(event);
+		}
+		if (focusedHexSetting != null) {
+			// Only hex digits get in, so the field can never hold something unparseable.
+			if (Character.digit(codepoint, 16) >= 0 && hexInput.length() < 8) {
+				hexInput += Character.toString(codepoint).toUpperCase();
+				focusedHexSetting.setHex(hexInput);
+			}
+			return true;
+		}
+		if (focusedTextSetting != null) {
+			focusedTextSetting.setValue(focusedTextSetting.value() + Character.toString(codepoint));
+			return true;
+		}
+		return super.charTyped(event);
 	}
 
 	@Override
 	public boolean keyPressed(KeyEvent event) {
+		if (focusedHexSetting != null) {
+			switch (event.key()) {
+				case GLFW.GLFW_KEY_BACKSPACE -> {
+					if (!hexInput.isEmpty()) {
+						hexInput = hexInput.substring(0, hexInput.length() - 1);
+						focusedHexSetting.setHex(hexInput);
+					}
+				}
+				case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> blurTextField();
+				default -> {
+					return super.keyPressed(event);
+				}
+			}
+			return true;
+		}
 		if (focusedTextSetting == null) return super.keyPressed(event);
 		switch (event.key()) {
 			case GLFW.GLFW_KEY_BACKSPACE -> {
@@ -731,8 +882,10 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private void blurTextField() {
-		if (focusedTextSetting == null) return;
+		if (focusedTextSetting == null && focusedHexSetting == null) return;
 		focusedTextSetting = null;
+		focusedHexSetting = null;
+		hexInput = "";
 		ModConfig.save();
 	}
 
@@ -768,10 +921,23 @@ public class ClickGuiScreen extends Screen {
 		persistView();
 	}
 
-	private void applySlider(ColorSetting setting, SliderRect slider, int mouseX) {
-		float fraction = (mouseX - slider.rect.x) / (float) slider.rect.w;
-		int value = Math.round(fraction * 255);
-		setting.setChannel(slider.channel, value);
+	private void applyPicker(ColorSetting setting, Picker picker, int mouseX, int mouseY) {
+		switch (draggingPicker) {
+			case SQUARE -> setting.setSaturationBrightness(
+				fraction(mouseX, picker.square.x, picker.square.w),
+				1 - fraction(mouseY, picker.square.y, picker.square.h));
+			case HUE -> setting.setHue(fraction(mouseX, picker.hue.x, picker.hue.w));
+			case ALPHA -> setting.setChannel(ColorSetting.Channel.ALPHA,
+				Math.round(fraction(mouseX, picker.alpha.x, picker.alpha.w) * 255));
+		}
+		// The field would otherwise keep showing the value from before the drag started.
+		if (focusedHexSetting == setting) {
+			hexInput = setting.hex();
+		}
+	}
+
+	private static float fraction(int position, int start, int size) {
+		return Math.max(0, Math.min(1, (position - start) / (float) Math.max(1, size - 1)));
 	}
 
 	private void applyNumberSlider(NumberSetting setting, Rect slider, int mouseX) {
@@ -789,22 +955,14 @@ public class ClickGuiScreen extends Screen {
 		return rows;
 	}
 
-	private static String channelLabel(ColorSetting.Channel channel) {
-		return switch (channel) {
-			case RED -> "R";
-			case GREEN -> "G";
-			case BLUE -> "B";
-			case ALPHA -> "A";
-		};
-	}
-
 	private record Rect(int x, int y, int w, int h) {
 		boolean contains(double px, double py) {
 			return px >= x && px < x + w && py >= y && py < y + h;
 		}
 	}
 
-	private record SliderRect(ColorSetting.Channel channel, Rect rect) {
+	/** The four hit areas of an expanded colour row. */
+	private record Picker(Rect square, Rect hue, Rect alpha, Rect hex) {
 	}
 
 	private record CardRect(Module module, Rect bounds) {
@@ -818,7 +976,7 @@ public class ClickGuiScreen extends Screen {
 	private record GroupRow(SettingGroup group, Rect bounds) implements Row {
 	}
 
-	private record ColorRow(ColorSetting setting, Rect bounds, List<SliderRect> sliders) implements Row {
+	private record ColorRow(ColorSetting setting, Rect bounds, Picker picker) implements Row {
 	}
 
 	private record NumberRow(NumberSetting setting, Rect bounds, Rect slider) implements Row {

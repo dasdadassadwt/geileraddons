@@ -3,6 +3,7 @@ package geiler.addons.client.mixin;
 import geiler.addons.client.gui.ClickGuiScreen;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
+import geiler.addons.client.module.impl.TreeNotifierModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
@@ -24,11 +25,10 @@ public abstract class ClientPacketListenerMixin {
 	 * command: a bare literal command with no arguments throws "Incorrect argument for command"
 	 * if the typed text has any trailing whitespace (e.g. tab-completion appends a space before
 	 * Enter is pressed) - this sidesteps that by matching the trimmed string ourselves.
-	 */
-	/**
-	 * The chat screen unconditionally closes itself (setScreen(null)) right after handling
-	 * Enter, which would immediately wipe out a screen opened synchronously here. Deferring
-	 * to the next tick lets our screen open after the chat screen finishes closing itself.
+	 *
+	 * <p>Opening is deferred a tick because the chat screen unconditionally closes itself
+	 * (setScreen(null)) right after handling Enter, which would immediately wipe out a screen
+	 * opened synchronously here.
 	 */
 	@Inject(method = "sendCommand", at = @At("HEAD"), cancellable = true)
 	private void geileraddons$onSendCommand(String command, CallbackInfo ci) {
@@ -62,13 +62,19 @@ public abstract class ClientPacketListenerMixin {
 	 * message. Keeping to the client-thread pass both drops the duplicate and makes it safe for
 	 * the handlers to touch GUI, level and module state, none of which the netty thread may read.
 	 */
-	@Inject(method = "handleSystemChat", at = @At("HEAD"))
+	@Inject(method = "handleSystemChat", at = @At("HEAD"), cancellable = true)
 	private void geileraddons$onSystemChat(ClientboundSystemChatPacket packet, CallbackInfo ci) {
 		if (!Minecraft.getInstance().isSameThread()) return;
 		String content = packet.content().getString();
 		I4HelperModule.INSTANCE.onChatMessage(content);
 		TikiHelperModule.INSTANCE.onChatMessage(content);
 		TreeTrackerModule.INSTANCE.onChatMessage(content);
+		// Last, and the only one that may cancel: everything above has to see the line whether or
+		// not it ends up displayed, since hiding a gift message must not stop it being counted.
+		// Overlay messages are the action bar rather than chat, so they are left alone.
+		if (!packet.overlay() && TreeNotifierModule.INSTANCE.onChatMessage(content, packet.content())) {
+			ci.cancel();
+		}
 	}
 
 	@Inject(method = "handleSoundEvent", at = @At("TAIL"))

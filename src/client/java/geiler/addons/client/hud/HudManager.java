@@ -1,6 +1,7 @@
 package geiler.addons.client.hud;
 
 import geiler.addons.client.gui.MoveUiScreen;
+import geiler.addons.client.module.impl.VisualModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -53,6 +54,7 @@ public final class HudManager {
 	public static void render(GuiGraphicsExtractor graphics) {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.options.hideGui || mc.screen instanceof MoveUiScreen) return;
+		VisualModule.INSTANCE.refreshTheme();
 
 		Font font = mc.font;
 		int width = graphics.guiWidth();

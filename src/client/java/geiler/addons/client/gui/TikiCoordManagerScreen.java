@@ -3,6 +3,7 @@ package geiler.addons.client.gui;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.config.TikiCoords;
 import geiler.addons.client.module.impl.TikiHelperModule;
+import geiler.addons.client.module.impl.VisualModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -90,6 +91,7 @@ public class TikiCoordManagerScreen extends Screen {
 
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+		VisualModule.INSTANCE.refreshTheme();
 		renderList(graphics, mouseX, mouseY);
 		if (addMode) {
 			renderAddDialog(graphics, mouseX, mouseY);

@@ -3,6 +3,7 @@ package geiler.addons.client.gui;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.hud.HudElement;
 import geiler.addons.client.hud.HudManager;
+import geiler.addons.client.module.impl.VisualModule;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
@@ -36,6 +37,7 @@ public class MoveUiScreen extends Screen {
 
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+		VisualModule.INSTANCE.refreshTheme();
 		graphics.fill(0, 0, this.width, this.height, DIALOG_SHADE);
 		Font font = this.font;
 

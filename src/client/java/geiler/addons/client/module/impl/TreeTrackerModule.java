@@ -39,8 +39,6 @@ public final class TreeTrackerModule extends Module implements HudElement {
 	private final TextSetting pauseTimeout;
 	private final BooleanSetting totalMode;
 	private final BooleanSetting showBackground;
-	private final ColorSetting textColor;
-	private final ColorSetting backgroundColor;
 
 	private final TreeTracker tracker = new TreeTracker();
 
@@ -55,15 +53,13 @@ public final class TreeTrackerModule extends Module implements HudElement {
 	private TreeTrackerModule(Settings s) {
 		super("Tree Tracker", "Counts Helix, Fig and Mangrove gifts and shows gifts per hour.",
 			Category.FORAGING,
-			s.pauseTimeout, s.totalMode, s.textColor, s.showBackground, s.backgroundColor, s.resetSession);
+			s.pauseTimeout, s.totalMode, s.showBackground, s.resetSession);
 		this.pauseTimeout = s.pauseTimeout;
 		this.totalMode = s.totalMode;
 		this.showBackground = s.showBackground;
-		this.textColor = s.textColor;
-		this.backgroundColor = s.backgroundColor;
 		group(
 			new SettingGroup("Counting", s.pauseTimeout, s.totalMode, s.resetSession),
-			new SettingGroup("Display", s.textColor, s.showBackground, s.backgroundColor)
+			new SettingGroup("Display", s.showBackground)
 		);
 	}
 
@@ -72,8 +68,6 @@ public final class TreeTrackerModule extends Module implements HudElement {
 		final TextSetting pauseTimeout = new TextSetting("Pause Timeout (s)", String.valueOf(DEFAULT_PAUSE_SECONDS), 6);
 		final BooleanSetting totalMode = new BooleanSetting("Show Totals", false);
 		final BooleanSetting showBackground = new BooleanSetting("Background", true);
-		final ColorSetting textColor = new ColorSetting("Text Color", 255, 255, 255, 255);
-		final ColorSetting backgroundColor = new ColorSetting("Background Color", 0, 0, 0, 110);
 		final ModuleAction resetSession = new ModuleAction("Reset Session", TreeTrackerModule::resetSession);
 	}
 
@@ -154,12 +148,12 @@ public final class TreeTrackerModule extends Module implements HudElement {
 	public void render(GuiGraphicsExtractor graphics, Font font, int x, int y) {
 		String[] lines = lines();
 		if (showBackground.value()) {
-			GuiTheme.roundedRect(graphics, x, y, width(font), height(font), 3, backgroundColor.argb());
+			GuiTheme.roundedRect(graphics, x, y, width(font), height(font), 3, GuiTheme.PANEL_TOP);
 		}
 		int textY = y + PADDING;
 		for (int i = 0; i < lines.length; i++) {
 			// The header is dimmed so the numbers under it are what the eye lands on first.
-			int color = i == 0 ? GuiTheme.TEXT_SECONDARY : textColor.argb();
+			int color = i == 0 ? GuiTheme.TEXT_SECONDARY : GuiTheme.TEXT_PRIMARY;
 			graphics.text(font, lines[i], x + PADDING, textY, color);
 			textY += LINE_HEIGHT;
 		}

@@ -98,7 +98,9 @@ public final class TorrhusPresence {
 		}
 
 		if (learnedSomething) {
-			ModConfig.save();
+			// Debounced: this runs from the tick loop, and serializing the whole config the moment
+			// a chunk loads put a visible hitch right where the player is warping in.
+			ModConfig.markDirty();
 		}
 
 		// Any disagreement is decisive - the ground at these spots does not change, so a mismatch

@@ -70,13 +70,44 @@ Drag the panel wherever you like with **Move Elements** in the menu.
 </details>
 
 <details>
+<summary><b>Tree Broken Notifier</b> — a title when a tree comes down</summary>
+
+<br>
+
+Flashes a title across the screen when you fell a tree or one gives you a gift — so you can keep your eyes on the trees instead of on chat.
+
+**Two separate titles.** Gifts get one, **TIMBER!** and **PETALFALL!** get another, each with its own wording, sound and pitch, so you can tell them apart without reading. They really are separate events — a felling can happen without a gift and can fire more than once for one tree — and each has its own switch if you only want one of them. A gift block that names its tree on several lines still only shows one title.
+
+Size, on-screen time and volume are shared. Write `{tree}` anywhere in either text and it becomes Helix, Fig or Mangrove.
+
+**Hide the chat spam.** Each side can suppress its own message: the whole gift block — bars, header, rewards line and all — or the TIMBER!/PETALFALL! line. Hidden gifts are still counted; hiding only affects what you see. Off by default.
+
+</details>
+
+<details>
+<summary><b>Theme</b> — one look for the whole mod</summary>
+
+<br>
+
+Everything the mod draws — the menu, the tracker panel, the notifier — reads from a single theme, so there's one place to change how it all looks.
+
+Five colours define it: background, border, accent, text and muted text. Every hover tint, card fill and slider is worked out from those, so you can't end up with half of the GUI on the old scheme. Text sitting on the accent flips between black and white on its own, so a pale accent doesn't leave unreadable labels.
+
+Four presets to start from: **Tracker** (the flat translucent look, and the default), **Amethyst** (the original purple), **Midnight** and **Forest**.
+
+In-world colours — waypoint states, solver directions, device highlights — stay separate. Those are signals, not decoration, and a theme has no business repainting them.
+
+</details>
+
+<details>
 <summary>Using the click GUI</summary>
 
 <br>
 
 - Modules are cards. The **switch** turns one on; **clicking anywhere else** on the card opens its settings — either mouse button works.
 - Settings are grouped into sections you can fold shut. It remembers which ones you closed.
-- Every colour has an alpha slider, every number is a draggable slider with a live readout.
+- Colours open a proper picker: drag the square for shade, the strip under it for hue, the one below that for transparency, or type a hex code straight in.
+- Every number is a draggable slider with a live readout.
 - **Move Elements**, at the bottom of the category list, opens a screen where you drag HUD panels into place. Positions are kept as a share of the screen, so they survive a resolution or GUI-scale change.
 - The panel scales to your screen and reopens wherever you left it.
 
