@@ -25,6 +25,7 @@ What that has answered so far:
 | Key and character input | `GuiEventListener.keyPressed(KeyEvent)` and `charTyped(CharacterEvent)`; `CharacterEvent` is a record of a single `codepoint()`, `KeyEvent` of `key()`/`scancode()`/`modifiers()` |
 | In-world text | Has to go through `SubmitNodeCollector.submitText`; `Font.drawInBatch` against the level buffer source silently drops the glyphs, which is why solver labels are HUD-projected instead |
 | Clean shutdown hook | `ClientLifecycleEvents.CLIENT_STOPPING` |
+| Source encoding | `native.encoding` is `Cp1252` here, so javac's default would mangle the UTF-8 sources; Loom sets UTF-8 already and `build.gradle` now states it outright |
 
 ## SkyHanni — scoreboard island detection
 

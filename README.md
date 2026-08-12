@@ -59,9 +59,9 @@ The module switches itself on only in Torrhus, and sits idle everywhere else in 
 
 Reads the gift message out of chat and keeps score, so you can tell whether a spot is actually worth farming.
 
-**The panel** shows gifts per hour, the running count, and how long you've been at it — for whichever tree gifted last, so it follows you around without any switching.
+**The panel** shows gifts per hour, the running count, and how long you've been at it — for whichever tree gifted last, so it follows you around without any switching. It appears when a gift lands and takes itself off screen once you stop, so it isn't sitting there while you're doing something else.
 
-**It knows when you stopped.** After a set idle time the clock freezes, and the next gift picks it back up. Time spent walking somewhere else doesn't get counted against your rate. The timeout is yours to set.
+**It knows when you stopped.** After a set idle time the clock freezes and the panel hides. The next gift picks up where it left off — same session, nothing lost. Time spent walking somewhere else doesn't count against your rate. The timeout is yours to set.
 
 **Session and all-time.** A session runs until you reset it or restart the game; either way its gifts roll into the all-time totals rather than disappearing. Flip the panel between the two.
 

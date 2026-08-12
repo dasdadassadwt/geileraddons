@@ -23,9 +23,10 @@ public final class TreeTrackerModule extends Module implements HudElement {
 	private static final String HUD_ID = "tree_tracker";
 	private static final String HEADER = "Tree Gifts";
 	private static final String TOTAL_HEADER = "Tree Gifts (Total)";
-	private static final String WAITING = "Waiting for a gift";
 	/** Used when there isn't enough elapsed time to divide by yet. */
 	private static final String NO_RATE = "-";
+	/** Never drawn in the world - the panel is hidden before a first gift - but sizes its box in Move Elements. */
+	private static final String IDLE = "No gifts yet";
 
 	private static final int LINE_HEIGHT = 10;
 	private static final int PADDING = 4;
@@ -121,9 +122,18 @@ public final class TreeTrackerModule extends Module implements HudElement {
 		return "Tree Tracker";
 	}
 
+	/**
+	 * Shown only while gifts are actually coming in.
+	 *
+	 * <p>Hides on the same timeout that freezes the clock, so the panel is on screen exactly when
+	 * it is counting - there is no state where a visible read-out is quietly stale. Coming back is
+	 * a resume rather than a restart: the session was never cleared, only paused.
+	 */
 	@Override
 	public boolean visible() {
-		return isEnabled();
+		if (!isEnabled()) return false;
+		TreeType type = tracker.lastGifted();
+		return type != null && !tracker.stats(type).paused(System.currentTimeMillis(), timeoutMillis());
 	}
 
 	@Override
@@ -177,7 +187,7 @@ public final class TreeTrackerModule extends Module implements HudElement {
 		String header = totals ? TOTAL_HEADER : HEADER;
 		TreeType type = tracker.lastGifted();
 		if (type == null) {
-			return new String[]{header, WAITING};
+			return new String[]{header, IDLE};
 		}
 
 		long now = System.currentTimeMillis();

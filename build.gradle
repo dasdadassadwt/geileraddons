@@ -45,6 +45,10 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
+	// Sources are UTF-8 and contain non-ASCII literals (the section sign, GUI glyphs), but javac
+	// defaults to the platform encoding - Cp1252 on this machine. Loom happens to set this
+	// already; stating it means a toolchain change can't quietly turn those literals into mojibake.
+	it.options.encoding = 'UTF-8'
 }
 
 java {
