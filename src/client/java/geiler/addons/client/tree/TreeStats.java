@@ -56,6 +56,11 @@ public final class TreeStats {
 		return started && now - lastGift >= timeoutMillis;
 	}
 
+	/** Whether a gift was already counted this recently - i.e. this is the same event again. */
+	public boolean countedWithin(long now, long windowMillis) {
+		return started && now - lastGift < windowMillis;
+	}
+
 	public boolean hasData() {
 		return sessionCount > 0 || storedCount > 0;
 	}

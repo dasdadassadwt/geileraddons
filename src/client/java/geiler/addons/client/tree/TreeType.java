@@ -9,25 +9,36 @@ public enum TreeType {
 	MANGROVE("Mangrove");
 
 	private final String displayName;
+	private final Pattern cutLine;
 	private final Pattern giftLine;
 
 	TreeType(String displayName) {
 		this.displayName = displayName;
-		// Spacing is deliberately loose. The name and "Tree" are known to be separated by
-		// something, but not reliably by an ordinary space - which is also why the line reads as
-		// "FigTree Gift." once it has been through a copy-paste.
-		this.giftLine = Pattern.compile(Pattern.quote(displayName) + "\\s*Tree\\s*Gift", Pattern.CASE_INSENSITIVE);
+		String name = Pattern.quote(displayName);
+		// Spacing is deliberately loose throughout: the separator between the name and "Tree" is
+		// not reliably an ordinary space, which is also why the summary reads as "FigTree Gift."
+		// once it has been through a copy-paste.
+		this.cutLine = Pattern.compile("cut\\s.*\\sof\\s+the\\s+" + name + "\\s*Tree", Pattern.CASE_INSENSITIVE);
+		this.giftLine = Pattern.compile(name + "\\s*Tree\\s*Gift", Pattern.CASE_INSENSITIVE);
 	}
 
 	public String displayName() {
 		return displayName;
 	}
 
-	/** The tree whose gift line this message carries, or null. */
+	/**
+	 * The tree this message names as having just given a gift, or null.
+	 *
+	 * <p>Two shapes are accepted because it isn't knowable from outside the game which of them the
+	 * mod actually receives. The "cut 100% of the X Tree" line is the one confirmed to arrive as
+	 * chat; the "X Tree Gift." summary was only ever seen in a log, with its colour codes still
+	 * raw, which is what hover text looks like rather than a message. Matching both and letting
+	 * {@link TreeTracker} discard the repeat is safer than betting on either.
+	 */
 	public static TreeType fromMessage(String message) {
 		String plain = normalize(message);
 		for (TreeType type : VALUES) {
-			if (type.giftLine.matcher(plain).find()) return type;
+			if (type.cutLine.matcher(plain).find() || type.giftLine.matcher(plain).find()) return type;
 		}
 		return null;
 	}

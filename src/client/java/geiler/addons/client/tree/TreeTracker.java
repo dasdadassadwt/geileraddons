@@ -12,6 +12,9 @@ import java.util.Map;
  * so quitting mid-session still credits those gifts to the all-time numbers instead of losing them.
  */
 public final class TreeTracker {
+	/** How long after a counted gift further mentions of the same tree are treated as the same event. */
+	private static final long DUPLICATE_WINDOW_MILLIS = 1000;
+
 	private final Map<TreeType, TreeStats> stats = new EnumMap<>(TreeType.class);
 	/** Whichever tree gifted last; the HUD follows it rather than asking the user to pick. */
 	private TreeType lastGifted;
@@ -30,11 +33,19 @@ public final class TreeTracker {
 		return lastGifted;
 	}
 
-	/** @return the type that was credited, or null if the message wasn't a gift */
+	/**
+	 * @return the type that was credited, or null if the message wasn't a gift or was a repeat
+	 */
 	public TreeType onChatMessage(String message, long now, long timeoutMillis) {
 		TreeType type = TreeType.fromMessage(message);
 		if (type == null) return null;
-		stats.get(type).onGift(now, timeoutMillis);
+		TreeStats stats = this.stats.get(type);
+		// One gift announces itself over several lines, all in the same tick, and more than one of
+		// them names the tree. Anything this soon after the last gift is that same block still
+		// arriving - a second real gift cannot land within a second of the first, since a tree has
+		// to be cut down in between.
+		if (stats.countedWithin(now, DUPLICATE_WINDOW_MILLIS)) return null;
+		stats.onGift(now, timeoutMillis);
 		lastGifted = type;
 		return type;
 	}
