@@ -53,6 +53,23 @@ The module switches itself on only in Torrhus, and sits idle everywhere else in 
 </details>
 
 <details>
+<summary><b>Tree Tracker</b> — gift counting for Helix, Fig and Mangrove</summary>
+
+<br>
+
+Reads the gift message out of chat and keeps score, so you can tell whether a spot is actually worth farming.
+
+**The panel** shows gifts per hour, the running count, and how long you've been at it — for whichever tree gifted last, so it follows you around without any switching.
+
+**It knows when you stopped.** After a set idle time the clock freezes, and the next gift picks it back up. Time spent walking somewhere else doesn't get counted against your rate. The timeout is yours to set.
+
+**Session and all-time.** A session runs until you reset it or restart the game; either way its gifts roll into the all-time totals rather than disappearing. Flip the panel between the two.
+
+Drag the panel wherever you like with **Move Elements** in the menu.
+
+</details>
+
+<details>
 <summary>Using the click GUI</summary>
 
 <br>
@@ -60,6 +77,7 @@ The module switches itself on only in Torrhus, and sits idle everywhere else in 
 - Modules are cards. The **switch** turns one on; **clicking anywhere else** on the card opens its settings — either mouse button works.
 - Settings are grouped into sections you can fold shut. It remembers which ones you closed.
 - Every colour has an alpha slider, every number is a draggable slider with a live readout.
+- **Move Elements**, at the bottom of the category list, opens a screen where you drag HUD panels into place. Positions are kept as a share of the screen, so they survive a resolution or GUI-scale change.
 - The panel scales to your screen and reopens wherever you left it.
 
 </details>

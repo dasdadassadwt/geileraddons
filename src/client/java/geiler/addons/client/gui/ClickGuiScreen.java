@@ -11,13 +11,17 @@ import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
+import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.update.UpdateChecker;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.CharacterEvent;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -52,11 +56,17 @@ public class ClickGuiScreen extends Screen {
 	private static final int SWITCH_WIDTH = 20;
 	private static final int SWITCH_HEIGHT = 11;
 
+	private static final int TEXT_FIELD_WIDTH = 64;
+	private static final int TEXT_FIELD_HEIGHT = 13;
+	/** Caret on for this long, then off for as long again. */
+	private static final long CARET_BLINK_MILLIS = 500;
+
 	private Category selectedCategory;
 	private Module openSettingsModule;
 	private ColorSetting expandedColorSetting;
 	private ColorSetting.Channel draggingChannel;
 	private NumberSetting draggingNumberSetting;
+	private TextSetting focusedTextSetting;
 	private int settingsScroll;
 	private int gridScroll;
 
@@ -163,14 +173,24 @@ public class ClickGuiScreen extends Screen {
 			graphics.text(font, category.displayName(), row.x + 14, row.y + (row.h - TEXT_HEIGHT) / 2, color);
 		}
 
-		// The update notice sits under the categories. Clipped to the panel rather than left to
+		Rect move = moveElementsRect(panelX, panelY);
+		boolean moveHovered = move.contains(mouseX, mouseY);
+		roundedRect(graphics, move.x, move.y, move.w, move.h, RADIUS_SMALL, moveHovered ? BUTTON_HOVER : BUTTON_BG);
+		graphics.centeredText(font, "Move Elements", move.x + move.w / 2, move.y + (move.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+
+		// The update notice sits above the button. Clipped to the panel rather than left to
 		// spill across the module list, since this column is narrow on a small screen.
 		String notice = UpdateChecker.bannerText();
 		if (notice != null) {
 			int available = categoryWidth() - 28;
 			String text = font.width(notice) <= available ? notice : font.plainSubstrByWidth(notice, available);
-			graphics.text(font, text, panelX + 14, panelY + panelHeight() - PADDING - TEXT_HEIGHT, TEXT_WARN);
+			graphics.text(font, text, panelX + 14, move.y - 4 - TEXT_HEIGHT, TEXT_WARN);
 		}
+	}
+
+	private Rect moveElementsRect(int panelX, int panelY) {
+		int height = 18;
+		return new Rect(panelX + 6, panelY + panelHeight() - PADDING - height, categoryWidth() - 12, height);
 	}
 
 	// ---- module grid --------------------------------------------------------------------
@@ -302,6 +322,7 @@ public class ClickGuiScreen extends Screen {
 				case ColorRow colorRow -> renderColorRow(graphics, font, mouseX, mouseY, colorRow, hoverable);
 				case NumberRow numberRow -> renderNumberRow(graphics, font, numberRow);
 				case ToggleRow toggleRow -> renderToggleRow(graphics, font, mouseX, mouseY, toggleRow, hoverable);
+				case TextRow textRow -> renderTextRow(graphics, font, textRow);
 				case ActionRow actionRow -> renderActionRow(graphics, font, mouseX, mouseY, actionRow, hoverable);
 			}
 		}
@@ -368,6 +389,31 @@ public class ClickGuiScreen extends Screen {
 		int switchX = bounds.x + bounds.w - SWITCH_WIDTH - 14;
 		int switchY = bounds.y + (bounds.h - SWITCH_HEIGHT) / 2;
 		toggleSwitch(graphics, switchX, switchY, SWITCH_WIDTH, SWITCH_HEIGHT, toggleRow.setting.value());
+	}
+
+	private void renderTextRow(GuiGraphicsExtractor graphics, Font font, TextRow textRow) {
+		Rect bounds = textRow.bounds;
+		Rect field = textRow.field;
+		boolean focused = textRow.setting == focusedTextSetting;
+		graphics.text(font, textRow.setting.name(), bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+
+		roundedRectBordered(graphics, field.x, field.y, field.w, field.h, 3, SLIDER_TRACK, SLIDER_TRACK,
+			focused ? SLIDER_FILL : BORDER);
+
+		// Shows the tail rather than the head once the value outgrows the box, so what was just
+		// typed stays visible.
+		String text = textRow.setting.value();
+		int inner = field.w - 8;
+		while (!text.isEmpty() && font.width(text) > inner) {
+			text = text.substring(1);
+		}
+		int textY = field.y + (field.h - TEXT_HEIGHT) / 2;
+		graphics.text(font, text, field.x + 4, textY, TEXT_PRIMARY);
+
+		if (focused && (System.currentTimeMillis() / CARET_BLINK_MILLIS) % 2 == 0) {
+			int caretX = field.x + 4 + font.width(text);
+			graphics.fill(caretX, textY - 1, caretX + 1, textY + TEXT_HEIGHT + 1, TEXT_PRIMARY);
+		}
 	}
 
 	private void renderActionRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, ActionRow actionRow, boolean hoverable) {
@@ -451,6 +497,12 @@ public class ClickGuiScreen extends Screen {
 						rows.add(new ToggleRow(booleanSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
 						cursorY += ROW_HEIGHT;
 					}
+					case TextSetting textSetting -> {
+						Rect field = new Rect(x + moduleWidth - TEXT_FIELD_WIDTH - 14,
+							cursorY + (ROW_HEIGHT - TEXT_FIELD_HEIGHT) / 2, TEXT_FIELD_WIDTH, TEXT_FIELD_HEIGHT);
+						rows.add(new TextRow(textSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), field));
+						cursorY += ROW_HEIGHT;
+					}
 					case ModuleAction action -> {
 						rows.add(new ActionRow(action, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
 						cursorY += ROW_HEIGHT;
@@ -490,6 +542,16 @@ public class ClickGuiScreen extends Screen {
 		boolean left = event.button() == 0;
 		boolean right = event.button() == 1;
 		if (!left && !right) return super.mouseClicked(event, doubleClick);
+
+		// Any click drops focus; the row that was hit takes it back below. Anything else would
+		// leave a field quietly eating keystrokes after the user moved on.
+		blurTextField();
+
+		if (left && moveElementsRect(panelX, panelY).contains(mouseX, mouseY)) {
+			persistView();
+			this.minecraft.setScreen(new MoveUiScreen(this));
+			return true;
+		}
 
 		List<Rect> categoryRows = categoryRows(panelX, panelY);
 		Category[] categories = Category.values();
@@ -581,6 +643,12 @@ public class ClickGuiScreen extends Screen {
 						return true;
 					}
 				}
+				case TextRow textRow -> {
+					if (textRow.field.contains(mouseX, mouseY)) {
+						focusedTextSetting = textRow.setting;
+						return true;
+					}
+				}
 				case ActionRow actionRow -> {
 					if (actionRow.bounds.contains(mouseX, mouseY)) {
 						actionRow.action.onClick().run();
@@ -631,6 +699,41 @@ public class ClickGuiScreen extends Screen {
 			return true;
 		}
 		return super.mouseReleased(event);
+	}
+
+	@Override
+	public boolean charTyped(CharacterEvent event) {
+		if (focusedTextSetting == null) return super.charTyped(event);
+		int codepoint = event.codepoint();
+		if (Character.isISOControl(codepoint)) return true;
+		focusedTextSetting.setValue(focusedTextSetting.value() + Character.toString(codepoint));
+		return true;
+	}
+
+	@Override
+	public boolean keyPressed(KeyEvent event) {
+		if (focusedTextSetting == null) return super.keyPressed(event);
+		switch (event.key()) {
+			case GLFW.GLFW_KEY_BACKSPACE -> {
+				String value = focusedTextSetting.value();
+				if (!value.isEmpty()) {
+					focusedTextSetting.setValue(value.substring(0, value.length() - 1));
+				}
+			}
+			// Escape leaves the field rather than the whole screen - closing the menu out from
+			// under someone who was only trying to stop typing is the wrong thing to do.
+			case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> blurTextField();
+			default -> {
+				return super.keyPressed(event);
+			}
+		}
+		return true;
+	}
+
+	private void blurTextField() {
+		if (focusedTextSetting == null) return;
+		focusedTextSetting = null;
+		ModConfig.save();
 	}
 
 	@Override
@@ -708,7 +811,7 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	/** One laid-out line in the settings panel. */
-	private sealed interface Row permits GroupRow, ColorRow, NumberRow, ToggleRow, ActionRow {
+	private sealed interface Row permits GroupRow, ColorRow, NumberRow, ToggleRow, TextRow, ActionRow {
 		Rect bounds();
 	}
 
@@ -722,6 +825,9 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private record ToggleRow(BooleanSetting setting, Rect bounds) implements Row {
+	}
+
+	private record TextRow(TextSetting setting, Rect bounds, Rect field) implements Row {
 	}
 
 	private record ActionRow(ModuleAction action, Rect bounds) implements Row {

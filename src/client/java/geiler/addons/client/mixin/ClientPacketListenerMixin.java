@@ -3,6 +3,7 @@ package geiler.addons.client.mixin;
 import geiler.addons.client.gui.ClickGuiScreen;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
+import geiler.addons.client.module.impl.TreeTrackerModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
@@ -67,6 +68,7 @@ public abstract class ClientPacketListenerMixin {
 		String content = packet.content().getString();
 		I4HelperModule.INSTANCE.onChatMessage(content);
 		TikiHelperModule.INSTANCE.onChatMessage(content);
+		TreeTrackerModule.INSTANCE.onChatMessage(content);
 	}
 
 	@Inject(method = "handleSoundEvent", at = @At("TAIL"))

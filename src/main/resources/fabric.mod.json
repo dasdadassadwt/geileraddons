@@ -3,7 +3,7 @@
 	"id": "geileraddons",
 	"version": "${version}",
 	"name": "GeilerAddons",
-	"description": "Client-side helper modules for Hypixel SkyBlock: the Catacombs F7/M7 4th-device puzzle and Sneaky Tiki hunting (waypoints, click solver, research logging).",
+	"description": "Client-side helper modules for Hypixel SkyBlock: the Catacombs F7/M7 4th-device puzzle, Sneaky Tiki hunting (waypoints, click solver, research logging) and tree gift rate tracking.",
 	"authors": [
 		"dasdadassadwt"
 	],

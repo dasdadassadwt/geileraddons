@@ -2,7 +2,8 @@ package geiler.addons.client.module;
 
 public enum Category {
 	F7("F7"),
-	HUNTING("Hunting");
+	HUNTING("Hunting"),
+	FORAGING("Foraging");
 
 	private final String displayName;
 

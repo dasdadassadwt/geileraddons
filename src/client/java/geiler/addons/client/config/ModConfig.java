@@ -4,12 +4,17 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParseException;
 import geiler.addons.GeilerAddons;
+import geiler.addons.client.hud.HudManager;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.NumberSetting;
+import geiler.addons.client.module.TextSetting;
+import geiler.addons.client.module.impl.TreeTrackerModule;
+import geiler.addons.client.tree.TreeStats;
+import geiler.addons.client.tree.TreeType;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Block;
@@ -42,6 +47,7 @@ public final class ModConfig {
 		Map<String, int[]> colors = new HashMap<>();
 		Map<String, Float> numbers = new HashMap<>();
 		Map<String, Boolean> toggles = new HashMap<>();
+		Map<String, String> texts = new HashMap<>();
 		/**
 		 * Absent means "never saved", which is what seeds the built-in coordinates. An explicitly
 		 * empty list is a list the user emptied out and must stay empty.
@@ -49,6 +55,10 @@ public final class ModConfig {
 		List<int[]> tikiCoords;
 		/** "x,y,z" -> block id, e.g. "minecraft:stone". Absent or missing entries just aren't learned yet. */
 		Map<String, String> tikiFingerprints;
+		/** HUD element id -> {x, y} as a fraction of its travel; see {@link geiler.addons.client.hud.HudManager}. */
+		Map<String, float[]> hudPositions;
+		/** Tree type name -> {sessionCount, sessionMillis, storedCount, storedMillis}. */
+		Map<String, long[]> treeGifts;
 		/** Click GUI view state - see {@link ClickGuiState}. */
 		String uiCategory;
 		String uiOpenModule;
@@ -66,6 +76,12 @@ public final class ModConfig {
 	 * one-off preferences rather than in a module's settings panel.
 	 */
 	private static boolean checkForUpdates = true;
+
+	/** How long a debounced change may sit unwritten; a crash can cost at most this much of it. */
+	private static final long FLUSH_INTERVAL_MILLIS = 60_000;
+
+	private static boolean dirty;
+	private static long lastFlush;
 
 	public static boolean checkForUpdates() {
 		return checkForUpdates;
@@ -92,6 +108,12 @@ public final class ModConfig {
 					setting.setValue(value);
 				}
 			}
+			for (TextSetting setting : module.textSettings()) {
+				String value = data.texts.get(settingKey(module, setting.name()));
+				if (value != null) {
+					setting.setValue(value);
+				}
+			}
 			if (Boolean.TRUE.equals(data.enabled.get(module.name()))) {
 				module.setEnabled(true);
 			}
@@ -101,10 +123,44 @@ public final class ModConfig {
 		}
 		loadTikiCoords(data);
 		loadTikiFingerprints(data);
+		if (data.hudPositions != null) {
+			HudManager.restore(data.hudPositions);
+		}
+		loadTreeGifts(data);
 		loadUiState(data);
 	}
 
+	/**
+	 * Marks the config as needing a write, without doing one.
+	 *
+	 * <p>For state that changes on its own while playing rather than because the user touched a
+	 * setting - gift counts, learned fingerprints. Those can arrive in bursts, and serializing the
+	 * whole config on the client thread each time is a stutter for no benefit, since nothing reads
+	 * the file until the next launch. {@link #flushIfDirty} does the write, at most once every
+	 * {@link #FLUSH_INTERVAL_MILLIS}.
+	 */
+	public static void markDirty() {
+		dirty = true;
+	}
+
+	/** Call once per client tick. Writes only if something asked for it and enough time has passed. */
+	public static void flushIfDirty() {
+		if (!dirty) return;
+		long now = System.currentTimeMillis();
+		if (now - lastFlush < FLUSH_INTERVAL_MILLIS) return;
+		save();
+	}
+
+	/** Writes a pending change immediately - for shutdown, where there is no next tick. */
+	public static void flushNow() {
+		if (dirty) {
+			save();
+		}
+	}
+
 	public static void save() {
+		dirty = false;
+		lastFlush = System.currentTimeMillis();
 		Data data = new Data();
 		for (Module module : ModuleManager.modules()) {
 			data.enabled.put(module.name(), module.isEnabled());
@@ -117,6 +173,9 @@ public final class ModConfig {
 			for (BooleanSetting setting : module.booleanSettings()) {
 				data.toggles.put(settingKey(module, setting.name()), setting.value());
 			}
+			for (TextSetting setting : module.textSettings()) {
+				data.texts.put(settingKey(module, setting.name()), setting.value());
+			}
 		}
 		data.tikiCoords = new ArrayList<>();
 		for (BlockPos pos : TikiCoords.all()) {
@@ -125,6 +184,14 @@ public final class ModConfig {
 		data.tikiFingerprints = new HashMap<>();
 		for (Map.Entry<BlockPos, Block> entry : TikiFingerprints.all().entrySet()) {
 			data.tikiFingerprints.put(coordKey(entry.getKey()), TikiFingerprints.idOf(entry.getValue()));
+		}
+		data.hudPositions = HudManager.snapshot();
+		data.treeGifts = new HashMap<>();
+		for (TreeType type : TreeType.values()) {
+			TreeStats stats = TreeTrackerModule.INSTANCE.tracker().stats(type);
+			data.treeGifts.put(type.name(), new long[]{
+				stats.rawSessionCount(), stats.rawSessionMillis(), stats.rawStoredCount(), stats.rawStoredMillis()
+			});
 		}
 		data.uiCategory = ClickGuiState.category().name();
 		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().name();
@@ -169,6 +236,24 @@ public final class ModConfig {
 			}
 		}
 		TikiFingerprints.replaceAll(fingerprints);
+	}
+
+	/**
+	 * Restores the tree counters, then immediately closes out the session they were saved in.
+	 *
+	 * <p>The rollover is the point of persisting a session at all: a session that ended because
+	 * the game was closed still has to reach the all-time totals, and this is where that happens.
+	 */
+	private static void loadTreeGifts(Data data) {
+		if (data.treeGifts != null) {
+			for (TreeType type : TreeType.values()) {
+				long[] values = data.treeGifts.get(type.name());
+				if (values == null || values.length != 4) continue;
+				TreeTrackerModule.INSTANCE.tracker().stats(type)
+					.restore((int) values[0], values[1], (int) values[2], values[3]);
+			}
+		}
+		TreeTrackerModule.INSTANCE.rollOverLoadedSession();
 	}
 
 	private static BlockPos parseCoordKey(String key) {
@@ -239,6 +324,7 @@ public final class ModConfig {
 		if (data.colors == null) data.colors = new HashMap<>();
 		if (data.numbers == null) data.numbers = new HashMap<>();
 		if (data.toggles == null) data.toggles = new HashMap<>();
+		if (data.texts == null) data.texts = new HashMap<>();
 
 		if (legacy) {
 			migrateLegacyFile();

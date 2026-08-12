@@ -7,32 +7,43 @@ public abstract class Module {
 	private final String name;
 	private final String description;
 	private final Category category;
+	private final List<Setting> settings;
 	private final List<ColorSetting> colorSettings;
 	private final List<NumberSetting> numberSettings;
 	private final List<BooleanSetting> booleanSettings;
+	private final List<TextSetting> textSettings;
 	private final List<ModuleAction> actions;
 	private List<SettingGroup> groups;
 	private boolean enabled;
 
-	protected Module(String name, String description, Category category, List<ColorSetting> colorSettings) {
-		this(name, description, category, colorSettings, List.of(), List.of(), List.of());
-	}
-
-	protected Module(String name, String description, Category category, List<ColorSetting> colorSettings, List<NumberSetting> numberSettings) {
-		this(name, description, category, colorSettings, numberSettings, List.of(), List.of());
-	}
-
-	protected Module(
-		String name, String description, Category category, List<ColorSetting> colorSettings,
-		List<NumberSetting> numberSettings, List<BooleanSetting> booleanSettings, List<ModuleAction> actions
-	) {
+	/**
+	 * One flat list of settings in declaration order, sorted into typed lists here.
+	 *
+	 * <p>Takes everything at once rather than a list per type: the per-type constructor this
+	 * replaced needed a new parameter and a new overload every time a setting type was added, and
+	 * callers had to keep four lists in step by hand. The typed accessors below are what the config
+	 * and the settings panel read, so nothing downstream had to change.
+	 */
+	protected Module(String name, String description, Category category, Setting... settings) {
 		this.name = name;
 		this.description = description;
 		this.category = category;
-		this.colorSettings = colorSettings;
-		this.numberSettings = numberSettings;
-		this.booleanSettings = booleanSettings;
-		this.actions = actions;
+		this.settings = List.of(settings);
+		this.colorSettings = ofType(ColorSetting.class);
+		this.numberSettings = ofType(NumberSetting.class);
+		this.booleanSettings = ofType(BooleanSetting.class);
+		this.textSettings = ofType(TextSetting.class);
+		this.actions = ofType(ModuleAction.class);
+	}
+
+	private <T extends Setting> List<T> ofType(Class<T> type) {
+		List<T> matches = new ArrayList<>();
+		for (Setting setting : settings) {
+			if (type.isInstance(setting)) {
+				matches.add(type.cast(setting));
+			}
+		}
+		return List.copyOf(matches);
 	}
 
 	public String name() {
@@ -59,6 +70,10 @@ public abstract class Module {
 		return booleanSettings;
 	}
 
+	public List<TextSetting> textSettings() {
+		return textSettings;
+	}
+
 	public List<ModuleAction> actions() {
 		return actions;
 	}
@@ -80,18 +95,13 @@ public abstract class Module {
 	 */
 	public List<SettingGroup> groups() {
 		if (groups == null) {
-			List<Setting> all = new ArrayList<>();
-			all.addAll(colorSettings);
-			all.addAll(numberSettings);
-			all.addAll(booleanSettings);
-			all.addAll(actions);
-			groups = List.of(new SettingGroup(null, all));
+			groups = List.of(new SettingGroup(null, settings));
 		}
 		return groups;
 	}
 
 	public boolean hasSettings() {
-		return !colorSettings.isEmpty() || !numberSettings.isEmpty() || !booleanSettings.isEmpty() || !actions.isEmpty();
+		return !settings.isEmpty();
 	}
 
 	public boolean isEnabled() {

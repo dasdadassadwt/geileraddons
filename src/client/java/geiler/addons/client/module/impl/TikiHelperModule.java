@@ -153,11 +153,11 @@ public final class TikiHelperModule extends Module {
 
 	private TikiHelperModule(Settings s) {
 		super("Tiki Helper", "Waypoints, click solver and research logging for Sneaky Tikis.", Category.HUNTING,
-			List.of(s.validColor, s.invalidColor, s.tracerColor, s.leftColor, s.rightColor, s.lockedColor, s.futureColor),
-			List.of(s.scanInterval, s.tracerWidth, s.range, s.labelHeight, s.trackRadius),
-			List.of(s.waypoints, s.solver, s.debugLogging, s.tracer, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
-				s.showFuturePlan, s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat),
-			List.of(s.manageCoords));
+			s.waypoints, s.validColor, s.invalidColor, s.scanInterval, s.tracer, s.tracerColor, s.tracerWidth,
+			s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range, s.labelHeight, s.showLocked,
+			s.showUnknown, s.worldLabels, s.hypixelRule, s.showFuturePlan, s.futureColor,
+			s.debugLogging, s.trackRadius, s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat,
+			s.manageCoords);
 		this.waypoints = s.waypoints;
 		this.solver = s.solver;
 		this.debugLogging = s.debugLogging;

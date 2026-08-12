@@ -94,7 +94,7 @@ public final class I4HelperModule extends Module {
 		NumberSetting aimSphereSize, NumberSetting prefireSphereSize
 	) {
 		super("i4 helper", "Highlights the F7/M7 device panel and marks the next block to click.", Category.F7,
-			List.of(completedColor, activeColor, aimColor, prefireColor), List.of(aimSphereSize, prefireSphereSize));
+			completedColor, activeColor, aimColor, prefireColor, aimSphereSize, prefireSphereSize);
 		this.completedColor = completedColor;
 		this.activeColor = activeColor;
 		this.aimColor = aimColor;
