@@ -112,6 +112,7 @@ public final class TikiHelperModule extends Module {
 	private final ColorSetting lockedColor;
 	private final NumberSetting range;
 	private final NumberSetting labelHeight;
+	private final NumberSetting textSize;
 	private final BooleanSetting showLocked;
 	private final BooleanSetting showUnknown;
 	private final BooleanSetting worldLabels;
@@ -154,8 +155,8 @@ public final class TikiHelperModule extends Module {
 	private TikiHelperModule(Settings s) {
 		super("Tiki Helper", "Waypoints, click solver and research logging for Sneaky Tikis.", Category.HUNTING,
 			s.waypoints, s.validColor, s.invalidColor, s.scanInterval, s.tracer, s.tracerColor, s.tracerWidth,
-			s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range, s.labelHeight, s.showLocked,
-			s.showUnknown, s.worldLabels, s.hypixelRule, s.showFuturePlan, s.futureColor,
+			s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range, s.labelHeight, s.textSize,
+			s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule, s.showFuturePlan, s.futureColor,
 			s.debugLogging, s.trackRadius, s.trackSounds, s.trackChat, s.verifySolver, s.echoToChat,
 			s.manageCoords);
 		this.waypoints = s.waypoints;
@@ -172,6 +173,7 @@ public final class TikiHelperModule extends Module {
 		this.lockedColor = s.lockedColor;
 		this.range = s.range;
 		this.labelHeight = s.labelHeight;
+		this.textSize = s.textSize;
 		this.showLocked = s.showLocked;
 		this.showUnknown = s.showUnknown;
 		this.worldLabels = s.worldLabels;
@@ -189,7 +191,7 @@ public final class TikiHelperModule extends Module {
 			new SettingGroup("Waypoints", s.waypoints, s.validColor, s.invalidColor, s.scanInterval,
 				s.tracer, s.tracerColor, s.tracerWidth),
 			new SettingGroup("Solver", s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range,
-				s.labelHeight, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
+				s.labelHeight, s.textSize, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
 				s.showFuturePlan, s.futureColor),
 			new SettingGroup("Debug Logging", s.debugLogging, s.trackRadius, s.trackSounds,
 				s.trackChat, s.verifySolver, s.echoToChat),
@@ -215,6 +217,8 @@ public final class TikiHelperModule extends Module {
 		final ColorSetting lockedColor = new ColorSetting("Locked Color", 160, 160, 160, 200);
 		final NumberSetting range = new NumberSetting("Solver Range", 2, 32, 8, true);
 		final NumberSetting labelHeight = new NumberSetting("Label Height", 0.1f, 1.5f, 0.35f);
+		/** Scales the on-screen labels only; the in-world ones are sized by Label Height instead. */
+		final NumberSetting textSize = new NumberSetting("Text Size", 0.5f, 4.0f, 1.0f);
 		final BooleanSetting showLocked = new BooleanSetting("Show Locked", true);
 		final BooleanSetting showUnknown = new BooleanSetting("Show Unknown", true);
 		/** Off means the real font on the HUD; on falls back to the stroked in-world glyphs. */
@@ -696,11 +700,17 @@ public final class TikiHelperModule extends Module {
 
 		Camera camera = mc.gameRenderer.getMainCamera();
 		Font font = mc.font;
+		float scale = textSize.value();
 		eachSolverLabel((index, text, color, height, verticalOffset) -> {
 			Vec3 world = new Vec3(slotBase.getX() + 0.5, slotBase.getY() + index + LABEL_ANCHOR + verticalOffset, slotBase.getZ() + 0.5);
 			float[] screen = WorldToScreen.project(camera, world);
 			if (screen == null) return;
-			graphics.text(font, text, Math.round(screen[0]) - font.width(text) / 2, Math.round(screen[1]) - HUD_LABEL_HALF_HEIGHT, color);
+			// Measured at the scaled size so the label stays centred on the head as it grows.
+			graphics.pose().pushMatrix();
+			graphics.pose().translate(screen[0] - font.width(text) * scale / 2, screen[1] - HUD_LABEL_HALF_HEIGHT * scale);
+			graphics.pose().scale(scale, scale);
+			graphics.text(font, text, 0, 0, color);
+			graphics.pose().popMatrix();
 		});
 	}
 

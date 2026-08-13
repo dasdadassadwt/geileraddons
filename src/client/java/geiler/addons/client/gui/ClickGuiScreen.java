@@ -241,14 +241,12 @@ public class ClickGuiScreen extends Screen {
 		int border = enabled ? CARD_BORDER_ENABLED : CARD_BORDER;
 		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL, background, background, border);
 
-		// An enabled module that its own context has switched off is drawn muted, so "on but doing
-		// nothing" never looks the same as "on and working".
-		boolean dimmed = enabled && !module.isActive();
-		int nameColor = dimmed ? TEXT_MUTED : TEXT_PRIMARY;
-
+		// The card reflects the switch the user set and nothing else. Context idling used to mute
+		// the name too, which read as the module turning itself off and on while travelling - the
+		// reason line below says it in words, which is the part that was actually wanted.
 		int textX = bounds.x + CARD_INSET;
 		int textWidth = bounds.w - CARD_INSET * 2;
-		graphics.text(font, module.name(), textX, bounds.y + CARD_INSET, nameColor);
+		graphics.text(font, module.name(), textX, bounds.y + CARD_INSET, TEXT_PRIMARY);
 
 		int descY = bounds.y + CARD_INSET + LINE_HEIGHT + 3;
 		for (FormattedCharSequence line : descriptionLines(font, module, textWidth)) {
