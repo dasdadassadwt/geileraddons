@@ -2,12 +2,14 @@ package geiler.addons.client.mixin;
 
 import geiler.addons.client.gui.ClickGuiScreen;
 import geiler.addons.client.module.impl.I4HelperModule;
+import geiler.addons.client.module.impl.SafariFloorDropsModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
 import geiler.addons.client.module.impl.TreeNotifierModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
 import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
@@ -75,6 +77,11 @@ public abstract class ClientPacketListenerMixin {
 		if (!packet.overlay() && TreeNotifierModule.INSTANCE.onChatMessage(content, packet.content())) {
 			ci.cancel();
 		}
+	}
+
+	@Inject(method = "handleParticleEvent", at = @At("TAIL"))
+	private void geileraddons$onParticleEvent(ClientboundLevelParticlesPacket packet, CallbackInfo ci) {
+		SafariFloorDropsModule.INSTANCE.onParticle(packet);
 	}
 
 	@Inject(method = "handleSoundEvent", at = @At("TAIL"))

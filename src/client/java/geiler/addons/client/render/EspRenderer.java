@@ -37,6 +37,14 @@ public final class EspRenderer {
 		Map.entry('.', new float[][]{{0.35f, 1, 0.65f, 1}})
 	);
 
+	/**
+	 * How far a depth-tested box is grown past what it wraps, in blocks.
+	 *
+	 * <p>Big enough to clear the depth buffer's precision at the distances these are read at, small
+	 * enough that a box still looks like it is on the block rather than around it.
+	 */
+	private static final double DEPTH_MARGIN = 0.01;
+
 	private static final int SPHERE_LATITUDES = 16;
 	private static final int SPHERE_LONGITUDES = 24;
 	private static final int SPHERE_ROW = SPHERE_LONGITUDES + 1;
@@ -54,15 +62,26 @@ public final class EspRenderer {
 	}
 
 	public static void renderBox(PoseStack poseStack, MultiBufferSource bufferSource, double x, double y, double z, double sizeX, double sizeY, double sizeZ, int fillColor, int lineColor, float lineWidth) {
-		PoseStack.Pose pose = poseStack.last();
-		float x0 = (float) x;
-		float y0 = (float) y;
-		float z0 = (float) z;
-		float x1 = (float) (x + sizeX);
-		float y1 = (float) (y + sizeY);
-		float z1 = (float) (z + sizeZ);
+		renderBox(poseStack, bufferSource, x, y, z, sizeX, sizeY, sizeZ, fillColor, lineColor, lineWidth, false);
+	}
 
-		VertexConsumer quads = bufferSource.getBuffer(GeilerAddonsRenderTypes.ESP_QUADS);
+	/** @param depthTested true to let world geometry hide the box, false to draw it through walls */
+	public static void renderBox(PoseStack poseStack, MultiBufferSource bufferSource, double x, double y, double z, double sizeX, double sizeY, double sizeZ, int fillColor, int lineColor, float lineWidth, boolean depthTested) {
+		PoseStack.Pose pose = poseStack.last();
+		// Nudged outward when the depth test is on, because the surfaces this wraps are exactly the
+		// ones it is being compared against: a box around a block is coplanar with that block's
+		// faces, and one around a mob is coplanar with the mob's own model. Coplanar surfaces at
+		// equal depth flicker as the two fight for the same pixels, or lose outright and vanish.
+		// Through-walls boxes pass the depth test regardless, so they are left exactly on the mark.
+		double margin = depthTested ? DEPTH_MARGIN : 0;
+		float x0 = (float) (x - margin);
+		float y0 = (float) (y - margin);
+		float z0 = (float) (z - margin);
+		float x1 = (float) (x + sizeX + margin);
+		float y1 = (float) (y + sizeY + margin);
+		float z1 = (float) (z + sizeZ + margin);
+
+		VertexConsumer quads = bufferSource.getBuffer(GeilerAddonsRenderTypes.quads(depthTested));
 		quad(quads, pose, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, fillColor);
 		quad(quads, pose, x1, y0, z1, x0, y0, z1, x0, y1, z1, x1, y1, z1, fillColor);
 		quad(quads, pose, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1, fillColor);
@@ -73,7 +92,7 @@ public final class EspRenderer {
 		// Written out rather than walked from a corner and edge table: the table was rebuilt for
 		// every box every frame, and with a route's worth of waypoints on screen that was the bulk
 		// of this renderer's garbage.
-		VertexConsumer lines = bufferSource.getBuffer(GeilerAddonsRenderTypes.ESP_LINES);
+		VertexConsumer lines = bufferSource.getBuffer(GeilerAddonsRenderTypes.lines(depthTested));
 		line(lines, pose, x0, y0, z0, x1, y0, z0, lineColor, lineWidth);
 		line(lines, pose, x1, y0, z0, x1, y0, z1, lineColor, lineWidth);
 		line(lines, pose, x1, y0, z1, x0, y0, z1, lineColor, lineWidth);

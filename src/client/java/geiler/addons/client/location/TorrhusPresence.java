@@ -19,6 +19,10 @@ import net.minecraft.world.level.block.state.BlockState;
  * Every SkyBlock island is its own level with its own map, so the block standing at one of these
  * specific, deep-in-the-map coordinates is Torrhus Canyon's and nothing else's.
  *
+ * <p>Since 1.4.2 this is the fallback rather than the whole story: {@link HypixelModApi} names the
+ * island outright when Hypixel is talking to it, and only an island it has no name for - or no
+ * answer at all - falls through to the terrain below.
+ *
  * <p>Each coordinate's block is learned - not shipped - the first time its chunk is seen loaded,
  * since there is no way to know Torrhus Canyon's terrain ahead of time other than a client that
  * has actually stood there. From then on, presence is decided by comparing whatever is currently
@@ -56,18 +60,43 @@ public final class TorrhusPresence {
 			ticksSinceCheck = CHECK_INTERVAL_TICKS;
 		}
 		if (level == null) return;
+		// Nothing to learn or confirm somewhere the API has already named as a different island,
+		// and the scan is 25 block reads that would otherwise run everywhere in SkyBlock.
+		if (namedElsewhere()) return;
 		if (++ticksSinceCheck < CHECK_INTERVAL_TICKS) return;
 		ticksSinceCheck = 0;
 		check(level);
 	}
 
+	/**
+	 * The Mod API's answer wins where it has one, and the terrain settles the rest.
+	 *
+	 * <p>The API is the better signal: it needs nothing to have been learned first, so it works on
+	 * a fresh install and the moment a warp lands. What it cannot do is stay right forever - an
+	 * island id it predates reads as unnamed rather than wrong, which is exactly the case the
+	 * fingerprints still cover.
+	 */
 	public static boolean isPresent() {
+		if (HypixelModApi.currentIsland() == Island.TORRHUS_CANYON) return true;
+		if (namedElsewhere()) return false;
 		return present;
 	}
 
 	/** Why {@link #isPresent()} is currently false; unspecified once it's true. */
 	public static String reason() {
+		if (namedElsewhere()) return "Not " + Island.TORRHUS_CANYON.displayName();
 		return reason;
+	}
+
+	/**
+	 * Whether the Mod API has named an island that definitely isn't this one.
+	 *
+	 * <p>An island it has no name for doesn't count: that could be Torrhus Canyon under an id this
+	 * build predates, and the terrain check can still settle it.
+	 */
+	private static boolean namedElsewhere() {
+		Island island = HypixelModApi.currentIsland();
+		return island != Island.NONE && island != Island.OTHER && island != Island.TORRHUS_CANYON;
 	}
 
 	private static void check(ClientLevel level) {

@@ -1,6 +1,6 @@
 package geiler.addons.client.tree;
 
-/** Chat text cleanup, shared by everything here that has to recognise a Hypixel line. */
+/** Chat text cleanup, shared by everything that has to recognise a Hypixel line. */
 public final class ChatText {
 	/** A number rather than a literal - this file is about characters that break when re-encoded. */
 	private static final char SECTION_SIGN = 0x00a7;

@@ -12,6 +12,8 @@ import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.TextSetting;
+import geiler.addons.client.module.impl.MobHighlight;
+import geiler.addons.client.module.impl.MobHighlightModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
 import geiler.addons.client.tree.TreeStats;
 import geiler.addons.client.tree.TreeType;
@@ -59,6 +61,11 @@ public final class ModConfig {
 		Map<String, float[]> hudPositions;
 		/** Tree type name -> {sessionCount, sessionMillis, storedCount, storedMillis}. */
 		Map<String, long[]> treeGifts;
+		/**
+		 * The Mob Highlight list. Its settings can't live in the flat maps above: those are keyed
+		 * by setting name, and every highlight would write to the same "Mob Highlight.Match Text".
+		 */
+		List<MobHighlightData> mobHighlights;
 		/** Click GUI view state - see {@link ClickGuiState}. */
 		String uiCategory;
 		String uiOpenModule;
@@ -68,6 +75,24 @@ public final class ModConfig {
 		List<String> uiCollapsedGroups;
 		/** Absent means "never saved", which keeps the check on by default. */
 		Boolean checkForUpdates;
+		/** Absent means "never saved", which keeps island detection on by default. */
+		Boolean hypixelModApi;
+		Integer islandCheckIntervalSeconds;
+	}
+
+	/**
+	 * One saved highlight. Boxed where the default isn't the zero value, so a hand-edited file
+	 * that omits a field gets the default back rather than false or a clamped zero.
+	 */
+	private static final class MobHighlightData {
+		int id;
+		Boolean matchName;
+		String matchText;
+		int[] outlineColor;
+		int[] fillColor;
+		Boolean depthCheck;
+		Float scanInterval;
+		String displayName;
 	}
 
 	/**
@@ -77,6 +102,18 @@ public final class ModConfig {
 	 */
 	private static boolean checkForUpdates = true;
 
+	/**
+	 * Whether the mod may speak the Hypixel Mod API to learn which island it is on.
+	 * Config-file only, like {@link #checkForUpdates}: it decides how the mod talks to the server
+	 * rather than what any one module does, so it is not any module's setting.
+	 */
+	private static boolean hypixelModApi = true;
+
+	/** How long to wait before asking again when the island never arrived. */
+	private static int islandCheckIntervalSeconds = 30;
+	/** Below this the retry would be pure packet spam; it is a fallback, not a poll. */
+	private static final int MIN_ISLAND_CHECK_SECONDS = 5;
+
 	/** How long a debounced change may sit unwritten; a crash can cost at most this much of it. */
 	private static final long FLUSH_INTERVAL_MILLIS = 60_000;
 
@@ -85,6 +122,14 @@ public final class ModConfig {
 
 	public static boolean checkForUpdates() {
 		return checkForUpdates;
+	}
+
+	public static boolean hypixelModApi() {
+		return hypixelModApi;
+	}
+
+	public static int islandCheckIntervalSeconds() {
+		return islandCheckIntervalSeconds;
 	}
 
 	public static void load() {
@@ -121,12 +166,19 @@ public final class ModConfig {
 		if (data.checkForUpdates != null) {
 			checkForUpdates = data.checkForUpdates;
 		}
+		if (data.hypixelModApi != null) {
+			hypixelModApi = data.hypixelModApi;
+		}
+		if (data.islandCheckIntervalSeconds != null) {
+			islandCheckIntervalSeconds = Math.max(MIN_ISLAND_CHECK_SECONDS, data.islandCheckIntervalSeconds);
+		}
 		loadTikiCoords(data);
 		loadTikiFingerprints(data);
 		if (data.hudPositions != null) {
 			HudManager.restore(data.hudPositions);
 		}
 		loadTreeGifts(data);
+		loadMobHighlights(data);
 		loadUiState(data);
 	}
 
@@ -193,12 +245,27 @@ public final class ModConfig {
 				stats.rawSessionCount(), stats.rawSessionMillis(), stats.rawStoredCount(), stats.rawStoredMillis()
 			});
 		}
+		data.mobHighlights = new ArrayList<>();
+		for (MobHighlight highlight : MobHighlightModule.INSTANCE.highlights()) {
+			MobHighlightData saved = new MobHighlightData();
+			saved.id = highlight.id();
+			saved.matchName = highlight.matchName().value();
+			saved.matchText = highlight.matchText().value();
+			saved.outlineColor = rgba(highlight.outlineColor());
+			saved.fillColor = rgba(highlight.fillColor());
+			saved.depthCheck = highlight.depthCheck().value();
+			saved.scanInterval = highlight.scanInterval().value();
+			saved.displayName = highlight.displayName().value();
+			data.mobHighlights.add(saved);
+		}
 		data.uiCategory = ClickGuiState.category().name();
 		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().name();
 		data.uiExpandedColor = ClickGuiState.expandedColor() == null ? null : ClickGuiState.expandedColor().name();
 		data.uiSettingsScroll = ClickGuiState.settingsScroll();
 		data.uiCollapsedGroups = new ArrayList<>(ClickGuiState.collapsedGroups());
 		data.checkForUpdates = checkForUpdates;
+		data.hypixelModApi = hypixelModApi;
+		data.islandCheckIntervalSeconds = islandCheckIntervalSeconds;
 		try {
 			Files.createDirectories(PATH.getParent());
 			try (Writer writer = Files.newBufferedWriter(PATH)) {
@@ -254,6 +321,35 @@ public final class ModConfig {
 			}
 		}
 		TreeTrackerModule.INSTANCE.rollOverLoadedSession();
+	}
+
+	/** Absent means "never saved", which is simply a user who has not made a highlight yet. */
+	private static void loadMobHighlights(Data data) {
+		if (data.mobHighlights == null) return;
+		List<MobHighlight> restored = new ArrayList<>();
+		for (MobHighlightData saved : data.mobHighlights) {
+			if (saved == null) continue;
+			MobHighlight highlight = MobHighlightModule.INSTANCE.blank(saved.id);
+			if (saved.matchName != null) highlight.matchName().setValue(saved.matchName);
+			if (saved.matchText != null) highlight.matchText().setValue(saved.matchText);
+			applyColor(highlight.outlineColor(), saved.outlineColor);
+			applyColor(highlight.fillColor(), saved.fillColor);
+			if (saved.depthCheck != null) highlight.depthCheck().setValue(saved.depthCheck);
+			if (saved.scanInterval != null) highlight.scanInterval().setValue(saved.scanInterval);
+			if (saved.displayName != null) highlight.displayName().setValue(saved.displayName);
+			restored.add(highlight);
+		}
+		MobHighlightModule.INSTANCE.restore(restored);
+	}
+
+	private static void applyColor(ColorSetting setting, int[] rgba) {
+		if (rgba != null && rgba.length == 4) {
+			setting.set(rgba[0], rgba[1], rgba[2], rgba[3]);
+		}
+	}
+
+	private static int[] rgba(ColorSetting setting) {
+		return new int[]{setting.red(), setting.green(), setting.blue(), setting.alpha()};
 	}
 
 	private static BlockPos parseCoordKey(String key) {

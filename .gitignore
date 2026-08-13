@@ -44,3 +44,7 @@ hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# planning and research scratch, not part of the mod
+scratch/
+scratch_*.json

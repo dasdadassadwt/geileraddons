@@ -3,9 +3,13 @@ package geiler.addons.client;
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.hud.HudManager;
+import geiler.addons.client.location.HypixelModApi;
 import geiler.addons.client.location.TorrhusPresence;
 import geiler.addons.client.module.ModuleManager;
+import geiler.addons.client.module.impl.HideyhoFinderModule;
 import geiler.addons.client.module.impl.I4HelperModule;
+import geiler.addons.client.module.impl.MobHighlightModule;
+import geiler.addons.client.module.impl.SafariFloorDropsModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
 import geiler.addons.client.module.impl.TreeNotifierModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
@@ -22,9 +26,12 @@ public class GeilerAddonsClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		ModuleManager.register(I4HelperModule.INSTANCE);
 		ModuleManager.register(TikiHelperModule.INSTANCE);
+		ModuleManager.register(SafariFloorDropsModule.INSTANCE);
+		ModuleManager.register(HideyhoFinderModule.INSTANCE);
 		ModuleManager.register(TreeTrackerModule.INSTANCE);
 		ModuleManager.register(TreeNotifierModule.INSTANCE);
 		ModuleManager.register(VisualModule.INSTANCE);
+		ModuleManager.register(MobHighlightModule.INSTANCE);
 		HudManager.register(TreeTrackerModule.INSTANCE, 0.01f, 0.10f);
 		HudManager.register(TreeNotifierModule.INSTANCE, 0.5f, 0.28f);
 		// Must come after registration: this is what restores saved settings, HUD positions and
@@ -32,13 +39,19 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModConfig.load();
 		// After the config, which is what decides whether the check is allowed to run at all.
 		UpdateChecker.start();
+		// Channels have to be claimed before any server is joined, so this cannot wait for a tick.
+		HypixelModApi.init();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			// First: the modules gate themselves on the presence this resolves.
+			// First: the modules gate themselves on the presence these resolve.
+			HypixelModApi.tick();
 			TorrhusPresence.tick();
 			UpdateChecker.tick();
 			I4HelperModule.INSTANCE.tick();
 			TikiHelperModule.INSTANCE.tick();
+			SafariFloorDropsModule.INSTANCE.tick();
+			HideyhoFinderModule.INSTANCE.tick();
+			MobHighlightModule.INSTANCE.tick();
 			// Releases any chat line held back while the mod worked out whether it opened a gift
 			// block, so nothing can be withheld for longer than a tick.
 			TreeNotifierModule.INSTANCE.tick();
@@ -49,11 +62,16 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		LevelRenderEvents.AFTER_TRANSLUCENT_FEATURES.register(context -> {
 			I4HelperModule.INSTANCE.render(context);
 			TikiHelperModule.INSTANCE.render(context);
+			SafariFloorDropsModule.INSTANCE.render(context);
+			HideyhoFinderModule.INSTANCE.render(context);
+			MobHighlightModule.INSTANCE.render(context);
 		});
 		// Solver labels are drawn here rather than in the world: in-world text does not render
 		// from any level stage reachable on 26.1, so they are projected onto the HUD instead.
 		HudElementRegistry.addLast(GeilerAddons.id("tiki_labels"),
 			(graphics, tickCounter) -> TikiHelperModule.INSTANCE.renderHud(graphics));
+		HudElementRegistry.addLast(GeilerAddons.id("mob_highlight_labels"),
+			(graphics, tickCounter) -> MobHighlightModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("hud_elements"),
 			(graphics, tickCounter) -> HudManager.render(graphics));
 	}

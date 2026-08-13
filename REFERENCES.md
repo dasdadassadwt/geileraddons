@@ -26,6 +26,85 @@ What that has answered so far:
 | In-world text | Has to go through `SubmitNodeCollector.submitText`; `Font.drawInBatch` against the level buffer source silently drops the glyphs, which is why solver labels are HUD-projected instead |
 | Clean shutdown hook | `ClientLifecycleEvents.CLIENT_STOPPING` |
 | Source encoding | `native.encoding` is `Cp1252` here, so javac's default would mangle the UTF-8 sources; Loom sets UTF-8 already and `build.gradle` now states it outright |
+| Entities in a box | `Level.getEntities(EntityTypeTest.forClass(T), AABB, Predicate)`; `getEntitiesOfClass` does not exist on this version |
+| Custom payloads | `PayloadTypeRegistry.clientboundPlay()/serverboundPlay().register(Type, StreamCodec)` plus `ClientPlayNetworking.registerGlobalReceiver`/`send`. There is no `ClientPayloadEvents` |
+| A player's skin texture | `AbstractClientPlayer.getSkin()` → `PlayerSkin.body()` → `net.minecraft.core.ClientAsset$Texture` (not `client.resources`) |
+| Titles | `Gui.setTimes(int, int, int)` + `Gui.setTitle`/`setSubtitle` |
+| Depth-tested overlays | A second `RenderPipeline` pair with `DepthStencilState(CompareOp.LESS_THAN_OR_EQUAL, false)`; `CompareOp.LESS_THAN_OR_EQUAL`, not `LEQUAL` |
+
+### Skin identifiers are not texture hashes
+
+`PlayerSkin.body().texturePath()` looks like it should carry the Mojang texture hash, and does not.
+`SkinManager$TextureCache` names a downloaded skin from `Hashing.sha1().hashUnencodedChars(url)`, so
+the identifier is `minecraft:skins/<sha1-of-the-URL>` — comparing its path against a texture hash
+matches nothing, silently and forever. The hash is only recoverable from
+`ClientAsset$DownloadedTexture.url()`, which is what `HideyhoFinderModule` matches against.
+
+## Hypixel Mod API
+
+Protocol read from <https://github.com/AzureAaron/hm-api> (`HypixelCustomPayloadCodecs`,
+`HypixelNetworkingImpl`, `PacketCodecUtils`, and the packet records), pulled via `gh api`. The
+library itself is not a dependency — GeilerAddons speaks the three packets it needs directly.
+
+It is a **binary** protocol built on Minecraft's own `StreamCodec`, not JSON, and the channel names
+are not what they look like:
+
+| Direction | Channel | Payload |
+| --- | --- | --- |
+| S2C | `hypixel:hello` | `bool success`, then the server environment. Sent on login; it is the cue to register |
+| C2S | `hypixel:register` | `VarInt version`, then a map of `Identifier` → wanted `VarInt` version |
+| S2C | `hyevent:location` | `bool success`, `VarInt version`, `String serverName`, then optional `serverType`, `lobbyName`, `mode`, `map` |
+
+Three things that are easy to get wrong and cost nothing to get right:
+
+- The location event is **`hyevent:location`**, not `hypixel:location_update`, and `hypixel:player_info`
+  carries ranks rather than a location — it is no use for island detection.
+- Every S2C packet leads with a success flag and a version, ahead of any real field.
+- The buffer must be **drained** after decoding. Hypixel has shipped trailing zero bytes, and a
+  payload decoder that leaves bytes unread is a disconnect rather than a warning
+  (`PacketCodecUtils.readAllBytes` exists in hm-api for exactly this reason).
+
+### Island ids
+
+From SkyHanni's `IslandType.kt` (<https://github.com/hannibal002/SkyHanni>). The `mode` string is
+not derivable from the island's name:
+
+| Island | `mode` |
+| --- | --- |
+| Critter Safari | `safari` |
+| Torrhus Canyon | `foraging_3` |
+| Moonglade Marsh (Galatea) | `foraging_2` |
+| Private island | `dynamic` |
+
+## Skyblocker — Safari floor drops
+
+<https://github.com/SkyblockerMod/Skyblocker> (`skyblock/hunting/FloorDrops.java`).
+
+Floor drops are found from the happy-villager particle the server sends at them, confirmed by three
+`Display.ItemDisplay` entities holding `minecraft:string` in the same block — there is no coordinate
+list involved. A marker is refreshed while those three are still there, dropped 5 s after the last
+confirmation, and dropped immediately when the player attacks or uses that block. Re-confirmation is
+skipped within 2 s of the last one. GeilerAddons ports the same behaviour and timings.
+
+## SkyHanni — Hideyho
+
+<https://github.com/hannibal002/SkyHanni> (`features/hunting/safari/HideyhoFinder.kt`), and
+`hannibal002/SkyHanni-REPO` for `constants/Skulls.json` — the `HIDEYHO` skin, texture
+`3504f1f2…d2db533`, which is still what identifies it.
+
+### Hiding-spot coordinates were tried and removed
+
+SkyHanni waits 2 s after "No peeking!" (the Hideyho teleports first), then pathfinds between the
+`hideyho`-tagged nodes in `constants/island_graphs/SAFARI.json`. Ported without a pathfinder, that
+became "sweep the 19 listed spots that are inside render distance", and it missed too often to
+keep, for three separate reasons:
+
+- the list goes stale the moment Hypixel adds a spot, and the wiki's is already incomplete;
+- only spots in loaded chunks can be read, so most of the list is unreadable on arrival;
+- a Hideyho standing a few blocks off a listed spot is invisible to it.
+
+It now sweeps for the entity itself once a second and holds no coordinates at all. Don't
+reintroduce a spot list without a reason that survives all three of those.
 
 ## SkyHanni — scoreboard island detection
 
