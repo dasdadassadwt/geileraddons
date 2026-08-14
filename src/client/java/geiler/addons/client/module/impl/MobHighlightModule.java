@@ -3,6 +3,8 @@ package geiler.addons.client.module.impl;
 import com.mojang.blaze3d.vertex.PoseStack;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.entity.Nameplates;
+import geiler.addons.client.location.HypixelModApi;
+import geiler.addons.client.location.Island;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
@@ -134,7 +136,14 @@ public final class MobHighlightModule extends Module {
 
 		double range = Math.min(mc.options.getEffectiveRenderDistance() * 16.0, MAX_RANGE);
 		AABB area = AABB.ofSize(player.position(), range * 2, range * 2, range * 2);
+		Island current = HypixelModApi.currentIsland();
 		for (MobHighlight highlight : highlights) {
+			// Cleared rather than simply skipped, so switching one off or walking off its island
+			// takes its boxes down now instead of leaving them until whatever it last saw despawns.
+			if (!highlight.enabled().value() || !highlight.appliesOn(current)) {
+				highlight.clearMatches();
+				continue;
+			}
 			if (!highlight.dueForScan()) continue;
 			scan(level, player, area, highlight);
 		}

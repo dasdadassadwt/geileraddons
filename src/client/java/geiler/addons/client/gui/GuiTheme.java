@@ -46,6 +46,14 @@ public final class GuiTheme {
 	public static int SLIDER_FILL;
 	public static int SWITCH_OFF;
 	public static int SWITCH_ON;
+	/**
+	 * Ring round the switch.
+	 *
+	 * <p>Both the switch track and an enabled card's background are derived from the accent, so on
+	 * a card that is switched on the control was very nearly the colour it sat on. Drawn from the
+	 * text colour instead, which is the one thing guaranteed to read against both.
+	 */
+	public static int SWITCH_BORDER;
 	public static int SWITCH_KNOB;
 	public static int BUTTON_BG;
 	public static int BUTTON_HOVER;
@@ -95,6 +103,7 @@ public final class GuiTheme {
 		SLIDER_FILL = opaque(accent);
 		SWITCH_OFF = opaque(shade(background, 0.45f));
 		SWITCH_ON = opaque(accent);
+		SWITCH_BORDER = withAlpha(text, 150);
 		SWITCH_KNOB = opaque(text);
 		BUTTON_BG = opaque(shade(accent, -0.38f));
 		BUTTON_HOVER = opaque(accent);
@@ -215,7 +224,7 @@ public final class GuiTheme {
 	public static void toggleSwitch(GuiGraphicsExtractor graphics, int x, int y, int w, int h, boolean on) {
 		int radius = h / 2;
 		int track = on ? SWITCH_ON : SWITCH_OFF;
-		roundedRect(graphics, x, y, w, h, radius, track, track);
+		roundedRectBordered(graphics, x, y, w, h, radius, track, track, SWITCH_BORDER);
 		int knobSize = h - 4;
 		int knobX = on ? x + w - knobSize - 2 : x + 2;
 		roundedRect(graphics, knobX, y + 2, knobSize, knobSize, knobSize / 2, SWITCH_KNOB, SWITCH_KNOB);

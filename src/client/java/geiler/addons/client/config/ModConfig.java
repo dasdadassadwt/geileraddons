@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParseException;
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.hud.HudManager;
+import geiler.addons.client.location.Island;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
@@ -29,6 +30,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -86,6 +88,7 @@ public final class ModConfig {
 	 */
 	private static final class MobHighlightData {
 		int id;
+		Boolean enabled;
 		Boolean matchName;
 		String matchText;
 		int[] outlineColor;
@@ -93,6 +96,8 @@ public final class ModConfig {
 		Boolean depthCheck;
 		Float scanInterval;
 		String displayName;
+		/** Island name to whether the highlight is wanted there; an unlisted island means yes. */
+		Map<String, Boolean> islands;
 	}
 
 	/**
@@ -249,6 +254,7 @@ public final class ModConfig {
 		for (MobHighlight highlight : MobHighlightModule.INSTANCE.highlights()) {
 			MobHighlightData saved = new MobHighlightData();
 			saved.id = highlight.id();
+			saved.enabled = highlight.enabled().value();
 			saved.matchName = highlight.matchName().value();
 			saved.matchText = highlight.matchText().value();
 			saved.outlineColor = rgba(highlight.outlineColor());
@@ -256,6 +262,10 @@ public final class ModConfig {
 			saved.depthCheck = highlight.depthCheck().value();
 			saved.scanInterval = highlight.scanInterval().value();
 			saved.displayName = highlight.displayName().value();
+			saved.islands = new LinkedHashMap<>();
+			for (Map.Entry<Island, BooleanSetting> island : highlight.islands().entrySet()) {
+				saved.islands.put(island.getKey().name(), island.getValue().value());
+			}
 			data.mobHighlights.add(saved);
 		}
 		data.uiCategory = ClickGuiState.category().name();
@@ -330,6 +340,7 @@ public final class ModConfig {
 		for (MobHighlightData saved : data.mobHighlights) {
 			if (saved == null) continue;
 			MobHighlight highlight = MobHighlightModule.INSTANCE.blank(saved.id);
+			if (saved.enabled != null) highlight.enabled().setValue(saved.enabled);
 			if (saved.matchName != null) highlight.matchName().setValue(saved.matchName);
 			if (saved.matchText != null) highlight.matchText().setValue(saved.matchText);
 			applyColor(highlight.outlineColor(), saved.outlineColor);
@@ -337,9 +348,33 @@ public final class ModConfig {
 			if (saved.depthCheck != null) highlight.depthCheck().setValue(saved.depthCheck);
 			if (saved.scanInterval != null) highlight.scanInterval().setValue(saved.scanInterval);
 			if (saved.displayName != null) highlight.displayName().setValue(saved.displayName);
+			applyIslands(highlight, saved.islands);
 			restored.add(highlight);
 		}
 		MobHighlightModule.INSTANCE.restore(restored);
+	}
+
+	/**
+	 * Restores a highlight's island filter, or switches it fully on when there isn't one saved.
+	 *
+	 * <p>A new highlight starts with every island off, so it has to be told where it belongs. A
+	 * highlight restored from a config written before the filter existed must not inherit that:
+	 * it ran everywhere when it was saved, and silently coming back matching nothing would look
+	 * exactly like the upgrade had broken it. An island simply missing from an otherwise present
+	 * map is left alone, which is how an island added in a later version arrives switched off
+	 * rather than turning itself on in every highlight the user already had.
+	 */
+	private static void applyIslands(MobHighlight highlight, Map<String, Boolean> saved) {
+		if (saved == null) {
+			for (BooleanSetting island : highlight.islands().values()) {
+				island.setValue(true);
+			}
+			return;
+		}
+		for (Map.Entry<Island, BooleanSetting> island : highlight.islands().entrySet()) {
+			Boolean wanted = saved.get(island.getKey().name());
+			if (wanted != null) island.getValue().setValue(wanted);
+		}
 	}
 
 	private static void applyColor(ColorSetting setting, int[] rgba) {

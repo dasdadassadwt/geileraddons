@@ -4,12 +4,14 @@ import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.hud.HudManager;
 import geiler.addons.client.location.HypixelModApi;
+import geiler.addons.client.location.SafariBiome;
 import geiler.addons.client.location.TorrhusPresence;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.HideyhoFinderModule;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.MobHighlightModule;
 import geiler.addons.client.module.impl.SafariFloorDropsModule;
+import geiler.addons.client.module.impl.SparklingCritterModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
 import geiler.addons.client.module.impl.TreeNotifierModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
@@ -28,6 +30,7 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModuleManager.register(TikiHelperModule.INSTANCE);
 		ModuleManager.register(SafariFloorDropsModule.INSTANCE);
 		ModuleManager.register(HideyhoFinderModule.INSTANCE);
+		ModuleManager.register(SparklingCritterModule.INSTANCE);
 		ModuleManager.register(TreeTrackerModule.INSTANCE);
 		ModuleManager.register(TreeNotifierModule.INSTANCE);
 		ModuleManager.register(VisualModule.INSTANCE);
@@ -45,12 +48,15 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			// First: the modules gate themselves on the presence these resolve.
 			HypixelModApi.tick();
+			// After the island, which is what decides whether a biome lookup is worth doing.
+			SafariBiome.tick();
 			TorrhusPresence.tick();
 			UpdateChecker.tick();
 			I4HelperModule.INSTANCE.tick();
 			TikiHelperModule.INSTANCE.tick();
 			SafariFloorDropsModule.INSTANCE.tick();
 			HideyhoFinderModule.INSTANCE.tick();
+			SparklingCritterModule.INSTANCE.tick();
 			MobHighlightModule.INSTANCE.tick();
 			// Releases any chat line held back while the mod worked out whether it opened a gift
 			// block, so nothing can be withheld for longer than a tick.
@@ -64,6 +70,7 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			TikiHelperModule.INSTANCE.render(context);
 			SafariFloorDropsModule.INSTANCE.render(context);
 			HideyhoFinderModule.INSTANCE.render(context);
+			SparklingCritterModule.INSTANCE.render(context);
 			MobHighlightModule.INSTANCE.render(context);
 		});
 		// Solver labels are drawn here rather than in the world: in-world text does not render
@@ -72,6 +79,8 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			(graphics, tickCounter) -> TikiHelperModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("mob_highlight_labels"),
 			(graphics, tickCounter) -> MobHighlightModule.INSTANCE.renderHud(graphics));
+		HudElementRegistry.addLast(GeilerAddons.id("sparkling_labels"),
+			(graphics, tickCounter) -> SparklingCritterModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("hud_elements"),
 			(graphics, tickCounter) -> HudManager.render(graphics));
 	}

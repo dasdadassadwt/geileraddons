@@ -40,6 +40,8 @@ public class ClickGuiScreen extends Screen {
 
 	private static final int ROW_HEIGHT = 24;
 	private static final int GROUP_HEADER_HEIGHT = 20;
+	/** How far a nested section's heading steps in from the one it sits inside. */
+	private static final int GROUP_INDENT = 10;
 	private static final int PADDING = 8;
 	private static final int CHANNEL_ROW_HEIGHT = 14;
 	private static final int SCROLLBAR_WIDTH = 3;
@@ -354,11 +356,18 @@ public class ClickGuiScreen extends Screen {
 	private void renderGroupRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, GroupRow groupRow, boolean hoverable) {
 		Rect bounds = groupRow.bounds;
 		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
-		roundedRect(graphics, bounds.x + 5, bounds.y + 1, bounds.w - 10, bounds.h - 3, RADIUS_SMALL,
-			hovered ? CARD_BG_HOVER : GROUP_HEADER);
+		// A nested section is stepped in from its parent, so the two never read as siblings.
+		int indent = groupRow.depth * GROUP_INDENT;
+		roundedRect(graphics, bounds.x + 5 + indent, bounds.y + 1, bounds.w - 10 - indent, bounds.h - 3,
+			RADIUS_SMALL, hovered ? CARD_BG_HOVER : GROUP_HEADER);
 		boolean collapsed = ClickGuiState.isCollapsed(openSettingsModule, groupRow.group);
-		graphics.text(font, collapsed ? "▸" : "▾", bounds.x + 12, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
-		graphics.text(font, groupRow.group.name(), bounds.x + 24, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+		graphics.text(font, collapsed ? "▸" : "▾", bounds.x + 12 + indent, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+		graphics.text(font, groupRow.group.name(), bounds.x + 24 + indent, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+
+		Rect toggle = groupRow.toggle;
+		if (toggle != null) {
+			toggleSwitch(graphics, toggle.x, toggle.y, toggle.w, toggle.h, groupRow.group.toggle().value());
+		}
 	}
 
 	private void renderColorRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, ColorRow colorRow, boolean hoverable) {
@@ -513,11 +522,12 @@ public class ClickGuiScreen extends Screen {
 			focused ? SLIDER_FILL : BORDER);
 
 		// Shows the tail rather than the head once the value outgrows the box, so what was just
-		// typed stays visible.
+		// typed stays visible. Dropped a code point at a time rather than a char: halving a
+		// surrogate pair leaves a stray the font draws as tofu, which never shrinks the string.
 		String text = textRow.setting.value();
 		int inner = field.w - 8;
 		while (!text.isEmpty() && font.width(text) > inner) {
-			text = text.substring(1);
+			text = text.substring(text.offsetByCodePoints(0, 1));
 		}
 		int textY = field.y + (field.h - TEXT_HEIGHT) / 2;
 		graphics.text(font, text, field.x + 4, textY, TEXT_PRIMARY);
@@ -583,47 +593,68 @@ public class ClickGuiScreen extends Screen {
 	/** @param startY where the first row begins; already offset by the scroll position */
 	private List<Row> layoutRows(Module module, int x, int startY) {
 		List<Row> rows = new ArrayList<>();
-		int moduleWidth = moduleWidth();
 		int cursorY = startY;
-
 		for (SettingGroup group : module.groups()) {
-			if (group.name() != null) {
-				rows.add(new GroupRow(group, new Rect(x, cursorY, moduleWidth, GROUP_HEADER_HEIGHT)));
-				cursorY += GROUP_HEADER_HEIGHT;
-				if (ClickGuiState.isCollapsed(module, group)) continue;
-			}
-			for (Setting setting : group.settings()) {
-				switch (setting) {
-					case ColorSetting colorSetting -> {
-						int rowHeight = colorRowHeight(colorSetting);
-						rows.add(new ColorRow(colorSetting, new Rect(x, cursorY, moduleWidth, rowHeight),
-							picker(colorSetting, x, cursorY, moduleWidth)));
-						cursorY += rowHeight;
-					}
-					case NumberSetting numberSetting -> {
-						Rect slider = new Rect(x + 16, cursorY + 13, moduleWidth - 32 - VALUE_GUTTER, 6);
-						rows.add(new NumberRow(numberSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), slider));
-						cursorY += ROW_HEIGHT;
-					}
-					case BooleanSetting booleanSetting -> {
-						rows.add(new ToggleRow(booleanSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
-						cursorY += ROW_HEIGHT;
-					}
-					case TextSetting textSetting -> {
-						Rect field = new Rect(x + moduleWidth - TEXT_FIELD_WIDTH - 14,
-							cursorY + (ROW_HEIGHT - TEXT_FIELD_HEIGHT) / 2, TEXT_FIELD_WIDTH, TEXT_FIELD_HEIGHT);
-						rows.add(new TextRow(textSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), field));
-						cursorY += ROW_HEIGHT;
-					}
-					case ModuleAction action -> {
-						rows.add(new ActionRow(action, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
-						cursorY += ROW_HEIGHT;
-					}
+			cursorY = layoutGroup(module, group, x, cursorY, 0, rows);
+		}
+		return rows;
+	}
+
+	/**
+	 * Lays out one section and anything nested inside it.
+	 *
+	 * @param depth how deep this section is nested, which is what indents its heading
+	 * @return where the next row begins
+	 */
+	private int layoutGroup(Module module, SettingGroup group, int x, int cursorY, int depth, List<Row> rows) {
+		int moduleWidth = moduleWidth();
+
+		if (group.name() != null) {
+			Rect bounds = new Rect(x, cursorY, moduleWidth, GROUP_HEADER_HEIGHT);
+			// Lined up with the switch on a toggle row, so the column reads straight down.
+			Rect toggle = group.toggle() == null ? null
+				: new Rect(bounds.x + bounds.w - SWITCH_WIDTH - 14,
+					bounds.y + (bounds.h - SWITCH_HEIGHT) / 2, SWITCH_WIDTH, SWITCH_HEIGHT);
+			rows.add(new GroupRow(group, bounds, toggle, depth));
+			cursorY += GROUP_HEADER_HEIGHT;
+			// Folding a section takes everything nested in it with it, not just its own rows.
+			if (ClickGuiState.isCollapsed(module, group)) return cursorY;
+		}
+
+		for (Setting setting : group.settings()) {
+			switch (setting) {
+				case ColorSetting colorSetting -> {
+					int rowHeight = colorRowHeight(colorSetting);
+					rows.add(new ColorRow(colorSetting, new Rect(x, cursorY, moduleWidth, rowHeight),
+						picker(colorSetting, x, cursorY, moduleWidth)));
+					cursorY += rowHeight;
+				}
+				case NumberSetting numberSetting -> {
+					Rect slider = new Rect(x + 16, cursorY + 13, moduleWidth - 32 - VALUE_GUTTER, 6);
+					rows.add(new NumberRow(numberSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), slider));
+					cursorY += ROW_HEIGHT;
+				}
+				case BooleanSetting booleanSetting -> {
+					rows.add(new ToggleRow(booleanSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
+					cursorY += ROW_HEIGHT;
+				}
+				case TextSetting textSetting -> {
+					Rect field = new Rect(x + moduleWidth - TEXT_FIELD_WIDTH - 14,
+						cursorY + (ROW_HEIGHT - TEXT_FIELD_HEIGHT) / 2, TEXT_FIELD_WIDTH, TEXT_FIELD_HEIGHT);
+					rows.add(new TextRow(textSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), field));
+					cursorY += ROW_HEIGHT;
+				}
+				case ModuleAction action -> {
+					rows.add(new ActionRow(action, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
+					cursorY += ROW_HEIGHT;
 				}
 			}
 		}
 
-		return rows;
+		for (SettingGroup child : group.children()) {
+			cursorY = layoutGroup(module, child, x, cursorY, depth + 1, rows);
+		}
+		return cursorY;
 	}
 
 	private Picker picker(ColorSetting setting, int x, int cursorY, int moduleWidth) {
@@ -716,6 +747,14 @@ public class ClickGuiScreen extends Screen {
 		for (Row row : settingsRows(module, x, panelY)) {
 			switch (row) {
 				case GroupRow groupRow -> {
+					// The switch is tested first: it sits inside the header, which would otherwise
+					// fold the section shut under the cursor instead.
+					if (groupRow.toggle != null && groupRow.toggle.contains(mouseX, mouseY)) {
+						groupRow.group.toggle().toggle();
+						persistView();
+						ModConfig.save();
+						return true;
+					}
 					if (groupRow.bounds.contains(mouseX, mouseY)) {
 						ClickGuiState.toggleCollapsed(module, groupRow.group);
 						ModConfig.save();
@@ -971,7 +1010,11 @@ public class ClickGuiScreen extends Screen {
 		Rect bounds();
 	}
 
-	private record GroupRow(SettingGroup group, Rect bounds) implements Row {
+	/**
+	 * @param toggle hit area of the switch on the heading, or null when the section has none
+	 * @param depth  how deep the section is nested, which is what indents its heading
+	 */
+	private record GroupRow(SettingGroup group, Rect bounds, Rect toggle, int depth) implements Row {
 	}
 
 	private record ColorRow(ColorSetting setting, Rect bounds, Picker picker) implements Row {

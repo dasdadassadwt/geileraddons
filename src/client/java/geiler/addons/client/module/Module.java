@@ -95,7 +95,7 @@ public abstract class Module {
 	 */
 	public List<SettingGroup> groups() {
 		if (groups == null) {
-			groups = List.of(new SettingGroup(null, settings));
+			groups = List.of(new SettingGroup(null, null, false, settings, List.of()));
 		}
 		return groups;
 	}
@@ -114,7 +114,7 @@ public abstract class Module {
 	 * <p>{@link #isEnabled()} is the user's intent; this is that intent plus context, so a module
 	 * can stay switched on while sitting idle somewhere it does not apply. Overriding this is how
 	 * a module gates itself on location without ever flipping its own switch behind the user's
-	 * back - the Click GUI dims anything enabled but inactive and shows {@link #inactiveReason()}.
+	 * back - the Click GUI leaves the card alone and explains itself with {@link #inactiveReason()}.
 	 */
 	public boolean isActive() {
 		return enabled;

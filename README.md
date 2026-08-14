@@ -4,7 +4,7 @@
 
 **Overlays and puzzle solvers for Hypixel SkyBlock.**
 
-Fully client-side. Nothing is automated, and nothing is sent to the server but a single request to be told which island you're on.
+Fully client-side. Two things ever leave your client, and the second is off until you switch it on: a single request to be told which island you're on, and — if you enable it — a party message when a sparkling critter turns up.
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.21.10-brightgreen)
 ![Loader](https://img.shields.io/badge/loader-Fabric-blue)
@@ -72,7 +72,9 @@ The module only runs on the Safari and sits idle everywhere else, so it costs yo
 
 <br>
 
-Sweeps the Safari once a second for the Hideyho itself and boxes it through walls until it's gone.
+Sweeps the Haunted biome once a second for the Hideyho itself and boxes it through walls until it's gone.
+
+**It only runs in Haunted**, that being the only part of the Safari a Hideyho spawns in, so it costs you nothing while you're working the other three. The card tells you when it's idle for that reason. Which biome you're in comes from the biome the server reports rather than from a map of coordinates, so there's nothing to go stale when Hypixel moves a wall.
 
 **It looks for the critter, not for the places it hides.** A list of hiding spots goes stale the moment Hypixel adds one, can only ever check spots whose chunks happen to be loaded, and misses a Hideyho standing a few blocks off a listed spot — so there isn't one. Nothing needs triggering and no chat line needs catching: if it's in range, it's boxed.
 
@@ -81,6 +83,25 @@ It's recognised by its skin, with its name as a backup so a reskin doesn't quiet
 **Debug Mode** boxes every fake player in range in a faded colour — that's how you tell "it wasn't there" apart from "it was there and wasn't recognised".
 
 Scan rate and colour are both yours to set.
+
+</details>
+
+<details>
+<summary><b>Sparkling Critter</b> — finds the rare variants, and can call them out</summary>
+
+<br>
+
+Sweeps the Safari for sparkling critters and boxes them through walls, with the species written above each one.
+
+**It reads name tags.** Hypixel names the label above a rare one `Sparkling Rockmite` rather than `Rockmite`, and a name tag renders through terrain in vanilla anyway — so this points out something that was already on your screen, it just stops you having to notice it. A label is matched whole, so a dropped item called a "Sparkling Tepid Shard" is not mistaken for a Tepid.
+
+Boxes follow the critter rather than its name tag: Hypixel floats that on a separate marker with no hitbox at all, and the mod resolves it back to the mob underneath — never to a player standing nearby.
+
+**Telling your party.** Off by default. When it's on, the first time a sparkling comes within your **Range to Send** it posts `Sparkling Rockmite found at x:131 y:54 z:12` to party chat. Each critter is called out once, and one that was too far away when you first saw it still gets called out when you get closer.
+
+**Debug** prints that line to your own chat instead of sending it, and never sends anything while it's on — so you can watch exactly what it would say without messaging anybody.
+
+Colour, text size, an optional tracer line and the sweep rate are all yours to set.
 
 </details>
 
@@ -95,6 +116,8 @@ Make as many highlights as you want, each with its own colours and its own text 
 - **Colour codes and levels don't get in the way.** Matching runs on the readable text, ignoring case, so you type what you see rather than what the server sent.
 - **Two colours per highlight** — outline and fill, set separately — plus its own depth check and its own scan rate.
 - **The name you give it is drawn on the box**, in the real game font, so several highlights running at once stay tellable apart.
+- **Its own switch, on its own heading.** Turn a highlight off without deleting it or opening it up.
+- **Pick the islands it runs on.** Each highlight has its own **Islands** list, folded up inside it, covering every island the mod can recognise. **They all start off**, so you say where a highlight belongs rather than switching off the two dozen places you didn't mean. Where the island can't be named at all — single player, another server, or the moment before the handshake lands — there's nothing to match against, so the highlight simply runs. Highlights made before this existed keep running everywhere until you narrow them.
 
 Highlights are built in the settings panel itself: **Create Mob Highlight** adds an empty one, and each becomes its own foldable section you fill in. No separate screen to keep in step.
 

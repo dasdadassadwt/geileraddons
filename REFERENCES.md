@@ -66,8 +66,8 @@ Three things that are easy to get wrong and cost nothing to get right:
 
 ### Island ids
 
-From SkyHanni's `IslandType.kt` (<https://github.com/hannibal002/SkyHanni>). The `mode` string is
-not derivable from the island's name:
+From SkyHanni's `IslandType.kt` (<https://github.com/hannibal002/SkyHanni>), read via `gh api`. The
+`mode` string is not derivable from the island's name:
 
 | Island | `mode` |
 | --- | --- |
@@ -75,6 +75,16 @@ not derivable from the island's name:
 | Torrhus Canyon | `foraging_3` |
 | Moonglade Marsh (Galatea) | `foraging_2` |
 | Private island | `dynamic` |
+
+`location/Island.java` now carries all **24** mode-addressable islands from that file. Three things
+that table settles, none of them guessable:
+
+- There is no `combat_2`. Combat runs `combat_1` (Spider's Den) then `combat_3` (The End); the
+  Blazing Fortress that sat between them is gone, so a generated sequence would invent an island.
+- The Catacombs is `dungeon`, singular, while its hub is `dungeon_hub`.
+- **Guest variants have no mode at all.** Private Island Guest and Garden Guest are `null` in
+  SkyHanni and are deliberately absent here: nothing distinguishes them from the island itself, so
+  listing them would offer a filter that can never match.
 
 ## Skyblocker — Safari floor drops
 
@@ -85,6 +95,32 @@ Floor drops are found from the happy-villager particle the server sends at them,
 list involved. A marker is refreshed while those three are still there, dropped 5 s after the last
 confirmation, and dropped immediately when the player attacks or uses that block. Re-confirmation is
 skipped within 2 s of the last one. GeilerAddons ports the same behaviour and timings.
+
+### Safari biomes
+
+<https://github.com/SkyblockerMod/Skyblocker> (`skyblock/hunting/safari/SafariUtils.java`,
+`utils/SkyBlockBiomes.java`, and `Utils.updateBiome`/`isInBiome`).
+
+**Hypixel ships the Safari's areas as real biomes**, registered in its own namespace, so which part
+of the Safari a player is standing in is a question the client can simply ask rather than something
+to be worked out from coordinates:
+
+| Area | biome id |
+| --- | --- |
+| Forest | `hypixel:forest` |
+| Cavern | `hypixel:cavern` |
+| Icy | `hypixel:icy`, `hypixel:icy_caves` |
+| Haunted | `hypixel:haunted` |
+
+Icy really does have two ids. The lookup is `level.getBiome(player.blockPosition())` guarded by
+`isInsideBuildHeight`, compared with `Holder.is(Identifier)` — all three exist on 26.1.2, though
+`getBiome` is inherited from `LevelReader` and `isInsideBuildHeight` from `LevelHeightAccessor`
+rather than being declared on `Level` itself, so `javap` on `Level` alone finds neither.
+
+`location/SafariBiome` resolves this once a tick and Hideyho Finder gates on `HAUNTED`, that being
+the only biome a Hideyho spawns in. Note this is a **better** answer than the one critterMod uses
+for the same question — its `SafariAreaMap.biomeAt(x, y, z)` is a coordinate table, which carries
+exactly the staleness problem that got the Hideyho spot list deleted.
 
 ## SkyHanni — Hideyho
 
@@ -105,6 +141,42 @@ keep, for three separate reasons:
 
 It now sweeps for the entity itself once a second and holds no coordinates at all. Don't
 reintroduce a spot list without a reason that survives all three of those.
+
+## critterMod — sparkling critters
+
+`C:\Users\chens\Desktop\Mods\critterMod-26.1.2` (`data/Critters.java`, `client/CritterEntities.java`,
+`client/SparklingWatch.java`, `client/SafariLocation.java`). Read from the working copy rather than
+summarised second-hand, because a plan's transcription of it had already drifted in one detail.
+
+What it settled:
+
+- **The roster is 37 species**, and `hunting/CritterSpecies` carries the same names. Hypixel labels a
+  critter with an entity whose custom name is *exactly* the species name.
+- **A rare one is named for it** — `Sparkling Rockmite`. The prefix test is
+  `equalsIgnoreCase` over the first nine characters plus a `length > 9` guard, **not**
+  `startsWith`: a label reading exactly `Sparkling` must not resolve to a rare nothing.
+- **Only that one prefix is tolerated**, rather than searching a label for any species name it
+  contains, so an armour stand advertising a `Tepid Shard` cannot read as a Tepid.
+- **Labels are stripped of `\p{Cf}` and `\p{Co}`** as well as §-codes. Hypixel pads name tags with
+  formatting characters and draws with private-use glyphs, either of which defeats an equality test
+  while being invisible in a log. `ChatText.stripForMatch` does this; `ChatText.plain` deliberately
+  does not, since chat-line recognition depends on the padding it keeps.
+- **A label's mob is found by proximity, excluding scaffolding** — armour stands, interactions, the
+  three display types, items, *and players*. The player exclusion matters: without it a sparkling
+  standing beside someone boxes the person. A Hideyho arrives as a fake player and names itself, so
+  a player may still be a *label*, just never borrowed as somebody else's body.
+- **Announcements are keyed on the label's UUID**, not the mob's, because the label is what named it
+  and it survives the pairing underneath being ambiguous.
+
+### A shared sweep was considered and not built
+
+critterMod runs one `CritterEntities` sweep read by four features, and copying that shape was
+proposed here. It was not adopted, because GeilerAddons has only one consumer for it: Mob Highlight
+matches arbitrary user text against any entity on its own per-highlight interval, and Hideyho Finder
+matches a skin hash — neither can read a roster-of-species sweep. A shared component with a single
+consumer is the speculative abstraction this repo's own rules forbid, so the sweep lives in
+`SparklingCritterModule`. If Hideyho Finder is ever moved onto species labels there would be a
+second consumer, and that is the point to revisit it.
 
 ## SkyHanni — scoreboard island detection
 

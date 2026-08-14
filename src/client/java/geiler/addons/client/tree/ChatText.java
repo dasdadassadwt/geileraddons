@@ -29,4 +29,29 @@ public final class ChatText {
 		}
 		return out.toString();
 	}
+
+	/**
+	 * {@link #plain} for text that has to match something exactly: invisible characters dropped
+	 * rather than kept, and the ends trimmed.
+	 *
+	 * <p>Separate from {@link #plain} because that one is for chat lines, where the padding is part
+	 * of how a line is recognised and trimming it away would break that. A name tag has no such
+	 * structure - it is one value to be compared - but Hypixel builds its glyphs out of private-use
+	 * codepoints and pads with formatting characters, and either would defeat an equality test
+	 * while being completely invisible in a log.
+	 */
+	public static String stripForMatch(String message) {
+		StringBuilder out = new StringBuilder(message.length());
+		for (int i = 0; i < message.length(); i++) {
+			char c = message.charAt(i);
+			if (c == SECTION_SIGN) {
+				i++;
+				continue;
+			}
+			int type = Character.getType(c);
+			if (type == Character.FORMAT || type == Character.PRIVATE_USE) continue;
+			out.append(Character.isSpaceChar(c) || Character.isWhitespace(c) ? ' ' : c);
+		}
+		return out.toString().trim();
+	}
 }

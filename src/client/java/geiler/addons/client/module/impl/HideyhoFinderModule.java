@@ -4,6 +4,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import geiler.addons.client.entity.Nameplates;
 import geiler.addons.client.location.HypixelModApi;
 import geiler.addons.client.location.Island;
+import geiler.addons.client.location.SafariBiome;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
@@ -93,15 +94,26 @@ public final class HideyhoFinderModule extends Module {
 
 	// ---- lifecycle ----------------------------------------------------------------------
 
+	/**
+	 * Only the Haunted side of the Safari, since that is the only place a Hideyho spawns.
+	 *
+	 * <p>A biome the client cannot name counts as "carry on" rather than "stop". Failing shut there
+	 * would turn a Safari whose biomes never resolved into a finder that silently never runs, which
+	 * is the failure this module was rewritten to get away from - and sweeping three biomes too many
+	 * costs a fraction of a millisecond, while missing the Hideyho costs the run.
+	 */
 	@Override
 	public boolean isActive() {
-		return isEnabled() && HypixelModApi.currentIsland() == Island.SAFARI;
+		if (!isEnabled() || HypixelModApi.currentIsland() != Island.SAFARI) return false;
+		SafariBiome biome = SafariBiome.current();
+		return biome == null || biome == SafariBiome.HAUNTED;
 	}
 
 	@Override
 	public String inactiveReason() {
 		if (!isEnabled() || isActive()) return null;
-		return HypixelModApi.reasonNotOn(Island.SAFARI);
+		String island = HypixelModApi.reasonNotOn(Island.SAFARI);
+		return island != null ? island : "Not in the " + SafariBiome.HAUNTED.displayName();
 	}
 
 	@Override

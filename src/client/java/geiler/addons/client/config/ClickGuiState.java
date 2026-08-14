@@ -60,9 +60,16 @@ public final class ClickGuiState {
 		settingsScroll = value;
 	}
 
-	/** Unnamed sections have no header to click, so they can never be folded shut. */
+	/**
+	 * Unnamed sections have no header to click, so they can never be folded shut.
+	 *
+	 * <p>A stored key means "flipped away from how this section starts", not "collapsed". That way
+	 * a section that opens folded needs no entry until someone opens it, and a config written
+	 * before any of this existed still restores every section to its intended state.
+	 */
 	public static boolean isCollapsed(Module module, SettingGroup group) {
-		return group.name() != null && collapsedGroups.contains(key(module, group));
+		if (group.name() == null) return false;
+		return group.collapsedByDefault() != collapsedGroups.contains(key(module, group));
 	}
 
 	public static void toggleCollapsed(Module module, SettingGroup group) {
