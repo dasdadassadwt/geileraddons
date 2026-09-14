@@ -1,0 +1,16 @@
+{
+	"required": true,
+	"package": "geiler.addons.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"AbstractContainerScreenMixin",
+		"ClientPacketListenerMixin",
+		"MinecraftMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}

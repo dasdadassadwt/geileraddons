@@ -1,0 +1,82 @@
+package geiler.addons.client.dungeon;
+
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.Map;
+import java.util.UUID;
+
+/** Profile data used by Party Finder Stats and Auto Kick. */
+public final class DungeonStats {
+	private final String name;
+	private final UUID uuid;
+	private final int catacombsLevel;
+	private final DungeonClass selectedClass;
+	private final Map<DungeonClass, Integer> classLevels;
+	private final double classAverage;
+	private final long totalSecrets;
+	private final long totalRuns;
+	private final double secretAverage;
+	private final int magicalPower;
+	private final long bank;
+	private final boolean bankKnown;
+	private final boolean gearKnown;
+	private final EnumSet<Gear> gear;
+	private final Map<DungeonFloor, Long> fastestSPlusSeconds;
+
+	public enum Gear { TERMINATOR, HYPERION, GOLDEN_DRAGON }
+
+	public DungeonStats(String name, UUID uuid, int catacombsLevel, DungeonClass selectedClass,
+		Map<DungeonClass, Integer> classLevels,
+		double classAverage, long totalSecrets, long totalRuns, int magicalPower, long bank, boolean bankKnown,
+		boolean gearKnown, EnumSet<Gear> gear, Map<DungeonFloor, Long> fastestSPlusSeconds) {
+		this.name = name;
+		this.uuid = uuid;
+		this.catacombsLevel = catacombsLevel;
+		this.selectedClass = selectedClass;
+		this.classLevels = Map.copyOf(classLevels);
+		this.classAverage = classAverage;
+		this.totalSecrets = Math.max(0, totalSecrets);
+		this.totalRuns = Math.max(0, totalRuns);
+		this.secretAverage = this.totalRuns == 0 ? 0 : (double) this.totalSecrets / this.totalRuns;
+		this.magicalPower = Math.max(0, magicalPower);
+		this.bank = Math.max(0, bank);
+		this.bankKnown = bankKnown;
+		this.gearKnown = gearKnown;
+		this.gear = gear.clone();
+		this.fastestSPlusSeconds = Map.copyOf(fastestSPlusSeconds);
+	}
+
+	public String name() { return name; }
+	public UUID uuid() { return uuid; }
+	public int catacombsLevel() { return catacombsLevel; }
+	public DungeonClass selectedClass() { return selectedClass; }
+	public Map<DungeonClass, Integer> classLevels() { return classLevels; }
+	public int classLevel(DungeonClass dungeonClass) { return classLevels.getOrDefault(dungeonClass, 0); }
+	public double classAverage() { return classAverage; }
+	public long totalSecrets() { return totalSecrets; }
+	public long totalRuns() { return totalRuns; }
+	public double secretAverage() { return secretAverage; }
+	public int magicalPower() { return magicalPower; }
+	public long bank() { return bank; }
+	public boolean bankKnown() { return bankKnown; }
+	public boolean gearKnown() { return gearKnown; }
+	public boolean has(Gear item) { return gear.contains(item); }
+
+	public long fastestSPlusSeconds(DungeonFloor floor) {
+		return fastestSPlusSeconds.getOrDefault(floor, 0L);
+	}
+
+	public String selectedClassLine(DungeonClass selected) {
+		if (selected == null) return "Class ?";
+		return selected.displayName() + " " + classLevel(selected);
+	}
+
+	public String allClassLevels() {
+		StringBuilder out = new StringBuilder();
+		for (DungeonClass dungeonClass : DungeonClass.values()) {
+			if (out.length() > 0) out.append('\n');
+			out.append(dungeonClass.displayName()).append(' ').append(classLevel(dungeonClass));
+		}
+		return out.toString();
+	}
+}
