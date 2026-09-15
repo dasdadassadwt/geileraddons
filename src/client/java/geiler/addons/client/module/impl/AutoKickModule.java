@@ -50,15 +50,15 @@ public final class AutoKickModule extends Module {
 	}
 
 	private AutoKickModule(Settings settings) {
-		super("Auto Kick", "Checks Party Finder players against per-floor requirements.", Category.F7,
+		super("Auto Kick", "Checks Party Finder requirements.", Category.F7,
 			settings.allSettings().toArray(Setting[]::new));
 		policies = settings.policies;
 		debug = settings.debug;
 		group(
 			new SettingGroup("Diagnostics", settings.debug),
-			new SettingGroup("Normal Floors")
+			new SettingGroup("Normal")
 				.containing(settings.normal.stream().map(FloorPolicy::group).toArray(SettingGroup[]::new)),
-			new SettingGroup("Master Floors")
+			new SettingGroup("Master")
 				.containing(settings.master.stream().map(FloorPolicy::group).toArray(SettingGroup[]::new))
 		);
 	}
@@ -274,7 +274,7 @@ public final class AutoKickModule extends Module {
 		final TextSetting minSecrets;
 		final TextSetting minSecretAverage;
 		final TextSetting minMagicalPower;
-		final TextSetting maxPersonalBest;
+		final TextSetting personalBestLimit;
 		final TextSetting minBank;
 		final BooleanSetting terminator;
 		final BooleanSetting hyperion;
@@ -284,29 +284,29 @@ public final class AutoKickModule extends Module {
 			this.floor = floor;
 			String prefix = floor.displayName() + " ";
 			autoKick = new BooleanSetting(prefix + "Auto Kick", false);
-			askBeforeKick = new BooleanSetting(prefix + "Ask Before Kick", false);
-			dupeCheck = new BooleanSetting(prefix + "Dupe Check", false);
-			minCata = new TextSetting(prefix + "Minimum Cata", "0", 6);
-			minClass = new TextSetting(prefix + "Minimum Joined Class", "0", 6);
-			minClassAverage = new TextSetting(prefix + "Minimum Class Average", "0", 8);
-			minSecrets = new TextSetting(prefix + "Minimum Secrets", "0", 12);
-			minSecretAverage = new TextSetting(prefix + "Minimum Secret Average", "0", 8);
-			minMagicalPower = new TextSetting(prefix + "Minimum Magical Power", "0", 8);
-			maxPersonalBest = new TextSetting(prefix + "Maximum PB Seconds", "0", 8);
-			minBank = new TextSetting(prefix + "Minimum Bank", "0", 14);
-			terminator = new BooleanSetting(prefix + "Require Terminator", false);
-			hyperion = new BooleanSetting(prefix + "Require Hyperion", false);
-			goldenDragon = new BooleanSetting(prefix + "Require Golden Dragon", false);
+			askBeforeKick = new BooleanSetting(prefix + "Ask Before", false);
+			dupeCheck = new BooleanSetting(prefix + "Dupe", false);
+			minCata = new TextSetting(prefix + "Cata", "0", 6);
+			minClass = new TextSetting(prefix + "Class", "0", 6);
+			minClassAverage = new TextSetting(prefix + "Class Avg", "0", 8);
+			minSecrets = new TextSetting(prefix + "Secrets", "0", 12);
+			minSecretAverage = new TextSetting(prefix + "Secret Avg", "0", 8);
+			minMagicalPower = new TextSetting(prefix + "MP", "0", 8);
+			personalBestLimit = new TextSetting(prefix + "Minimum PB", "0", 8);
+			minBank = new TextSetting(prefix + "Bank", "0", 14);
+			terminator = new BooleanSetting(prefix + "Terminator", false);
+			hyperion = new BooleanSetting(prefix + "Hyperion", false);
+			goldenDragon = new BooleanSetting(prefix + "GDrag", false);
 		}
 
 		List<Setting> settings() {
 			return List.of(autoKick, askBeforeKick, dupeCheck, minCata, minClass, minClassAverage, minSecrets,
-				minSecretAverage, minMagicalPower, maxPersonalBest, minBank, terminator, hyperion, goldenDragon);
+				minSecretAverage, minMagicalPower, personalBestLimit, minBank, terminator, hyperion, goldenDragon);
 		}
 
 		SettingGroup group() {
 			return SettingGroup.switchedFolded(floor.displayName(), autoKick, askBeforeKick, dupeCheck, minCata, minClass,
-				minClassAverage, minSecrets, minSecretAverage, minMagicalPower, maxPersonalBest,
+				minClassAverage, minSecrets, minSecretAverage, minMagicalPower, personalBestLimit,
 				minBank, terminator, hyperion, goldenDragon);
 		}
 
@@ -318,7 +318,7 @@ public final class AutoKickModule extends Module {
 			long requiredSecrets = positive(minSecrets.longValue(0));
 			double requiredSecretAverage = positive(minSecretAverage.doubleValue(0));
 			int requiredMagicalPower = positive(minMagicalPower.intValue(0));
-			int requiredPersonalBest = positive(maxPersonalBest.intValue(0));
+			int requiredPersonalBest = positive(personalBestLimit.intValue(0));
 			if (requiredCata > 0 && stats.catacombsLevel() < requiredCata) result.failures.add("Cata " + stats.catacombsLevel() + "/" + requiredCata);
 			DungeonClass dungeonClass = member.dungeonClass() != null ? member.dungeonClass() : stats.selectedClass();
 			if (dupeCheck.value() && dungeonClass != null) {
@@ -334,7 +334,7 @@ public final class AutoKickModule extends Module {
 			if (requiredSecrets > 0 && stats.totalSecrets() < requiredSecrets) result.failures.add("Secrets " + stats.totalSecrets() + "/" + requiredSecrets);
 			if (requiredSecretAverage > 0 && stats.secretAverage() < requiredSecretAverage) result.failures.add("SA " + format(stats.secretAverage()) + "/" + format(requiredSecretAverage));
 			if (requiredMagicalPower > 0 && stats.magicalPower() < requiredMagicalPower) result.failures.add("MP " + stats.magicalPower() + "/" + requiredMagicalPower);
-			if (requiredPersonalBest > 0 && (stats.fastestSPlusSeconds(floor) == 0 || stats.fastestSPlusSeconds(floor) > requiredPersonalBest)) result.failures.add("PB " + DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor)) + "/" + DungeonStatsService.formatTime(requiredPersonalBest));
+			if (requiredPersonalBest > 0 && !AutoKickRules.personalBestPasses(stats.fastestSPlusSeconds(floor), requiredPersonalBest)) result.failures.add("PB " + DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor)) + "/" + DungeonStatsService.formatTime(requiredPersonalBest));
 			long bank = minBank.longValue(0);
 			if (bank > 0 && stats.bankKnown() && stats.bank() < bank) result.failures.add("bank " + stats.bank());
 			if (terminator.value() && stats.gearKnown() && !stats.has(DungeonStats.Gear.TERMINATOR)) result.failures.add("no Term");
@@ -351,7 +351,7 @@ public final class AutoKickModule extends Module {
 			long secrets = positive(minSecrets.longValue(0));
 			double secretAverage = positive(minSecretAverage.doubleValue(0));
 			int magicalPower = positive(minMagicalPower.intValue(0));
-			int personalBest = positive(maxPersonalBest.intValue(0));
+			int personalBest = positive(personalBestLimit.intValue(0));
 			long bank = positive(minBank.longValue(0));
 			if (cata > 0) checks.add("Cata >= " + cata);
 			if (joinedClass > 0) checks.add("class >= " + joinedClass);

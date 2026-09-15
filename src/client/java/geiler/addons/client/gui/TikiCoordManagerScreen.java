@@ -73,16 +73,17 @@ public class TikiCoordManagerScreen extends Screen {
 		if (!addMode) return;
 
 		Rect dialog = dialogRect();
-		int fieldX = dialog.x + (dialog.w - (FIELD_WIDTH * 3 + FIELD_GAP * 2)) / 2;
+		int fieldWidth = fieldWidth();
+		int fieldX = dialog.x + (dialog.w - (fieldWidth * 3 + FIELD_GAP * 2)) / 2;
 		int fieldY = dialog.y + 34;
 		xField = addField(fieldX, fieldY, pendingX, "X", value -> pendingX = value);
-		yField = addField(fieldX + FIELD_WIDTH + FIELD_GAP, fieldY, pendingY, "Y", value -> pendingY = value);
-		zField = addField(fieldX + 2 * (FIELD_WIDTH + FIELD_GAP), fieldY, pendingZ, "Z", value -> pendingZ = value);
+		yField = addField(fieldX + fieldWidth + FIELD_GAP, fieldY, pendingY, "Y", value -> pendingY = value);
+		zField = addField(fieldX + 2 * (fieldWidth + FIELD_GAP), fieldY, pendingZ, "Z", value -> pendingZ = value);
 		setInitialFocus(xField);
 	}
 
 	private EditBox addField(int x, int y, String value, String label, Consumer<String> responder) {
-		EditBox box = new EditBox(this.font, x, y, FIELD_WIDTH, FIELD_HEIGHT, Component.literal(label));
+		EditBox box = new EditBox(this.font, x, y, fieldWidth(), FIELD_HEIGHT, Component.literal(label));
 		box.setMaxLength(8);
 		box.setValue(value);
 		box.setResponder(responder);
@@ -107,13 +108,16 @@ public class TikiCoordManagerScreen extends Screen {
 		// While the add dialog is up nothing behind it should react to the cursor.
 		boolean hoverable = !addMode;
 
-		roundedRectBordered(graphics, panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT, RADIUS, PANEL_TOP, PANEL_BOTTOM, BORDER);
+		int panelWidth = panelWidth();
+		int panelHeight = panelHeight();
+		graphics.enableScissor(panelX, panelY, panelX + panelWidth, panelY + panelHeight);
+		roundedRectBordered(graphics, panelX, panelY, panelWidth, panelHeight, RADIUS, PANEL_TOP, PANEL_BOTTOM, BORDER);
 
 		List<BlockPos> coords = TikiCoords.all();
 		graphics.text(font, "Tiki Coordinates", panelX + PADDING + 4, panelY + 9, TEXT_PRIMARY);
 		String count = coords.size() + (coords.size() == 1 ? " entry" : " entries");
-		graphics.text(font, count, panelX + PANEL_WIDTH - PADDING - 4 - font.width(count), panelY + 9, TEXT_MUTED);
-		graphics.fill(panelX + PADDING, panelY + HEADER_HEIGHT - 3, panelX + PANEL_WIDTH - PADDING, panelY + HEADER_HEIGHT - 2, BORDER);
+		graphics.text(font, count, panelX + panelWidth - PADDING - 4 - font.width(count), panelY + 9, TEXT_MUTED);
+		graphics.fill(panelX + PADDING, panelY + HEADER_HEIGHT - 3, panelX + panelWidth - PADDING, panelY + HEADER_HEIGHT - 2, BORDER);
 
 		Rect viewport = listViewport();
 		clampScroll();
@@ -144,6 +148,7 @@ public class TikiCoordManagerScreen extends Screen {
 
 		button(graphics, font, addButtonRect(), "Add Coordinate", mouseX, mouseY, hoverable, BUTTON_BG, BUTTON_HOVER);
 		button(graphics, font, doneButtonRect(), "Done", mouseX, mouseY, hoverable, BUTTON_BG, BUTTON_HOVER);
+		graphics.disableScissor();
 	}
 
 	private void renderAddDialog(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
@@ -151,14 +156,16 @@ public class TikiCoordManagerScreen extends Screen {
 		graphics.fill(0, 0, this.width, this.height, DIALOG_SHADE);
 
 		Rect dialog = dialogRect();
+		graphics.enableScissor(dialog.x, dialog.y, dialog.x + dialog.w, dialog.y + dialog.h);
 		roundedRectBordered(graphics, dialog.x, dialog.y, dialog.w, dialog.h, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM, BORDER);
 
 		graphics.centeredText(font, "Add Coordinate", dialog.x + dialog.w / 2, dialog.y + 9, TEXT_PRIMARY);
 
-		int fieldX = dialog.x + (dialog.w - (FIELD_WIDTH * 3 + FIELD_GAP * 2)) / 2;
+		int fieldWidth = fieldWidth();
+		int fieldX = dialog.x + (dialog.w - (fieldWidth * 3 + FIELD_GAP * 2)) / 2;
 		String[] labels = {"X", "Y", "Z"};
 		for (int i = 0; i < labels.length; i++) {
-			graphics.centeredText(font, labels[i], fieldX + i * (FIELD_WIDTH + FIELD_GAP) + FIELD_WIDTH / 2, dialog.y + 24, TEXT_MUTED);
+			graphics.centeredText(font, labels[i], fieldX + i * (fieldWidth + FIELD_GAP) + fieldWidth / 2, dialog.y + 24, TEXT_MUTED);
 		}
 
 		if (error != null) {
@@ -167,6 +174,7 @@ public class TikiCoordManagerScreen extends Screen {
 
 		button(graphics, font, confirmButtonRect(), "Confirm", mouseX, mouseY, true, BUTTON_BG, BUTTON_HOVER);
 		button(graphics, font, cancelButtonRect(), "Cancel", mouseX, mouseY, true, DANGER_BG, DANGER_HOVER);
+		graphics.disableScissor();
 	}
 
 	private void button(GuiGraphicsExtractor graphics, Font font, Rect rect, String label, int mouseX, int mouseY, boolean hoverable, int background, int hoverBackground) {
@@ -180,7 +188,7 @@ public class TikiCoordManagerScreen extends Screen {
 		int trackX = viewport.x + viewport.w - SCROLLBAR_WIDTH;
 		int thumbHeight = Math.max(16, viewport.h * viewport.h / contentHeight);
 		int maxScroll = contentHeight - viewport.h;
-		int thumbY = viewport.y + (viewport.h - thumbHeight) * scroll / maxScroll;
+		int thumbY = viewport.y + (viewport.h - thumbHeight) * Math.max(0, Math.min(maxScroll, scroll)) / maxScroll;
 		graphics.fill(trackX, thumbY, trackX + SCROLLBAR_WIDTH, thumbY + thumbHeight, SCROLLBAR);
 	}
 
@@ -329,21 +337,29 @@ public class TikiCoordManagerScreen extends Screen {
 	}
 
 	private int panelX() {
-		return (this.width - PANEL_WIDTH) / 2;
+		return (this.width - panelWidth()) / 2;
 	}
 
 	private int panelY() {
-		return (this.height - PANEL_HEIGHT) / 2;
+		return (this.height - panelHeight()) / 2;
+	}
+
+	private int panelWidth() {
+		return Math.max(1, Math.min(PANEL_WIDTH, this.width - 12));
+	}
+
+	private int panelHeight() {
+		return Math.max(1, Math.min(PANEL_HEIGHT, this.height - 12));
 	}
 
 	private Rect panelRect() {
-		return new Rect(panelX(), panelY(), PANEL_WIDTH, PANEL_HEIGHT);
+		return new Rect(panelX(), panelY(), panelWidth(), panelHeight());
 	}
 
 	private Rect listViewport() {
 		int top = panelY() + HEADER_HEIGHT;
-		int height = PANEL_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT;
-		return new Rect(panelX() + PADDING, top, PANEL_WIDTH - 2 * PADDING, height);
+		int height = panelHeight() - HEADER_HEIGHT - FOOTER_HEIGHT;
+		return new Rect(panelX() + PADDING, top, panelWidth() - 2 * PADDING, Math.max(1, height));
 	}
 
 	private Rect rowRect(int index) {
@@ -356,30 +372,48 @@ public class TikiCoordManagerScreen extends Screen {
 	}
 
 	private Rect addButtonRect() {
-		int y = panelY() + PANEL_HEIGHT - FOOTER_HEIGHT + 4;
-		int doneWidth = 56;
-		return new Rect(panelX() + PADDING, y, PANEL_WIDTH - 2 * PADDING - doneWidth - 4, 18);
+		int y = panelY() + panelHeight() - FOOTER_HEIGHT + 4;
+		int footerWidth = Math.max(1, panelWidth() - 2 * PADDING);
+		int doneWidth = Math.min(56, Math.max(1, (footerWidth - 4) / 3));
+		int addWidth = Math.max(1, footerWidth - doneWidth - 4);
+		return new Rect(panelX() + PADDING, y, addWidth, 18);
 	}
 
 	private Rect doneButtonRect() {
-		int y = panelY() + PANEL_HEIGHT - FOOTER_HEIGHT + 4;
-		int doneWidth = 56;
-		return new Rect(panelX() + PANEL_WIDTH - PADDING - doneWidth, y, doneWidth, 18);
+		int y = panelY() + panelHeight() - FOOTER_HEIGHT + 4;
+		int footerWidth = Math.max(1, panelWidth() - 2 * PADDING);
+		int doneWidth = Math.min(56, Math.max(1, (footerWidth - 4) / 3));
+		return new Rect(panelX() + panelWidth() - PADDING - doneWidth, y, doneWidth, 18);
 	}
 
 	private Rect dialogRect() {
-		return new Rect((this.width - DIALOG_WIDTH) / 2, (this.height - DIALOG_HEIGHT) / 2, DIALOG_WIDTH, DIALOG_HEIGHT);
+		int width = dialogWidth();
+		int height = dialogHeight();
+		return new Rect((this.width - width) / 2, (this.height - height) / 2, width, height);
 	}
 
 	private Rect confirmButtonRect() {
 		Rect dialog = dialogRect();
-		return new Rect(dialog.x + 12, dialog.y + DIALOG_HEIGHT - 28, (dialog.w - 34) / 2, 18);
+		int width = Math.max(1, (dialog.w - 34) / 2);
+		return new Rect(dialog.x + 12, dialog.y + dialog.h - 28, width, 18);
 	}
 
 	private Rect cancelButtonRect() {
 		Rect dialog = dialogRect();
-		int width = (dialog.w - 34) / 2;
-		return new Rect(dialog.x + dialog.w - 12 - width, dialog.y + DIALOG_HEIGHT - 28, width, 18);
+		int width = Math.max(1, (dialog.w - 34) / 2);
+		return new Rect(dialog.x + dialog.w - 12 - width, dialog.y + dialog.h - 28, width, 18);
+	}
+
+	private int dialogWidth() {
+		return Math.max(1, Math.min(DIALOG_WIDTH, Math.min(this.width - 12, panelWidth() - 12)));
+	}
+
+	private int dialogHeight() {
+		return Math.max(1, Math.min(DIALOG_HEIGHT, Math.min(this.height - 12, panelHeight() - 12)));
+	}
+
+	private int fieldWidth() {
+		return Math.max(1, Math.min(FIELD_WIDTH, (dialogWidth() - 24 - FIELD_GAP * 2) / 3));
 	}
 
 	private record Rect(int x, int y, int w, int h) {

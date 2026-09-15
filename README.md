@@ -30,14 +30,16 @@ When the first Party Finder player joins, the module sends `/p list` and fetches
 members except you. Already-checked players are not fetched again by later `/party list` output.
 The queued floor is captured from the selected values in Hypixel's Group Builder when you click
 `Confirm Group`, then accepted only when Hypixel confirms the queue. It displays a bold cyan
-bordered card fitted to the current chat width with Catacombs level, joined class level, class
-average, magical power, secret average, floor PB, gear, and actions. Hover over SA for total
-secrets, a class for all class levels, or PB for all normal and Master PBs. `Kick` appears only for
+bordered card fitted to the current chat width with configurable Catacombs level, joined class
+level, class average, magical power, secret average, floor PB, gear, and actions. The Click GUI
+shows an inline sample card, and its ten stat toggles update both the preview and future cards
+immediately. Hover over SA for total secrets, a class for all class levels, or PB for all normal
+and Master PBs. `Kick` appears only for
 the party leader. Joining someone else's listing adds one final **Leave Party** action after all
 profiles finish.
 
 If a profile cannot be fetched, the line says so and provides a green **PV** button that runs
-`/pv <player>`. **Compact** joins the two display lines.
+`/pv <player>`. **Compact** collapses the card to one line.
 
 </details>
 
@@ -47,13 +49,13 @@ If a profile cannot be fetched, the line says so and provides a green **PV** but
 <br>
 
 Configure F1–F7 and M1–M7 separately. Each folded floor heading carries its Auto Kick switch, each
-floor has an **Ask Before Kick** toggle, and numeric requirements are entered as text. Requirements
+floor has an **Ask Before** toggle, and numeric requirements are entered as text. Requirements
 include Cata, selected-class level, class average, secrets, secret average, MP, PB, bank,
 Term/Hype/GDrag, and duplicate-class checks.
 
 Auto Kick only enforces requirements while you are party leader. Automatic kicks first wait a
 random 1–2 seconds, send the reasons to party chat, wait another random 1–2 seconds, and then kick
-if leadership and membership are still valid. Multiple actions are serialized. **Ask Before Kick**
+if leadership and membership are still valid. Multiple actions are serialized. **Ask Before**
 instead shows the reasons client-side with a clickable **Kick** button and schedules no command.
 Missing API data never causes an automatic kick.
 
@@ -231,10 +233,9 @@ Your settings live in `.minecraft/config/geileraddons/config.json`. Delete it to
 
 **Update check:** on launch, the mod asks GitHub whether a newer release exists, and tells you in chat if so. It never downloads or installs anything. To turn it off, set `"checkForUpdates": false` in that config file.
 
-**Island detection:** modules that only apply on one island need to know which island you're on, so the mod uses Hypixel's own Mod API to ask. Hypixel greets any client that supports it; the mod answers that greeting once to subscribe, and is then told the island whenever you change server. Nothing else is sent, and nothing is sent at all on a server that never greets it. Two config-file keys control it:
+**Island detection:** modules that only apply on one island need to know which island you're on, so the mod subscribes to the official Hypixel Mod API. The shared API handles the greeting and registration, then reports the island whenever you change server. One config-file key controls it:
 
 - `"hypixelModApi": false` turns it off. The Safari modules then stay idle and say so; Tiki Helper falls back to recognising Torrhus Canyon by its terrain, as it did before.
-- `"islandCheckIntervalSeconds"` (default `30`) is how long to wait before asking again if the island never arrived. It's a retry, not a poll — nothing is sent while the answer is already known.
 
 ## License
 

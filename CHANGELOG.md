@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.5] - 2026-09-15
+
+### Added
+
+- Animations to the Click GUI.
+- Three new Click GUI presets.
+- Party Finder stats preview.
+
+### Fixed
+
+- SkyHanni incompatibility.
+
 ## [1.4.4] - 2026-09-14
 
 ### Added

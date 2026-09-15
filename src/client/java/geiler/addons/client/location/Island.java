@@ -93,7 +93,7 @@ public enum Island {
 	 * @param mode the raw mode string, or null if the server sent none
 	 * @return the matching island, or {@link #OTHER} for an island this mod doesn't name
 	 */
-	static Island fromMode(String mode) {
+	public static Island fromMode(String mode) {
 		if (mode == null || mode.isBlank()) return OTHER;
 		for (Island island : values()) {
 			if (island.mode != null && island.mode.equalsIgnoreCase(mode)) {

@@ -81,7 +81,6 @@ public final class ModConfig {
 		Boolean checkForUpdates;
 		/** Absent means "never saved", which keeps island detection on by default. */
 		Boolean hypixelModApi;
-		Integer islandCheckIntervalSeconds;
 	}
 
 	/**
@@ -116,11 +115,6 @@ public final class ModConfig {
 	 */
 	private static boolean hypixelModApi = true;
 
-	/** How long to wait before asking again when the island never arrived. */
-	private static int islandCheckIntervalSeconds = 30;
-	/** Below this the retry would be pure packet spam; it is a fallback, not a poll. */
-	private static final int MIN_ISLAND_CHECK_SECONDS = 5;
-
 	/** How long a debounced change may sit unwritten; a crash can cost at most this much of it. */
 	private static final long FLUSH_INTERVAL_MILLIS = 60_000;
 
@@ -135,42 +129,37 @@ public final class ModConfig {
 		return hypixelModApi;
 	}
 
-	public static int islandCheckIntervalSeconds() {
-		return islandCheckIntervalSeconds;
-	}
-
 	public static void load() {
 		Data data = readData();
 		for (Module module : ModuleManager.modules()) {
 			for (ColorSetting setting : module.colorSettings()) {
-				int[] rgba = data.colors.get(settingKey(module, setting.name()));
+				int[] rgba = settingValue(data.colors, module, setting.name());
 				if (rgba != null && rgba.length == 4) {
 					setting.set(rgba[0], rgba[1], rgba[2], rgba[3]);
 				}
 			}
 			for (NumberSetting setting : module.numberSettings()) {
-				Float value = data.numbers.get(settingKey(module, setting.name()));
+				Float value = settingValue(data.numbers, module, setting.name());
 				if (value != null) {
 					setting.setValue(value);
 				}
 			}
 			for (BooleanSetting setting : module.booleanSettings()) {
-				Boolean value = data.toggles.get(settingKey(module, setting.name()));
+				Boolean value = settingValue(data.toggles, module, setting.name());
 				if (value != null) {
 					setting.setValue(value);
 				}
 			}
 			for (ChoiceSetting setting : module.choiceSettings()) {
-				setting.setValue(data.choices.get(settingKey(module, setting.name())));
+				setting.setValue(settingValue(data.choices, module, setting.name()));
 			}
 			for (TextSetting setting : module.textSettings()) {
-				String key = settingKey(module, setting.name());
-				String value = data.texts.get(key);
+				String value = settingValue(data.texts, module, setting.name());
 				if (value != null) {
 					setting.setValue(value);
 				} else {
 					// Keeps values when a numeric slider is deliberately replaced by a text input.
-					Float legacyNumber = data.numbers.get(key);
+					Float legacyNumber = settingValue(data.numbers, module, setting.name());
 					if (legacyNumber != null) setting.setValue(formatLegacyNumber(legacyNumber));
 				}
 			}
@@ -183,9 +172,6 @@ public final class ModConfig {
 		}
 		if (data.hypixelModApi != null) {
 			hypixelModApi = data.hypixelModApi;
-		}
-		if (data.islandCheckIntervalSeconds != null) {
-			islandCheckIntervalSeconds = Math.max(MIN_ISLAND_CHECK_SECONDS, data.islandCheckIntervalSeconds);
 		}
 		loadTikiCoords(data);
 		loadTikiFingerprints(data);
@@ -293,7 +279,6 @@ public final class ModConfig {
 		data.uiCollapsedGroups = new ArrayList<>(ClickGuiState.collapsedGroups());
 		data.checkForUpdates = checkForUpdates;
 		data.hypixelModApi = hypixelModApi;
-		data.islandCheckIntervalSeconds = islandCheckIntervalSeconds;
 		try {
 			Files.createDirectories(PATH.getParent());
 			try (Writer writer = Files.newBufferedWriter(PATH)) {
@@ -503,5 +488,38 @@ public final class ModConfig {
 
 	private static String settingKey(Module module, String settingName) {
 		return module.name() + "." + settingName;
+	}
+
+	/** Reads a renamed setting without making the shorter UI labels discard an existing value. */
+	private static <T> T settingValue(Map<String, T> values, Module module, String settingName) {
+		T value = values.get(settingKey(module, settingName));
+		if (value != null) return value;
+		String legacyKey = legacySettingKey(module, settingName);
+		return legacyKey == null ? null : values.get(legacyKey);
+	}
+
+	private static String legacySettingKey(Module module, String settingName) {
+		if (!"Auto Kick".equals(module.name())) return null;
+		int separator = settingName.indexOf(' ');
+		if (separator <= 0) return null;
+		String floor = settingName.substring(0, separator);
+		String suffix = settingName.substring(separator + 1);
+		String legacySuffix = switch (suffix) {
+			case "Ask Before" -> "Ask Before Kick";
+			case "Dupe" -> "Dupe Check";
+			case "Cata" -> "Minimum Cata";
+			case "Class" -> "Minimum Joined Class";
+			case "Class Avg" -> "Minimum Class Average";
+			case "Secrets" -> "Minimum Secrets";
+			case "Secret Avg" -> "Minimum Secret Average";
+			case "MP" -> "Minimum Magical Power";
+			case "Minimum PB" -> "Maximum PB Seconds";
+			case "Bank" -> "Minimum Bank";
+			case "Terminator" -> "Require Terminator";
+			case "Hyperion" -> "Require Hyperion";
+			case "GDrag" -> "Require Golden Dragon";
+			default -> null;
+		};
+		return legacySuffix == null ? null : settingKey(module, floor + " " + legacySuffix);
 	}
 }

@@ -23,6 +23,7 @@ import geiler.addons.client.update.UpdateChecker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 
@@ -47,15 +48,23 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModConfig.load();
 		// After the config, which is what decides whether the check is allowed to run at all.
 		UpdateChecker.start();
-		// Channels have to be claimed before any server is joined, so this cannot wait for a tick.
+		// Subscribe before joining a server; the official API owns the channel registration.
 		HypixelModApi.init();
+		ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> {
+			String content = message.getString();
+			PartyListBackend.onChatMessage(content);
+			PartyFinderStatsModule.INSTANCE.onChatMessage(content);
+			I4HelperModule.INSTANCE.onChatMessage(content);
+			TikiHelperModule.INSTANCE.onChatMessage(content);
+			TreeTrackerModule.INSTANCE.onChatMessage(content);
+			// Observers always receive the raw server line before the only intentional suppression.
+			return overlay || !TreeNotifierModule.INSTANCE.onChatMessage(content, message);
+		});
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			PartyListBackend.tick();
 			AutoKickModule.INSTANCE.tick();
 			PartyFinderStatsModule.INSTANCE.tick();
-			// First: the modules gate themselves on the presence these resolve.
-			HypixelModApi.tick();
 			// After the island, which is what decides whether a biome lookup is worth doing.
 			SafariBiome.tick();
 			TorrhusPresence.tick();

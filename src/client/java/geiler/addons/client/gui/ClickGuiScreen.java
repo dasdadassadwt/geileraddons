@@ -9,6 +9,7 @@ import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.ModuleManager;
+import geiler.addons.client.module.ModulePreview;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
@@ -69,6 +70,8 @@ public class ClickGuiScreen extends Screen {
 
 	private static final int LINE_HEIGHT = 9;
 	private static final int TEXT_HEIGHT = 8;
+	private static final int PREVIEW_HEIGHT = 62;
+	private static final int PREVIEW_GAP = 6;
 
 	private static final int CARD_COLUMNS = 2;
 	private static final int CARD_GAP = 6;
@@ -386,9 +389,12 @@ public class ClickGuiScreen extends Screen {
 	private int panelWidth() {
 		int byWidth = Math.round(this.width * WIDTH_FRACTION);
 		int byHeight = Math.round(this.height * MAX_HEIGHT_FRACTION) * 2;
-		int width = Math.max(MIN_PANEL_WIDTH, Math.min(byWidth, byHeight));
+		int width = Math.min(byWidth, byHeight);
+		if (byWidth >= MIN_PANEL_WIDTH && byHeight >= MIN_PANEL_WIDTH) {
+			width = Math.max(MIN_PANEL_WIDTH, width);
+		}
 		// Even, so panelHeight() is exactly half and the 2:1 ratio holds after integer division.
-		return Math.min(width, this.width) & ~1;
+		return Math.max(2, Math.min(width, this.width) & ~1);
 	}
 
 	private int panelHeight() {
@@ -425,6 +431,7 @@ public class ClickGuiScreen extends Screen {
 			openSettingsModule = null;
 			expandedColorSetting = null;
 		}
+		clampViewScroll();
 		if (closing && elapsedMillis(lifecycleStartedNanos, now) >= motion.lifecycleMillis()) {
 			Screen next = pendingScreen;
 			pendingScreen = null;
@@ -439,6 +446,7 @@ public class ClickGuiScreen extends Screen {
 
 		int panelX = panelX();
 		int panelY = panelY();
+		int panelWidth = panelWidth();
 		int categoryWidth = categoryWidth();
 		int moduleWidth = moduleWidth();
 		int panelHeight = panelHeight();
@@ -466,8 +474,12 @@ public class ClickGuiScreen extends Screen {
 		graphics.fillGradient(rightX + 10, panelY + 2, rightX + moduleWidth - 10, panelY + 3,
 			withOpacity(PANEL_HIGHLIGHT, 0.75f), withOpacity(PANEL_HIGHLIGHT, 0.0f));
 
+		// The rounded panels are decorative; all animated children must still be contained by their
+		// rectangular surface bounds while the pose is scaled or translated.
+		graphics.enableScissor(panelX, panelY, panelX + panelWidth, panelY + panelHeight);
 		renderCategories(graphics, font, mouseX, mouseY, panelX, panelY, now, motion);
 		renderView(graphics, font, mouseX, mouseY, rightX, panelY, now, motion, lifecycle);
+		graphics.disableScissor();
 		pose.popMatrix();
 	}
 
@@ -514,11 +526,15 @@ public class ClickGuiScreen extends Screen {
 
 	private Rect moveElementsRect(int panelX, int panelY) {
 		int height = 18;
-		return new Rect(panelX + 6, panelY + panelHeight() - PADDING - height, categoryWidth() - 12, height);
+		return new Rect(panelX + 6, panelY + panelHeight() - PADDING - height,
+			Math.max(1, categoryWidth() - 12), height);
 	}
 
 	private void renderView(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
 		int rightX, int panelY, long now, ClickGuiMotion motion, float lifecycle) {
+		// This clip is deliberately established before renderViewAt translates the outgoing and
+		// incoming pages. Their own viewports may move; the module surface must not.
+		graphics.enableScissor(rightX, panelY, rightX + moduleWidth(), panelY + panelHeight());
 		if (transitionFrom != null) {
 			float progress = transitionProgress(now, motion);
 			int travel = moduleWidth() + 18;
@@ -528,12 +544,14 @@ public class ClickGuiScreen extends Screen {
 				false, false, transitionStartedNanos, now, motion);
 			renderViewAt(graphics, font, mouseX, mouseY, transitionTo, rightX, panelY, incomingOffset,
 				false, true, transitionStartedNanos, now, motion);
+			graphics.disableScissor();
 			return;
 		}
 
 		ViewState current = currentView();
 		renderViewAt(graphics, font, mouseX, mouseY, current, rightX, panelY, 0,
 			true, true, openedAtNanos, now, motion);
+		graphics.disableScissor();
 	}
 
 	private void renderViewAt(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
@@ -614,7 +632,8 @@ public class ClickGuiScreen extends Screen {
 		// reason line below says it in words, which is the part that was actually wanted.
 		int textX = bounds.x + CARD_INSET;
 		int textWidth = bounds.w - CARD_INSET * 2;
-		graphics.text(font, module.name(), textX, bounds.y + CARD_INSET, TEXT_PRIMARY);
+		graphics.text(font, textFit(font, module.name(), textWidth - SWITCH_WIDTH - 4),
+			textX, bounds.y + CARD_INSET, TEXT_PRIMARY);
 
 		int descY = bounds.y + CARD_INSET + LINE_HEIGHT + 3;
 		for (FormattedCharSequence line : descriptionLines(font, module, textWidth)) {
@@ -624,7 +643,8 @@ public class ClickGuiScreen extends Screen {
 
 		String status = module.inactiveReason();
 		if (status != null) {
-			graphics.text(font, status, textX, bounds.y + bounds.h - CARD_INSET - TEXT_HEIGHT, TEXT_WARN);
+			graphics.text(font, textFit(font, status, textWidth),
+				textX, bounds.y + bounds.h - CARD_INSET - TEXT_HEIGHT, TEXT_WARN);
 		}
 
 		Rect toggle = switchRect(bounds);
@@ -646,9 +666,17 @@ public class ClickGuiScreen extends Screen {
 		return lines.size() > CARD_MAX_DESC_LINES ? lines.subList(0, CARD_MAX_DESC_LINES) : lines;
 	}
 
+	private static String textFit(Font font, String text, int width) {
+		if (text == null || width <= 0) return "";
+		if (font.width(text) <= width) return text;
+		String ellipsis = "…";
+		int available = Math.max(0, width - font.width(ellipsis));
+		return font.plainSubstrByWidth(text, available) + ellipsis;
+	}
+
 	/** Uniform across the category so the grid stays on a shared baseline. */
 	private int cardHeight(List<Module> modules) {
-		int width = cardWidth() - CARD_INSET * 2;
+		int width = Math.max(1, cardWidth() - CARD_INSET * 2);
 		int descLines = 1;
 		for (Module module : modules) {
 			descLines = Math.max(descLines, descriptionLines(this.font, module, width).size());
@@ -660,11 +688,12 @@ public class ClickGuiScreen extends Screen {
 
 	private int cardWidth() {
 		int available = moduleWidth() - PADDING * 2 - CARD_GAP * (CARD_COLUMNS - 1);
-		return available / CARD_COLUMNS;
+		return Math.max(1, available / CARD_COLUMNS);
 	}
 
 	private Rect gridViewport(int x, int panelY) {
-		return new Rect(x, panelY + PADDING, moduleWidth(), panelHeight() - PADDING * 2);
+		return new Rect(x, panelY + PADDING, Math.max(1, moduleWidth()),
+			Math.max(1, panelHeight() - PADDING * 2));
 	}
 
 	private int gridContentHeight(List<Module> modules) {
@@ -709,8 +738,10 @@ public class ClickGuiScreen extends Screen {
 		Rect viewport = settingsViewport(x, y);
 		boolean insideViewport = hoverable && viewport.contains(mouseX, mouseY);
 		List<Row> rows = settingsRows(module, x, y, scroll, expandedColor);
+		int appliedScroll = settingsAppliedScroll(module, x, y, scroll, expandedColor);
 
 		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
+		renderPreview(graphics, font, module, viewport, appliedScroll);
 		if (settingsLayoutFrom != null && settingsLayoutModule == module && transitionFrom == null) {
 			float progress = settingsLayoutProgress(now, motion);
 			var pose = graphics.pose();
@@ -745,6 +776,27 @@ public class ClickGuiScreen extends Screen {
 		}
 	}
 
+	private void renderPreview(GuiGraphicsExtractor graphics, Font font, Module module, Rect viewport,
+		int appliedScroll) {
+		if (!(module instanceof ModulePreview preview)) return;
+		Rect bounds = new Rect(viewport.x + PADDING, viewport.y + PADDING - appliedScroll,
+			Math.max(1, viewport.w - PADDING * 2), PREVIEW_HEIGHT);
+		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
+			CARD_BG, CARD_BG, CARD_BORDER);
+		graphics.enableScissor(bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h);
+		int lineY = bounds.y + 5;
+		int textWidth = Math.max(1, bounds.w - PADDING * 2);
+		for (Component line : preview.previewLines(font, textWidth)) {
+			for (FormattedCharSequence wrapped : font.split(line, textWidth)) {
+				if (lineY + LINE_HEIGHT > bounds.y + bounds.h - 3) break;
+				graphics.text(font, wrapped, bounds.x + PADDING, lineY, TEXT_PRIMARY);
+				lineY += LINE_HEIGHT;
+			}
+			if (lineY + LINE_HEIGHT > bounds.y + bounds.h - 3) break;
+		}
+		graphics.disableScissor();
+	}
+
 	private void renderGroupRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
 		GroupRow groupRow, Module module, boolean hoverable, long now, ClickGuiMotion motion) {
 		Rect bounds = groupRow.bounds;
@@ -758,9 +810,11 @@ public class ClickGuiScreen extends Screen {
 			RADIUS_SMALL, headerColor);
 		boolean collapsed = groupRow.collapsed;
 		graphics.text(font, collapsed ? "▸" : "▾", bounds.x + 12 + indent, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
-		graphics.text(font, groupRow.group.name(), bounds.x + 24 + indent, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
-
 		Rect toggle = groupRow.toggle;
+		int labelWidth = bounds.w - 28 - indent - (toggle == null ? 0 : SWITCH_WIDTH + 18);
+		graphics.text(font, textFit(font, groupRow.group.name(), labelWidth),
+			bounds.x + 24 + indent, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+
 		if (toggle != null) {
 			toggleSwitch(graphics, toggle.x, toggle.y, toggle.w, toggle.h,
 				togglePosition(groupRow.group.toggle(), groupRow.group.toggle().value(), now, motion));
@@ -778,7 +832,8 @@ public class ClickGuiScreen extends Screen {
 			int highlight = hovered ? CATEGORY_HOVER : withOpacity(PANEL_HIGHLIGHT, pulse * 0.35f);
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, ROW_HEIGHT - 2, RADIUS_SMALL, highlight);
 		}
-		graphics.text(font, setting.name(), bounds.x + 16, bounds.y + (ROW_HEIGHT - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+		graphics.text(font, textFit(font, setting.name(), bounds.w - VALUE_GUTTER - 28),
+			bounds.x + 16, bounds.y + (ROW_HEIGHT - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		int swatchSize = 12;
 		int swatchX = bounds.x + bounds.w - swatchSize - 14;
@@ -792,17 +847,18 @@ public class ClickGuiScreen extends Screen {
 		float reveal = pickerReveal(setting, now, motion);
 		int revealHeight = Math.round(PICKER_HEIGHT * reveal);
 		if (revealHeight <= 0) return;
-		graphics.enableScissor(colorRow.bounds.x, picker.square.y, colorRow.bounds.x + colorRow.bounds.w,
-			picker.square.y + revealHeight);
 		var pose = graphics.pose();
 		pose.pushMatrix();
 		if (motion == ClickGuiMotion.EXPRESSIVE && reveal < 1.0f) pose.translate(0.0f, (1.0f - reveal) * 7.0f);
+		// Capture the reveal clip after the animated translation so the clip and picker move together.
+		graphics.enableScissor(colorRow.bounds.x, picker.square.y, colorRow.bounds.x + colorRow.bounds.w,
+			picker.square.y + revealHeight);
 		renderSaturationSquare(graphics, picker.square, setting);
 		renderHueBar(graphics, picker.hue, setting);
 		renderAlphaBar(graphics, picker.alpha, setting);
 		renderHexField(graphics, font, picker.hex, setting);
-		pose.popMatrix();
 		graphics.disableScissor();
+		pose.popMatrix();
 	}
 
 	/**
@@ -902,7 +958,8 @@ public class ClickGuiScreen extends Screen {
 
 	private void renderNumberRow(GuiGraphicsExtractor graphics, Font font, NumberRow numberRow,
 		long now, ClickGuiMotion motion) {
-		graphics.text(font, numberRow.setting.name(), numberRow.bounds.x + 16, numberRow.bounds.y + 1, TEXT_SECONDARY);
+		graphics.text(font, textFit(font, numberRow.setting.name(), numberRow.bounds.w - VALUE_GUTTER - 28),
+			numberRow.bounds.x + 16, numberRow.bounds.y + 1, TEXT_SECONDARY);
 		Rect slider = numberRow.slider;
 		float pulse = interactionPulse(numberRow.setting, now, motion);
 		int track = pulse > 0.0f ? lerpColor(SLIDER_TRACK, PANEL_HIGHLIGHT, pulse * 0.4f) : SLIDER_TRACK;
@@ -924,7 +981,8 @@ public class ClickGuiScreen extends Screen {
 			int highlight = hovered ? CATEGORY_HOVER : withOpacity(PANEL_HIGHLIGHT, pulse * 0.35f);
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, bounds.h - 2, RADIUS_SMALL, highlight);
 		}
-		graphics.text(font, toggleRow.setting.name(), bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+		graphics.text(font, textFit(font, toggleRow.setting.name(), bounds.w - SWITCH_WIDTH - 36),
+			bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		int switchX = bounds.x + bounds.w - SWITCH_WIDTH - 14;
 		int switchY = bounds.y + (bounds.h - SWITCH_HEIGHT) / 2;
@@ -940,7 +998,8 @@ public class ClickGuiScreen extends Screen {
 		if (hovered) {
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, bounds.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, choiceRow.setting.name(), bounds.x + 16,
+		graphics.text(font, textFit(font, choiceRow.setting.name(), bounds.w - choiceRow.field.w - 36),
+			bounds.x + 16,
 			bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		Rect field = choiceRow.field;
@@ -948,7 +1007,7 @@ public class ClickGuiScreen extends Screen {
 			? lerpColor(BUTTON_BG, BUTTON_HOVER, pulse * 0.75f) : BUTTON_BG);
 		roundedRectBordered(graphics, field.x, field.y, field.w, field.h, 4,
 			fieldColor, fieldColor, BORDER);
-		String value = choiceRow.setting.value();
+		String value = textFit(font, choiceRow.setting.value(), field.w - 12);
 		graphics.centeredText(font, "‹ " + value + " ›", field.x + field.w / 2,
 			field.y + (field.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 	}
@@ -958,7 +1017,8 @@ public class ClickGuiScreen extends Screen {
 		Rect bounds = textRow.bounds;
 		Rect field = textRow.field;
 		boolean focused = textRow.setting == focusedTextSetting;
-		graphics.text(font, textRow.setting.name(), bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+		graphics.text(font, textFit(font, textRow.setting.name(), bounds.w - textRow.field.w - 36),
+			bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		float pulse = interactionPulse(textRow.setting, now, motion);
 		int fieldBorder = focused ? SLIDER_FILL
@@ -991,7 +1051,8 @@ public class ClickGuiScreen extends Screen {
 		int background = hovered ? BUTTON_HOVER
 			: pulse > 0.0f ? lerpColor(BUTTON_BG, BUTTON_HOVER, pulse * 0.8f) : BUTTON_BG;
 		roundedRect(graphics, bounds.x + 14, bounds.y + 2, bounds.w - 28, bounds.h - 6, RADIUS_SMALL, background);
-		graphics.centeredText(font, actionRow.action.label(), bounds.x + bounds.w / 2, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+		graphics.centeredText(font, textFit(font, actionRow.action.label(), bounds.w - 36),
+			bounds.x + bounds.w / 2, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 	}
 
 	private void renderScrollbar(GuiGraphicsExtractor graphics, Rect viewport, int contentHeight, int scroll) {
@@ -1000,7 +1061,8 @@ public class ClickGuiScreen extends Screen {
 		int thumbHeight = Math.max(16, viewport.h * viewport.h / contentHeight);
 		int travel = viewport.h - thumbHeight;
 		int maxScroll = contentHeight - viewport.h;
-		int thumbY = viewport.y + travel * scroll / maxScroll;
+		int appliedScroll = Math.max(0, Math.min(maxScroll, scroll));
+		int thumbY = viewport.y + travel * appliedScroll / maxScroll;
 		roundedRect(graphics, trackX, thumbY, SCROLLBAR_WIDTH, thumbHeight, SCROLLBAR_WIDTH / 2, SCROLLBAR);
 	}
 
@@ -1012,7 +1074,8 @@ public class ClickGuiScreen extends Screen {
 	private Rect settingsViewport(int x, int panelY) {
 		Rect header = headerRow(x, panelY);
 		int top = header.y + header.h;
-		return new Rect(x, top, moduleWidth(), panelY + panelHeight() - PADDING - top);
+		return new Rect(x, top, Math.max(1, moduleWidth()),
+			Math.max(1, panelY + panelHeight() - PADDING - top));
 	}
 
 	/** Setting rows with the current scroll already applied, so callers can hit-test them directly. */
@@ -1022,10 +1085,31 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private List<Row> settingsRows(Module module, int x, int panelY, double scroll, ColorSetting expandedColor) {
+		int appliedScroll = settingsAppliedScroll(module, x, panelY, scroll, expandedColor);
+		Rect viewport = settingsViewport(x, panelY);
+		return layoutRows(module, x, viewport.y - appliedScroll, expandedColor);
+	}
+
+	private int settingsAppliedScroll(Module module, int x, int panelY, double scroll,
+		ColorSetting expandedColor) {
 		Rect viewport = settingsViewport(x, panelY);
 		int maxScroll = Math.max(0, settingsContentHeight(module, x, expandedColor) - viewport.h);
-		int appliedScroll = Math.max(0, Math.min(maxScroll, (int) Math.round(scroll)));
-		return layoutRows(module, x, viewport.y - appliedScroll, expandedColor);
+		return Math.max(0, Math.min(maxScroll, (int) Math.round(scroll)));
+	}
+
+	private void clampViewScroll() {
+		if (openSettingsModule != null && ModuleManager.modules(selectedCategory).contains(openSettingsModule)) {
+			int x = panelX() + categoryWidth();
+			int max = Math.max(0, settingsContentHeight(openSettingsModule, x, expandedColorSetting)
+				- settingsViewport(x, panelY()).h);
+			settingsScroll = Math.max(0, Math.min(max, settingsScroll));
+			settingsScrollVisual = Math.max(0, Math.min(max, settingsScrollVisual));
+			return;
+		}
+		List<Module> modules = ModuleManager.modules(selectedCategory);
+		int max = Math.max(0, gridContentHeight(modules) - gridViewport(panelX() + categoryWidth(), panelY()).h);
+		gridScroll = Math.max(0, Math.min(max, gridScroll));
+		gridScrollVisual = Math.max(0, Math.min(max, gridScrollVisual));
 	}
 
 	/** Measured by running the same layout, so it can never drift from what is drawn. */
@@ -1035,7 +1119,7 @@ public class ClickGuiScreen extends Screen {
 
 	private int settingsContentHeight(Module module, int x, ColorSetting expandedColor) {
 		List<Row> rows = layoutRows(module, x, 0, expandedColor);
-		int bottom = 0;
+		int bottom = previewOffset(module);
 		for (Row row : rows) {
 			Rect bounds = row.bounds();
 			bottom = Math.max(bottom, bounds.y + bounds.h);
@@ -1059,11 +1143,15 @@ public class ClickGuiScreen extends Screen {
 	/** @param startY where the first row begins; already offset by the scroll position */
 	private List<Row> layoutRows(Module module, int x, int startY, ColorSetting expandedColor) {
 		List<Row> rows = new ArrayList<>();
-		int cursorY = startY;
+		int cursorY = startY + previewOffset(module);
 		for (SettingGroup group : module.groups()) {
 			cursorY = layoutGroup(module, group, x, cursorY, 0, rows, expandedColor);
 		}
 		return rows;
+	}
+
+	private static int previewOffset(Module module) {
+		return module instanceof ModulePreview ? PREVIEW_HEIGHT + PREVIEW_GAP : 0;
 	}
 
 	/**
@@ -1098,7 +1186,8 @@ public class ClickGuiScreen extends Screen {
 					cursorY += rowHeight;
 				}
 				case NumberSetting numberSetting -> {
-					Rect slider = new Rect(x + 16, cursorY + 13, moduleWidth - 32 - VALUE_GUTTER, 6);
+					Rect slider = new Rect(x + 16, cursorY + 13,
+						Math.max(1, moduleWidth - 32 - VALUE_GUTTER), 6);
 					rows.add(new NumberRow(numberSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), slider));
 					cursorY += ROW_HEIGHT;
 				}
@@ -1107,15 +1196,17 @@ public class ClickGuiScreen extends Screen {
 					cursorY += ROW_HEIGHT;
 				}
 				case ChoiceSetting choiceSetting -> {
-					Rect field = new Rect(x + moduleWidth - CHOICE_FIELD_WIDTH - 14,
+					int fieldWidth = Math.min(CHOICE_FIELD_WIDTH, Math.max(1, moduleWidth - 18));
+					Rect field = new Rect(x + moduleWidth - fieldWidth - 14,
 						cursorY + (ROW_HEIGHT - CHOICE_FIELD_HEIGHT) / 2,
-						CHOICE_FIELD_WIDTH, CHOICE_FIELD_HEIGHT);
+						fieldWidth, CHOICE_FIELD_HEIGHT);
 					rows.add(new ChoiceRow(choiceSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), field));
 					cursorY += ROW_HEIGHT;
 				}
 				case TextSetting textSetting -> {
-					Rect field = new Rect(x + moduleWidth - TEXT_FIELD_WIDTH - 14,
-						cursorY + (ROW_HEIGHT - TEXT_FIELD_HEIGHT) / 2, TEXT_FIELD_WIDTH, TEXT_FIELD_HEIGHT);
+					int fieldWidth = Math.min(TEXT_FIELD_WIDTH, Math.max(1, moduleWidth - 18));
+					Rect field = new Rect(x + moduleWidth - fieldWidth - 14,
+						cursorY + (ROW_HEIGHT - TEXT_FIELD_HEIGHT) / 2, fieldWidth, TEXT_FIELD_HEIGHT);
 					rows.add(new TextRow(textSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), field));
 					cursorY += ROW_HEIGHT;
 				}
@@ -1135,22 +1226,30 @@ public class ClickGuiScreen extends Screen {
 	private Picker picker(ColorSetting setting, int x, int cursorY, int moduleWidth, ColorSetting expandedColor) {
 		if (setting != expandedColor) return null;
 		int left = x + PICKER_INSET;
-		int width = moduleWidth - PICKER_INSET * 2;
+		int width = Math.max(1, moduleWidth - PICKER_INSET * 2);
 		int top = cursorY + ROW_HEIGHT;
 		Rect square = new Rect(left, top, width, PICKER_SQUARE_HEIGHT);
 		int hueY = square.y + square.h + PICKER_GAP;
 		Rect hue = new Rect(left, hueY, width, PICKER_BAR_HEIGHT);
 		int alphaY = hueY + PICKER_BAR_HEIGHT + PICKER_GAP;
 		Rect alpha = new Rect(left, alphaY, width, PICKER_BAR_HEIGHT);
-		Rect hex = new Rect(left, alphaY + PICKER_BAR_HEIGHT + PICKER_GAP, PICKER_HEX_WIDTH, PICKER_HEX_HEIGHT);
+		Rect hex = new Rect(left, alphaY + PICKER_BAR_HEIGHT + PICKER_GAP,
+			Math.min(PICKER_HEX_WIDTH, width), PICKER_HEX_HEIGHT);
 		return new Picker(square, hue, alpha, hex);
 	}
 
 	// ---- input --------------------------------------------------------------------------
 
+	private boolean inputSettled() {
+		if (closing || transitionFrom != null) return false;
+		ClickGuiMotion motion = motion();
+		return motion == ClickGuiMotion.NONE
+			|| elapsedMillis(lifecycleStartedNanos, System.nanoTime()) >= motion.lifecycleMillis();
+	}
+
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-		if (closing) return true;
+		if (!inputSettled()) return true;
 		int mouseX = (int) event.x();
 		int mouseY = (int) event.y();
 		int panelX = panelX();
@@ -1352,6 +1451,7 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
+		if (!inputSettled()) return true;
 		if (openSettingsModule == null) {
 			return super.mouseDragged(event, dragX, dragY);
 		}
@@ -1378,6 +1478,11 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean mouseReleased(MouseButtonEvent event) {
+		if (!inputSettled()) {
+			draggingPicker = null;
+			draggingNumberSetting = null;
+			return true;
+		}
 		if (draggingPicker != null || draggingNumberSetting != null) {
 			draggingPicker = null;
 			draggingNumberSetting = null;
@@ -1454,6 +1559,7 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+		if (!inputSettled()) return true;
 		int rightX = panelX() + categoryWidth();
 		int notch = (int) Math.round(scrollY * CHANNEL_ROW_HEIGHT);
 

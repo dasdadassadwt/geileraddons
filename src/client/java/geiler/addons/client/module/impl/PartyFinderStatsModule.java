@@ -12,9 +12,12 @@ import geiler.addons.GeilerAddons;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.Module;
+import geiler.addons.client.module.ModulePreview;
+import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.components.ChatComponent;
 import net.minecraft.network.chat.ClickEvent;
@@ -38,7 +41,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Displays cached profile statistics when a Party Finder player joins. */
-public final class PartyFinderStatsModule extends Module {
+public final class PartyFinderStatsModule extends Module implements ModulePreview {
 	public static final PartyFinderStatsModule INSTANCE = new PartyFinderStatsModule();
 
 	private static final Pattern DUNGEON_JOIN = Pattern.compile(
@@ -50,6 +53,16 @@ public final class PartyFinderStatsModule extends Module {
 
 	private final BooleanSetting compact;
 	private final BooleanSetting debug;
+	private final BooleanSetting showCata;
+	private final BooleanSetting showClass;
+	private final BooleanSetting showClassAverage;
+	private final BooleanSetting showMagicalPower;
+	private final BooleanSetting showSecretAverage;
+	private final BooleanSetting showPersonalBest;
+	private final BooleanSetting showTerminator;
+	private final BooleanSetting showHyperion;
+	private final BooleanSetting showGoldenDragon;
+	private final BooleanSetting showBank;
 	private DungeonFloor requestedFloor;
 	private boolean fetchRequested;
 	private boolean cycleStarted;
@@ -66,14 +79,49 @@ public final class PartyFinderStatsModule extends Module {
 	private final Deque<Component> pendingChatCards = new ArrayDeque<>();
 
 	private PartyFinderStatsModule() {
-		this(new BooleanSetting("Compact", false), new BooleanSetting("Debug", false));
+		this(new Settings());
 	}
 
-	private PartyFinderStatsModule(BooleanSetting compact, BooleanSetting debug) {
-		super("Party Finder Stats", "Shows dungeon statistics for Party Finder members.", Category.F7, compact, debug);
-		this.compact = compact;
-		this.debug = debug;
-		group(new SettingGroup("Display", compact), new SettingGroup("Diagnostics", debug));
+	private PartyFinderStatsModule(Settings settings) {
+		super("Party Finder Stats", "Shows dungeon statistics for Party Finder members.", Category.F7,
+			settings.allSettings().toArray(Setting[]::new));
+		this.compact = settings.compact;
+		this.debug = settings.debug;
+		this.showCata = settings.showCata;
+		this.showClass = settings.showClass;
+		this.showClassAverage = settings.showClassAverage;
+		this.showMagicalPower = settings.showMagicalPower;
+		this.showSecretAverage = settings.showSecretAverage;
+		this.showPersonalBest = settings.showPersonalBest;
+		this.showTerminator = settings.showTerminator;
+		this.showHyperion = settings.showHyperion;
+		this.showGoldenDragon = settings.showGoldenDragon;
+		this.showBank = settings.showBank;
+		group(new SettingGroup("Display", settings.compact, settings.showCata, settings.showClass,
+			settings.showClassAverage, settings.showMagicalPower, settings.showSecretAverage,
+			settings.showPersonalBest, settings.showTerminator, settings.showHyperion,
+			settings.showGoldenDragon, settings.showBank), new SettingGroup("Diagnostics", settings.debug));
+	}
+
+	private static final class Settings {
+		final BooleanSetting compact = new BooleanSetting("Compact", false);
+		final BooleanSetting showCata = new BooleanSetting("Cata", true);
+		final BooleanSetting showClass = new BooleanSetting("Class", true);
+		final BooleanSetting showClassAverage = new BooleanSetting("CA", true);
+		final BooleanSetting showMagicalPower = new BooleanSetting("MP", true);
+		final BooleanSetting showSecretAverage = new BooleanSetting("SA", true);
+		final BooleanSetting showPersonalBest = new BooleanSetting("PB", true);
+		final BooleanSetting showTerminator = new BooleanSetting("Terminator", true);
+		final BooleanSetting showHyperion = new BooleanSetting("Hyperion", true);
+		final BooleanSetting showGoldenDragon = new BooleanSetting("GDrag", true);
+		final BooleanSetting showBank = new BooleanSetting("Bank", true);
+		final BooleanSetting debug = new BooleanSetting("Debug", false);
+
+		List<Setting> allSettings() {
+			return List.of(compact, showCata, showClass, showClassAverage, showMagicalPower,
+				showSecretAverage, showPersonalBest, showTerminator, showHyperion, showGoldenDragon,
+				showBank, debug);
+		}
 	}
 
 	public void onChatMessage(String message) {
@@ -338,66 +386,151 @@ public final class PartyFinderStatsModule extends Module {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.gui == null) return;
 		DungeonClass dungeonClass = member.dungeonClass() != null ? member.dungeonClass() : stats.selectedClass();
-		Component classPart = hover(Component.literal(stats.selectedClassLine(dungeonClass)).withStyle(classColor(dungeonClass)),
-			stats.allClassLevels());
-		Component secretPart = hover(Component.literal(format(stats.secretAverage())).withStyle(ChatFormatting.AQUA),
-			"Total secrets: " + stats.totalSecrets() + "\nRuns: " + stats.totalRuns());
-		String currentPb = floor == null ? "-" : DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor));
-		Component pbPart = hover(Component.literal(currentPb).withStyle(currentPb.equals("-") ? ChatFormatting.YELLOW : ChatFormatting.GREEN),
-			allPbs(stats));
+		StatsView view = StatsView.from(floor, member, stats, dungeonClass);
+		queueChatCard(joinLines(formatCard(mc.font, view, chatTextWidth(mc), true)));
+	}
 
+	@Override
+	public List<Component> previewLines(Font font, int width) {
+		return formatCard(font, StatsView.preview(), Math.max(40, width), false);
+	}
+
+	private List<Component> formatCard(Font font, StatsView view, int width, boolean includeActions) {
+		List<Component> actions = includeActions ? liveActions(view) : List.of();
+		return CardFormatter.format(font, view, displayOptions(), width, actions);
+	}
+
+	private DisplayOptions displayOptions() {
+		return new DisplayOptions(compact.value(), showCata.value(), showClass.value(),
+			showClassAverage.value(), showMagicalPower.value(), showSecretAverage.value(),
+			showPersonalBest.value(), showTerminator.value(), showHyperion.value(),
+			showGoldenDragon.value(), showBank.value());
+	}
+
+	private List<Component> liveActions(StatsView view) {
+		List<Component> actions = new ArrayList<>();
+		if (PartyListBackend.snapshot().isLeader(localName())) actions.add(kickAction(view.name()));
+		if (!view.gearKnown() || !view.bankKnown()) actions.add(pvAction(view.name()));
+		return actions;
+	}
+
+	record DisplayOptions(boolean compact, boolean showCata, boolean showClass,
+		boolean showClassAverage, boolean showMagicalPower, boolean showSecretAverage,
+		boolean showPersonalBest, boolean showTerminator, boolean showHyperion,
+		boolean showGoldenDragon, boolean showBank) {
+	}
+
+	/** Pure card construction shared by chat output and the side-effect-free Click GUI preview. */
+	static final class CardFormatter {
+		private CardFormatter() {
+		}
+
+		static List<Component> format(Font font, StatsView view, DisplayOptions options, int width,
+			List<Component> actions) {
 		MutableComponent header = Component.literal("✦ ").withStyle(ChatFormatting.AQUA)
-			.append(Component.literal(stats.name()).withStyle(style -> style
+			.append(Component.literal(view.name()).withStyle(style -> style
 				.withColor(ChatFormatting.WHITE).withBold(true)))
 			.append(Component.literal(" joined").withStyle(ChatFormatting.GRAY))
 			.append(Component.literal("  ").withStyle(ChatFormatting.DARK_GRAY))
-			.append(Component.literal(floor == null ? "[Floor ?]" : "[" + floor.displayName() + "]")
-				.withStyle(floor == null ? ChatFormatting.YELLOW : floor.master() ? ChatFormatting.RED : ChatFormatting.GOLD));
+			.append(Component.literal(view.floor() == null ? "[Floor ?]" : "[" + view.floor().displayName() + "]")
+				.withStyle(view.floor() == null ? ChatFormatting.YELLOW
+					: view.floor().master() ? ChatFormatting.RED : ChatFormatting.GOLD));
 
-		MutableComponent overview = Component.literal("Cata ").withStyle(ChatFormatting.GRAY)
-			.append(Component.literal(Integer.toString(stats.catacombsLevel())).withStyle(ChatFormatting.GOLD))
-			.append(separator()).append(classPart)
-			.append(separator()).append(Component.literal("CA ").withStyle(ChatFormatting.GRAY))
-			.append(Component.literal(format(stats.classAverage())).withStyle(ChatFormatting.AQUA))
-			.append(separator()).append(Component.literal("MP ").withStyle(ChatFormatting.GRAY))
-			.append(Component.literal(String.format(Locale.ROOT, "%,d", stats.magicalPower())).withStyle(ChatFormatting.LIGHT_PURPLE))
-			.append(separator()).append(Component.literal("SA ").withStyle(ChatFormatting.GRAY)).append(secretPart)
-			.append(separator()).append(Component.literal("PB ").withStyle(ChatFormatting.GRAY)).append(pbPart);
-		Component bankPart = stats.bankKnown()
-			? Component.literal(formatBank(stats.bank())).withStyle(ChatFormatting.GOLD)
-			: hover(Component.literal("?").withStyle(ChatFormatting.YELLOW), "Bank API data unavailable");
-		MutableComponent gear = Component.literal("Gear ").withStyle(ChatFormatting.DARK_GRAY)
-			.append(Component.literal("Term ").withStyle(ChatFormatting.GRAY)).append(mark(stats.gearKnown(), stats.has(DungeonStats.Gear.TERMINATOR)))
-			.append(separator()).append(Component.literal("Hype ").withStyle(ChatFormatting.GRAY)).append(mark(stats.gearKnown(), stats.has(DungeonStats.Gear.HYPERION)))
-			.append(separator()).append(Component.literal("GDrag ").withStyle(ChatFormatting.GRAY)).append(mark(stats.gearKnown(), stats.has(DungeonStats.Gear.GOLDEN_DRAGON)))
-			.append(separator()).append(Component.literal("Bank ").withStyle(ChatFormatting.GRAY)).append(bankPart);
-		if (PartyListBackend.snapshot().isLeader(localName())) {
-			gear.append(separator()).append(kickAction(stats.name()));
+		List<Component> overviewParts = new ArrayList<>();
+		if (options.showCata()) {
+			overviewParts.add(Component.literal("Cata ").withStyle(ChatFormatting.GRAY)
+				.append(Component.literal(Integer.toString(view.catacombsLevel())).withStyle(ChatFormatting.GOLD)));
 		}
-		if (!stats.gearKnown() || !stats.bankKnown()) {
-			gear.append(separator()).append(pvAction(stats.name()));
+		if (options.showClass()) {
+			Component classPart = hover(Component.literal(view.selectedClass() == null
+				? "Class ?" : view.selectedClass().displayName() + " " + view.selectedClassLevel())
+				.withStyle(classColor(view.selectedClass())), view.allClassLevels());
+			overviewParts.add(classPart);
 		}
-		if (compact.value()) {
-			MutableComponent compactHeader = Component.literal("[✦ PF] ").withStyle(style -> style
+		if (options.showClassAverage()) {
+			overviewParts.add(Component.literal("CA ").withStyle(ChatFormatting.GRAY)
+				.append(Component.literal(PartyFinderStatsModule.format(view.classAverage())).withStyle(ChatFormatting.AQUA)));
+		}
+		if (options.showMagicalPower()) {
+			overviewParts.add(Component.literal("MP ").withStyle(ChatFormatting.GRAY)
+				.append(Component.literal(String.format(Locale.ROOT, "%,d", view.magicalPower()))
+					.withStyle(ChatFormatting.LIGHT_PURPLE)));
+		}
+		if (options.showSecretAverage()) {
+			Component secretPart = hover(Component.literal(PartyFinderStatsModule.format(view.secretAverage())).withStyle(ChatFormatting.AQUA),
+				"Total secrets: " + view.totalSecrets() + "\nRuns: " + view.totalRuns());
+			overviewParts.add(Component.literal("SA ").withStyle(ChatFormatting.GRAY).append(secretPart));
+		}
+		if (options.showPersonalBest()) {
+			Component pbPart = hover(Component.literal(view.personalBest()).withStyle(
+				view.personalBest().equals("-") ? ChatFormatting.YELLOW : ChatFormatting.GREEN), view.allPbs());
+			overviewParts.add(Component.literal("PB ").withStyle(ChatFormatting.GRAY).append(pbPart));
+		}
+
+		List<Component> gearParts = new ArrayList<>();
+		if (options.showTerminator()) {
+			gearParts.add(Component.literal("Term ").withStyle(ChatFormatting.GRAY)
+				.append(mark(view.gearKnown(), view.terminator())));
+		}
+		if (options.showHyperion()) {
+			gearParts.add(Component.literal("Hype ").withStyle(ChatFormatting.GRAY)
+				.append(mark(view.gearKnown(), view.hyperion())));
+		}
+		if (options.showGoldenDragon()) {
+			gearParts.add(Component.literal("GDrag ").withStyle(ChatFormatting.GRAY)
+				.append(mark(view.gearKnown(), view.goldenDragon())));
+		}
+		if (options.showBank()) {
+			Component bankPart = view.bankKnown()
+				? Component.literal(formatBank(view.bank())).withStyle(ChatFormatting.GOLD)
+				: hover(Component.literal("?").withStyle(ChatFormatting.YELLOW), "Bank API data unavailable");
+			gearParts.add(Component.literal("Bank ").withStyle(ChatFormatting.GRAY).append(bankPart));
+		}
+		gearParts.addAll(actions);
+
+		List<Component> segments = new ArrayList<>();
+		segments.add(header);
+		if (!overviewParts.isEmpty()) segments.add(joinParts(overviewParts));
+		if (!gearParts.isEmpty()) segments.add(joinParts(gearParts));
+		if (options.compact()) {
+			MutableComponent compactLine = Component.literal("[✦ PF] ").withStyle(style -> style
 				.withColor(ChatFormatting.AQUA).withBold(true));
-			queueChatCard(compactHeader.append(header).append(separator())
-				.append(overview).append(separator()).append(gear));
-		} else {
-			MutableComponent card = Component.empty()
-				.append(cardTop(mc)).append("\n")
-				.append(Component.literal("┃ ").withStyle(ChatFormatting.DARK_AQUA)).append(header).append("\n")
-				.append(Component.literal("┃ ").withStyle(ChatFormatting.DARK_AQUA)).append(overview).append("\n")
-				.append(Component.literal("┃ ").withStyle(ChatFormatting.DARK_AQUA)).append(gear).append("\n")
-				.append(cardBottom(mc));
-			queueChatCard(card);
+			return List.of(compactLine.append(joinParts(segments)));
+		}
+
+		List<Component> lines = new ArrayList<>();
+		lines.add(cardTop(font, width));
+		for (Component segment : segments) {
+			lines.add(Component.literal("┃ ").withStyle(ChatFormatting.DARK_AQUA).append(segment));
+		}
+		lines.add(cardBottom(font, width));
+		return lines;
 		}
 	}
 
-	private static Component cardTop(Minecraft mc) {
+	private static Component joinParts(List<Component> parts) {
+		MutableComponent joined = Component.empty();
+		for (int i = 0; i < parts.size(); i++) {
+			if (i > 0) joined.append(separator());
+			joined.append(parts.get(i));
+		}
+		return joined;
+	}
+
+	private static Component joinLines(List<Component> lines) {
+		MutableComponent joined = Component.empty();
+		for (int i = 0; i < lines.size(); i++) {
+			if (i > 0) joined.append("\n");
+			joined.append(lines.get(i));
+		}
+		return joined;
+	}
+
+	private static Component cardTop(Font font, int width) {
 		Component title = Component.literal(" ✦ PARTY FINDER ✦ ").withStyle(style -> style
 			.withColor(ChatFormatting.AQUA).withBold(true));
-		int available = Math.max(0, chatTextWidth(mc) - mc.font.width("╭╮") - mc.font.width(title));
-		int dashCount = available / Math.max(1, mc.font.width("━"));
+		int available = Math.max(0, width - font.width("╭╮") - font.width(title));
+		int dashCount = available / Math.max(1, font.width("━"));
 		int left = dashCount / 2;
 		int right = dashCount - left;
 		return Component.literal("╭" + "━".repeat(left)).withStyle(ChatFormatting.DARK_AQUA)
@@ -405,9 +538,9 @@ public final class PartyFinderStatsModule extends Module {
 			.append(Component.literal("━".repeat(right) + "╮").withStyle(ChatFormatting.DARK_AQUA));
 	}
 
-	private static Component cardBottom(Minecraft mc) {
-		int available = Math.max(0, chatTextWidth(mc) - mc.font.width("╰╯"));
-		int dashCount = available / Math.max(1, mc.font.width("━"));
+	private static Component cardBottom(Font font, int width) {
+		int available = Math.max(0, width - font.width("╰╯"));
+		int dashCount = available / Math.max(1, font.width("━"));
 		return Component.literal("╰" + "━".repeat(dashCount) + "╯")
 			.withStyle(ChatFormatting.DARK_AQUA);
 	}
@@ -415,6 +548,29 @@ public final class PartyFinderStatsModule extends Module {
 	private static int chatTextWidth(Minecraft mc) {
 		double scale = Math.max(0.01D, mc.options.chatScale().get());
 		return Math.max(20, (int) Math.floor(ChatComponent.getWidth(mc.options.chatWidth().get()) / scale) - 8);
+	}
+
+	record StatsView(String name, DungeonFloor floor, DungeonClass selectedClass, int selectedClassLevel,
+		int catacombsLevel, double classAverage, long totalSecrets, long totalRuns, double secretAverage,
+		int magicalPower, long bank, boolean bankKnown, boolean gearKnown, boolean terminator,
+		boolean hyperion, boolean goldenDragon, String personalBest, String allClassLevels, String allPbs) {
+		static StatsView from(DungeonFloor floor, PartyMember member, DungeonStats stats, DungeonClass selectedClass) {
+			String personalBest = floor == null ? "-" : DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor));
+			return new StatsView(stats.name(), floor, selectedClass,
+				selectedClass == null ? 0 : stats.classLevel(selectedClass), stats.catacombsLevel(),
+				stats.classAverage(), stats.totalSecrets(), stats.totalRuns(), stats.secretAverage(),
+				stats.magicalPower(), stats.bank(), stats.bankKnown(), stats.gearKnown(),
+				stats.has(DungeonStats.Gear.TERMINATOR), stats.has(DungeonStats.Gear.HYPERION),
+				stats.has(DungeonStats.Gear.GOLDEN_DRAGON), personalBest, stats.allClassLevels(),
+				PartyFinderStatsModule.allPbs(stats));
+		}
+
+		static StatsView preview() {
+			return new StatsView("ExamplePlayer", DungeonFloor.F7, DungeonClass.MAGE, 45, 42, 46.25,
+				12_480, 1_120, 11.14, 720, 125_000_000L, true, true, true, false, true,
+				"6:42", "Tank 38\nHealer 29\nMage 45\nBerserk 41\nArcher 40",
+				"F1: 2:10\nF2: 2:32\nF3: 3:01\nF4: 3:44\nF5: 4:18\nF6: 5:31\nF7: 6:42");
+		}
 	}
 
 	private void queueChatCard(Component card) {

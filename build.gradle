@@ -12,6 +12,10 @@ repositories {
 	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
 	// See https://docs.gradle.org/current/userguide/declaring_repositories.html
 	// for more information about repositories.
+	maven {
+		name = "Hypixel"
+		url = uri("https://repo.hypixel.net/repository/Hypixel/")
+	}
 }
 
 loom {
@@ -32,6 +36,10 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Compile against the shared protocol API. The official Fabric implementation is supplied as
+	// a separate mod so GeilerAddons and SkyHanni use one channel owner at runtime.
+	implementation "net.hypixel:mod-api:${project.hypixel_mod_api_version}"
 }
 
 processResources {
@@ -59,6 +67,35 @@ java {
 
 	sourceCompatibility = JavaVersion.VERSION_25
 	targetCompatibility = JavaVersion.VERSION_25
+}
+
+// The pure boundary checks run without a Minecraft client or server. Include the client source
+// set because the formatter and island rules live there in this split-environment project.
+sourceSets {
+	test {
+		compileClasspath += sourceSets.client.output + sourceSets.client.compileClasspath
+		runtimeClasspath += sourceSets.client.output + sourceSets.client.runtimeClasspath
+	}
+}
+
+tasks.named("compileTestJava") {
+	dependsOn tasks.named("compileClientJava")
+}
+
+tasks.register("offlineChecks", JavaExec) {
+	dependsOn tasks.named("testClasses")
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = "geiler.addons.client.module.impl.OfflineChecks"
+}
+
+// OfflineChecks is a JavaExec harness rather than a JUnit suite; the normal test task must not
+// treat its main-only source as a failed zero-test discovery.
+tasks.named("test") {
+	failOnNoDiscoveredTests = false
+}
+
+tasks.named("check") {
+	dependsOn tasks.named("offlineChecks")
 }
 
 jar {

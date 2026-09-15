@@ -46,6 +46,9 @@ public class MoveUiScreen extends Screen {
 			graphics.centeredText(font, "No movable elements yet.", this.width / 2, this.height / 2 - 4, TEXT_MUTED);
 		}
 
+		// HUD positions are clamped to the usable screen, but the editor's selection outline is
+		// intentionally two pixels larger. Keep that affordance from escaping the viewport.
+		graphics.enableScissor(0, 0, this.width, this.height);
 		for (HudElement element : elements) {
 			int x = HudManager.x(element, font, this.width);
 			int y = HudManager.y(element, font, this.height);
@@ -67,6 +70,7 @@ public class MoveUiScreen extends Screen {
 				graphics.text(font, element.displayName(), x, y + (h - 8) / 2, TEXT_MUTED);
 			}
 		}
+		graphics.disableScissor();
 
 		graphics.centeredText(font, "Drag a panel to move it. Esc when you're done.",
 			this.width / 2, 8, TEXT_SECONDARY);
