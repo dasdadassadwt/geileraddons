@@ -3,6 +3,7 @@ package geiler.addons.client.module.impl;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.gui.GuiTheme;
 import geiler.addons.client.module.Category;
+import geiler.addons.client.module.ChoiceSetting;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
@@ -24,6 +25,7 @@ public final class VisualModule extends Module {
 	private final ColorSetting accent;
 	private final ColorSetting text;
 	private final ColorSetting muted;
+	private final ChoiceSetting clickGuiMotion;
 
 	private int lastBackground;
 	private int lastBorder;
@@ -46,9 +48,12 @@ public final class VisualModule extends Module {
 		this.accent = s.accent;
 		this.text = s.text;
 		this.muted = s.muted;
+		this.clickGuiMotion = s.clickGuiMotion;
 		group(
 			new SettingGroup("Colours", s.background, s.border, s.accent, s.text, s.muted),
-			new SettingGroup("Presets", s.tracker, s.amethyst, s.midnight, s.forest)
+			new SettingGroup("Presets", s.tracker, s.amethyst, s.midnight, s.forest,
+				s.aurora, s.ember, s.orchid),
+			new SettingGroup("Click GUI", s.clickGuiMotion)
 		);
 	}
 
@@ -59,11 +64,15 @@ public final class VisualModule extends Module {
 		final ColorSetting accent = new ColorSetting("Accent", 207, 207, 214, 255);
 		final ColorSetting text = new ColorSetting("Text", 255, 255, 255, 255);
 		final ColorSetting muted = new ColorSetting("Muted Text", 140, 140, 153, 255);
+		final ChoiceSetting clickGuiMotion = new ChoiceSetting("Motion", "Expressive", "None", "Reduced", "Expressive");
 
 		final ModuleAction tracker = new ModuleAction("Tracker", () -> preset(Preset.TRACKER));
 		final ModuleAction amethyst = new ModuleAction("Amethyst", () -> preset(Preset.AMETHYST));
 		final ModuleAction midnight = new ModuleAction("Midnight", () -> preset(Preset.MIDNIGHT));
 		final ModuleAction forest = new ModuleAction("Forest", () -> preset(Preset.FOREST));
+		final ModuleAction aurora = new ModuleAction("Aurora", () -> preset(Preset.AURORA));
+		final ModuleAction ember = new ModuleAction("Ember", () -> preset(Preset.EMBER));
+		final ModuleAction orchid = new ModuleAction("Orchid", () -> preset(Preset.ORCHID));
 	}
 
 	/** @param values background, border, accent, text and muted, each as 0xAARRGGBB */
@@ -74,6 +83,12 @@ public final class VisualModule extends Module {
 		static final Preset AMETHYST = new Preset(0xF0261434, 0x33FFFFFF, 0xFF6C2BD9, 0xFFFFFFFF, 0xFF8A7FA0);
 		static final Preset MIDNIGHT = new Preset(0xF00B1220, 0x33A8C7FF, 0xFF3B82F6, 0xFFEAF2FF, 0xFF7E8FA8);
 		static final Preset FOREST = new Preset(0xEB0D1710, 0x33A8E6B0, 0xFF3FBF5F, 0xFFEDFBF0, 0xFF7E9B85);
+		/** Cool teal and violet highlights, designed for a luminous glass-like panel. */
+		static final Preset AURORA = new Preset(0xE9141B2A, 0x335CFFD0, 0xFF55E6C1, 0xFFEFFFFB, 0xFF8EB9B5);
+		/** Warm coral accent against a dark wine surface. */
+		static final Preset EMBER = new Preset(0xEC211319, 0x33FFB494, 0xFFFF765C, 0xFFFFF3EE, 0xFFC29A94);
+		/** Soft violet accent with a deep plum surface. */
+		static final Preset ORCHID = new Preset(0xEE1A1429, 0x337E6CFF, 0xFFC78BFF, 0xFFFFF5FF, 0xFFB6A5C7);
 	}
 
 	private static void preset(Preset preset) {
@@ -116,5 +131,9 @@ public final class VisualModule extends Module {
 		lastMuted = mutedArgb;
 		applied = true;
 		GuiTheme.apply(backgroundArgb, borderArgb, accentArgb, textArgb, mutedArgb);
+	}
+
+	public ChoiceSetting clickGuiMotion() {
+		return clickGuiMotion;
 	}
 }

@@ -4,6 +4,7 @@ import geiler.addons.client.config.ClickGuiState;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
+import geiler.addons.client.module.ChoiceSetting;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
@@ -73,6 +74,8 @@ public class ClickGuiScreen extends Screen {
 
 	private static final int TEXT_FIELD_WIDTH = 64;
 	private static final int TEXT_FIELD_HEIGHT = 13;
+	private static final int CHOICE_FIELD_WIDTH = 92;
+	private static final int CHOICE_FIELD_HEIGHT = 15;
 	/** Caret on for this long, then off for as long again. */
 	private static final long CARET_BLINK_MILLIS = 500;
 
@@ -344,6 +347,7 @@ public class ClickGuiScreen extends Screen {
 				case ColorRow colorRow -> renderColorRow(graphics, font, mouseX, mouseY, colorRow, hoverable);
 				case NumberRow numberRow -> renderNumberRow(graphics, font, numberRow);
 				case ToggleRow toggleRow -> renderToggleRow(graphics, font, mouseX, mouseY, toggleRow, hoverable);
+				case ChoiceRow choiceRow -> renderChoiceRow(graphics, font, mouseX, mouseY, choiceRow, hoverable);
 				case TextRow textRow -> renderTextRow(graphics, font, textRow);
 				case ActionRow actionRow -> renderActionRow(graphics, font, mouseX, mouseY, actionRow, hoverable);
 			}
@@ -512,6 +516,23 @@ public class ClickGuiScreen extends Screen {
 		toggleSwitch(graphics, switchX, switchY, SWITCH_WIDTH, SWITCH_HEIGHT, toggleRow.setting.value());
 	}
 
+	private void renderChoiceRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, ChoiceRow choiceRow, boolean hoverable) {
+		Rect bounds = choiceRow.bounds;
+		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
+		if (hovered) {
+			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, bounds.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
+		}
+		graphics.text(font, choiceRow.setting.name(), bounds.x + 16,
+			bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+
+		Rect field = choiceRow.field;
+		roundedRectBordered(graphics, field.x, field.y, field.w, field.h, 4,
+			hovered ? BUTTON_HOVER : BUTTON_BG, hovered ? BUTTON_HOVER : BUTTON_BG, BORDER);
+		String value = choiceRow.setting.value();
+		graphics.centeredText(font, "‹ " + value + " ›", field.x + field.w / 2,
+			field.y + (field.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+	}
+
 	private void renderTextRow(GuiGraphicsExtractor graphics, Font font, TextRow textRow) {
 		Rect bounds = textRow.bounds;
 		Rect field = textRow.field;
@@ -636,6 +657,13 @@ public class ClickGuiScreen extends Screen {
 				}
 				case BooleanSetting booleanSetting -> {
 					rows.add(new ToggleRow(booleanSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT)));
+					cursorY += ROW_HEIGHT;
+				}
+				case ChoiceSetting choiceSetting -> {
+					Rect field = new Rect(x + moduleWidth - CHOICE_FIELD_WIDTH - 14,
+						cursorY + (ROW_HEIGHT - CHOICE_FIELD_HEIGHT) / 2,
+						CHOICE_FIELD_WIDTH, CHOICE_FIELD_HEIGHT);
+					rows.add(new ChoiceRow(choiceSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), field));
 					cursorY += ROW_HEIGHT;
 				}
 				case TextSetting textSetting -> {
@@ -802,6 +830,14 @@ public class ClickGuiScreen extends Screen {
 					if (toggleRow.bounds.contains(mouseX, mouseY)) {
 						toggleRow.setting.toggle();
 						persistView();
+						ModConfig.save();
+						return true;
+					}
+				}
+				case ChoiceRow choiceRow -> {
+					if (choiceRow.bounds.contains(mouseX, mouseY)) {
+						if (left) choiceRow.setting.selectNext();
+						else choiceRow.setting.selectPrevious();
 						ModConfig.save();
 						return true;
 					}
@@ -1006,7 +1042,7 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	/** One laid-out line in the settings panel. */
-	private sealed interface Row permits GroupRow, ColorRow, NumberRow, ToggleRow, TextRow, ActionRow {
+	private sealed interface Row permits GroupRow, ColorRow, NumberRow, ToggleRow, ChoiceRow, TextRow, ActionRow {
 		Rect bounds();
 	}
 
@@ -1024,6 +1060,9 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private record ToggleRow(BooleanSetting setting, Rect bounds) implements Row {
+	}
+
+	private record ChoiceRow(ChoiceSetting setting, Rect bounds, Rect field) implements Row {
 	}
 
 	private record TextRow(TextSetting setting, Rect bounds, Rect field) implements Row {

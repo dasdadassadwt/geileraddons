@@ -8,6 +8,7 @@ import geiler.addons.client.hud.HudManager;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
+import geiler.addons.client.module.ChoiceSetting;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleManager;
@@ -51,6 +52,7 @@ public final class ModConfig {
 		Map<String, int[]> colors = new HashMap<>();
 		Map<String, Float> numbers = new HashMap<>();
 		Map<String, Boolean> toggles = new HashMap<>();
+		Map<String, String> choices = new HashMap<>();
 		Map<String, String> texts = new HashMap<>();
 		/**
 		 * Absent means "never saved", which is what seeds the built-in coordinates. An explicitly
@@ -158,6 +160,9 @@ public final class ModConfig {
 					setting.setValue(value);
 				}
 			}
+			for (ChoiceSetting setting : module.choiceSettings()) {
+				setting.setValue(data.choices.get(settingKey(module, setting.name())));
+			}
 			for (TextSetting setting : module.textSettings()) {
 				String key = settingKey(module, setting.name());
 				String value = data.texts.get(key);
@@ -239,6 +244,9 @@ public final class ModConfig {
 			}
 			for (BooleanSetting setting : module.booleanSettings()) {
 				data.toggles.put(settingKey(module, setting.name()), setting.value());
+			}
+			for (ChoiceSetting setting : module.choiceSettings()) {
+				data.choices.put(settingKey(module, setting.name()), setting.value());
 			}
 			for (TextSetting setting : module.textSettings()) {
 				data.texts.put(settingKey(module, setting.name()), setting.value());
@@ -465,6 +473,7 @@ public final class ModConfig {
 		if (data.colors == null) data.colors = new HashMap<>();
 		if (data.numbers == null) data.numbers = new HashMap<>();
 		if (data.toggles == null) data.toggles = new HashMap<>();
+		if (data.choices == null) data.choices = new HashMap<>();
 		if (data.texts == null) data.texts = new HashMap<>();
 
 		if (legacy) {

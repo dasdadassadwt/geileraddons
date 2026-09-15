@@ -11,6 +11,7 @@ public abstract class Module {
 	private final List<ColorSetting> colorSettings;
 	private final List<NumberSetting> numberSettings;
 	private final List<BooleanSetting> booleanSettings;
+	private final List<ChoiceSetting> choiceSettings;
 	private final List<TextSetting> textSettings;
 	private final List<ModuleAction> actions;
 	private List<SettingGroup> groups;
@@ -32,6 +33,7 @@ public abstract class Module {
 		this.colorSettings = ofType(ColorSetting.class);
 		this.numberSettings = ofType(NumberSetting.class);
 		this.booleanSettings = ofType(BooleanSetting.class);
+		this.choiceSettings = ofType(ChoiceSetting.class);
 		this.textSettings = ofType(TextSetting.class);
 		this.actions = ofType(ModuleAction.class);
 	}
@@ -68,6 +70,10 @@ public abstract class Module {
 
 	public List<BooleanSetting> booleanSettings() {
 		return booleanSettings;
+	}
+
+	public List<ChoiceSetting> choiceSettings() {
+		return choiceSettings;
 	}
 
 	public List<TextSetting> textSettings() {
