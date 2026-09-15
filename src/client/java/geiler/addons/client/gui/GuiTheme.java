@@ -58,6 +58,8 @@ public final class GuiTheme {
 	public static int BUTTON_BG;
 	public static int BUTTON_HOVER;
 	public static int SCROLLBAR;
+	/** A quiet accent line used to give the two panels a deliberate top edge. */
+	public static int PANEL_HIGHLIGHT;
 
 	static {
 		// Something has to be on the palette before the config is read, since a screen could be
@@ -108,6 +110,7 @@ public final class GuiTheme {
 		BUTTON_BG = opaque(shade(accent, -0.38f));
 		BUTTON_HOVER = opaque(accent);
 		SCROLLBAR = withAlpha(text, 96);
+		PANEL_HIGHLIGHT = withAlpha(accent, 150);
 	}
 
 	/** Toward white for a positive amount, toward black for a negative one; alpha is kept. */
@@ -128,6 +131,13 @@ public final class GuiTheme {
 	}
 
 	private static int withAlpha(int color, int newAlpha) {
+		return (clamp(newAlpha) << 24) | (color & 0x00FFFFFF);
+	}
+
+	/** Applies an animation opacity without changing the hue or accidentally brightening a color. */
+	public static int withOpacity(int color, float opacity) {
+		int oldAlpha = alpha(color);
+		int newAlpha = Math.round(oldAlpha * Math.max(0.0f, Math.min(1.0f, opacity)));
 		return (clamp(newAlpha) << 24) | (color & 0x00FFFFFF);
 	}
 

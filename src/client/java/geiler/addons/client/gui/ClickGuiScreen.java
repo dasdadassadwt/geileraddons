@@ -18,14 +18,18 @@ import geiler.addons.client.update.UpdateChecker;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.FormattedCharSequence;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 
 import static geiler.addons.client.gui.GuiTheme.*;
@@ -93,6 +97,25 @@ public class ClickGuiScreen extends Screen {
 	private String hexInput = "";
 	private int settingsScroll;
 	private int gridScroll;
+	private double settingsScrollVisual;
+	private double gridScrollVisual;
+
+	/** The current target view is applied immediately; these snapshots let it slide in cleanly. */
+	private ViewState transitionFrom;
+	private ViewState transitionTo;
+	private int transitionDirection;
+	private long transitionStartedNanos;
+	private final Deque<NavigationRequest> navigationQueue = new ArrayDeque<>();
+
+	private final long openedAtNanos = System.nanoTime();
+	private long lifecycleStartedNanos = openedAtNanos;
+	private boolean closing;
+	private Screen pendingScreen;
+	private long lastFrameNanos = openedAtNanos;
+
+	/** Last accepted control, used for a short tactile pulse without delaying the next action. */
+	private Object lastInteraction;
+	private long lastInteractionNanos;
 
 	public ClickGuiScreen() {
 		super(Component.literal("GeilerAddons"));
@@ -100,11 +123,18 @@ public class ClickGuiScreen extends Screen {
 		openSettingsModule = ClickGuiState.openModule();
 		expandedColorSetting = ClickGuiState.expandedColor();
 		settingsScroll = ClickGuiState.settingsScroll();
+		settingsScrollVisual = settingsScroll;
+		gridScrollVisual = gridScroll;
 	}
 
 	@Override
 	public boolean isPauseScreen() {
 		return false;
+	}
+
+	@Override
+	public void onClose() {
+		beginClose(null);
 	}
 
 	@Override
@@ -121,6 +151,132 @@ public class ClickGuiScreen extends Screen {
 		ClickGuiState.setOpenModule(openSettingsModule);
 		ClickGuiState.setExpandedColor(expandedColorSetting);
 		ClickGuiState.setSettingsScroll(settingsScroll);
+	}
+
+	private ClickGuiMotion motion() {
+		return ClickGuiMotion.fromSetting(VisualModule.INSTANCE.clickGuiMotion().value());
+	}
+
+	/** Advances render-only animation state without putting any of it into the saved GUI state. */
+	private void updateAnimationState(long now, ClickGuiMotion motion) {
+		if (motion == ClickGuiMotion.NONE) {
+			while (!navigationQueue.isEmpty()) {
+				applyView(navigationQueue.removeFirst().view);
+			}
+			transitionFrom = null;
+			transitionTo = null;
+		} else if (transitionFrom != null) {
+			long elapsed = elapsedMillis(transitionStartedNanos, now);
+			if (elapsed >= motion.transitionMillis()) {
+				transitionFrom = null;
+				transitionTo = null;
+				if (!navigationQueue.isEmpty()) {
+					NavigationRequest next = navigationQueue.removeFirst();
+					startNavigation(next.view, next.direction, now, motion);
+				}
+			}
+		}
+
+		long frameMillis = Math.min(50L, elapsedMillis(lastFrameNanos, now));
+		lastFrameNanos = now;
+		if (motion == ClickGuiMotion.NONE) {
+			gridScrollVisual = gridScroll;
+			settingsScrollVisual = settingsScroll;
+		} else {
+			// Exponential settling is frame-rate independent and reaches the exact target when the
+			// remaining distance is smaller than a pixel, so the scrollbar never shimmers forever.
+			double factor = 1.0 - Math.exp(-frameMillis / (motion == ClickGuiMotion.EXPRESSIVE ? 95.0 : 60.0));
+			gridScrollVisual = settle(gridScrollVisual, gridScroll, factor);
+			settingsScrollVisual = settle(settingsScrollVisual, settingsScroll, factor);
+		}
+	}
+
+	private static double settle(double current, double target, double factor) {
+		double value = current + (target - current) * factor;
+		return Math.abs(target - value) < 0.05 ? target : value;
+	}
+
+	private float lifecycleProgress(long now, ClickGuiMotion motion) {
+		if (motion == ClickGuiMotion.NONE) return 1.0f;
+		long elapsed = elapsedMillis(lifecycleStartedNanos, now);
+		return motion.ease(elapsed / (float) motion.lifecycleMillis());
+	}
+
+	private float transitionProgress(long now, ClickGuiMotion motion) {
+		if (motion == ClickGuiMotion.NONE || transitionFrom == null) return 1.0f;
+		return motion.ease(elapsedMillis(transitionStartedNanos, now) / (float) motion.transitionMillis());
+	}
+
+	private static long elapsedMillis(long startedNanos, long nowNanos) {
+		return Math.max(0L, (nowNanos - startedNanos) / 1_000_000L);
+	}
+
+	private ViewState currentView() {
+		return new ViewState(selectedCategory, openSettingsModule, gridScroll, settingsScroll, expandedColorSetting);
+	}
+
+	private void applyView(ViewState view) {
+		selectedCategory = view.category;
+		openSettingsModule = view.module;
+		gridScroll = view.gridScroll;
+		settingsScroll = view.settingsScroll;
+		expandedColorSetting = view.expandedColor;
+	}
+
+	private void requestNavigation(ViewState target, int direction) {
+		ClickGuiMotion motion = motion();
+		if (currentView().equals(target)) return;
+		if (transitionFrom != null) {
+			if (navigationQueue.isEmpty() || !navigationQueue.peekLast().view.equals(target)) {
+				navigationQueue.addLast(new NavigationRequest(target, direction));
+			}
+			return;
+		}
+		if (currentView().equals(target)) return;
+		startNavigation(target, direction, System.nanoTime(), motion);
+	}
+
+	private void startNavigation(ViewState target, int direction, long now, ClickGuiMotion motion) {
+		ViewState from = currentView();
+		applyView(target);
+		if (!motion.animated()) {
+			transitionFrom = null;
+			transitionTo = null;
+			return;
+		}
+		transitionFrom = from;
+		transitionTo = target;
+		transitionDirection = direction == 0 ? 1 : direction;
+		transitionStartedNanos = now;
+	}
+
+	private void beginClose(Screen next) {
+		if (closing) return;
+		pendingScreen = next;
+		navigationQueue.clear();
+		transitionFrom = null;
+		transitionTo = null;
+		ClickGuiMotion motion = motion();
+		if (!motion.animated()) {
+			this.minecraft.setScreen(next);
+			return;
+		}
+		closing = true;
+		lifecycleStartedNanos = System.nanoTime();
+	}
+
+	private void markInteraction(Object target) {
+		lastInteraction = target;
+		lastInteractionNanos = System.nanoTime();
+	}
+
+	private void playClick() {
+		this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0f));
+	}
+
+	private float interactionPulse(Object target, long now, ClickGuiMotion motion) {
+		if (target == null || target != lastInteraction || motion == ClickGuiMotion.NONE) return 0.0f;
+		return 1.0f - motion.ease(elapsedMillis(lastInteractionNanos, now) / 180.0f);
 	}
 
 	// ---- layout -------------------------------------------------------------------------
@@ -161,6 +317,21 @@ public class ClickGuiScreen extends Screen {
 		// Before anything reads the palette: dragging a theme colour has to redraw the menu in it
 		// on the same frame, which is the whole point of editing a theme from inside the menu.
 		VisualModule.INSTANCE.refreshTheme();
+		long now = System.nanoTime();
+		ClickGuiMotion motion = motion();
+		updateAnimationState(now, motion);
+		if (closing && elapsedMillis(lifecycleStartedNanos, now) >= motion.lifecycleMillis()) {
+			Screen next = pendingScreen;
+			pendingScreen = null;
+			closing = false;
+			this.minecraft.setScreen(next);
+			return;
+		}
+
+		float lifecycle = lifecycleProgress(now, motion);
+		float visible = closing ? 1.0f - lifecycle : lifecycle;
+		graphics.fill(0, 0, this.width, this.height, withOpacity(0xC0000000, visible * 0.58f));
+
 		int panelX = panelX();
 		int panelY = panelY();
 		int categoryWidth = categoryWidth();
@@ -169,35 +340,56 @@ public class ClickGuiScreen extends Screen {
 		int rightX = panelX + categoryWidth;
 		Font font = this.font;
 
+		var pose = graphics.pose();
+		pose.pushMatrix();
+		float scale = motion == ClickGuiMotion.NONE ? 1.0f
+			: closing
+				? 1.0f - 0.055f * motion.ease(lifecycle)
+				: 0.945f + 0.055f * motion.spring(lifecycle);
+		pose.translate(this.width / 2.0f, this.height / 2.0f);
+		pose.scale(scale, scale);
+		pose.translate(-this.width / 2.0f, -this.height / 2.0f);
+
+		// A soft drop edge and a one-pixel highlight make the same flat palette read as a raised,
+		// intentional surface without adding another theme-specific colour.
+		roundedRect(graphics, panelX - 2, panelY + 3, panelWidth() + 4, panelHeight + 2, RADIUS + 2,
+			withOpacity(0xFF000000, 0.32f));
 		roundedRectBordered(graphics, panelX, panelY, categoryWidth, panelHeight, RADIUS, PANEL_TOP, PANEL_BOTTOM, BORDER);
 		roundedRectBordered(graphics, rightX, panelY, moduleWidth, panelHeight, RADIUS, MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM, BORDER);
+		graphics.fillGradient(panelX + 10, panelY + 2, panelX + categoryWidth - 10, panelY + 3,
+			withOpacity(PANEL_HIGHLIGHT, 0.75f), withOpacity(PANEL_HIGHLIGHT, 0.0f));
+		graphics.fillGradient(rightX + 10, panelY + 2, rightX + moduleWidth - 10, panelY + 3,
+			withOpacity(PANEL_HIGHLIGHT, 0.75f), withOpacity(PANEL_HIGHLIGHT, 0.0f));
 
-		renderCategories(graphics, font, mouseX, mouseY, panelX, panelY);
-
-		List<Module> modules = ModuleManager.modules(selectedCategory);
-		if (openSettingsModule != null && modules.contains(openSettingsModule)) {
-			renderSettingsView(graphics, font, mouseX, mouseY, rightX, panelY);
-		} else {
-			openSettingsModule = null;
-			renderModuleGrid(graphics, font, mouseX, mouseY, modules, rightX, panelY);
-		}
+		renderCategories(graphics, font, mouseX, mouseY, panelX, panelY, now, motion);
+		renderView(graphics, font, mouseX, mouseY, rightX, panelY, now, motion, lifecycle);
+		pose.popMatrix();
 	}
 
-	private void renderCategories(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, int panelX, int panelY) {
+	private void renderCategories(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		int panelX, int panelY, long now, ClickGuiMotion motion) {
 		List<Rect> categoryRows = categoryRows(panelX, panelY);
 		Category[] categories = Category.values();
+		boolean moving = transitionFrom != null && transitionFrom.category != selectedCategory;
 		for (int i = 0; i < categories.length; i++) {
 			Rect row = categoryRows.get(i);
 			Category category = categories[i];
 			boolean selected = category == selectedCategory;
 			boolean hovered = row.contains(mouseX, mouseY);
-			if (selected) {
+			if (!moving && selected) {
 				roundedRect(graphics, row.x + 5, row.y, row.w - 10, row.h - 2, RADIUS_SMALL, CATEGORY_SELECTED);
 			} else if (hovered) {
 				roundedRect(graphics, row.x + 5, row.y, row.w - 10, row.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 			}
 			int color = selected ? TEXT_PRIMARY : TEXT_SECONDARY;
 			graphics.text(font, category.displayName(), row.x + 14, row.y + (row.h - TEXT_HEIGHT) / 2, color);
+		}
+		if (moving) {
+			Rect from = categoryRows.get(indexOf(transitionFrom.category));
+			Rect to = categoryRows.get(indexOf(selectedCategory));
+			float progress = transitionProgress(now, motion);
+			int y = Math.round(lerp(from.y, to.y, progress));
+			roundedRect(graphics, to.x + 5, y, to.w - 10, to.h - 2, RADIUS_SMALL, CATEGORY_SELECTED);
 		}
 
 		Rect move = moveElementsRect(panelX, panelY);
@@ -220,23 +412,83 @@ public class ClickGuiScreen extends Screen {
 		return new Rect(panelX + 6, panelY + panelHeight() - PADDING - height, categoryWidth() - 12, height);
 	}
 
+	private void renderView(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		int rightX, int panelY, long now, ClickGuiMotion motion, float lifecycle) {
+		if (transitionFrom != null) {
+			float progress = transitionProgress(now, motion);
+			int travel = moduleWidth() + 18;
+			int outgoingOffset = Math.round(-transitionDirection * travel * progress);
+			int incomingOffset = Math.round(transitionDirection * travel * (1.0f - progress));
+			renderViewAt(graphics, font, mouseX, mouseY, transitionFrom, rightX, panelY, outgoingOffset,
+				false, false, transitionStartedNanos, now, motion);
+			renderViewAt(graphics, font, mouseX, mouseY, transitionTo, rightX, panelY, incomingOffset,
+				false, true, transitionStartedNanos, now, motion);
+			return;
+		}
+
+		ViewState current = currentView();
+		renderViewAt(graphics, font, mouseX, mouseY, current, rightX, panelY, 0,
+			true, true, openedAtNanos, now, motion);
+	}
+
+	private void renderViewAt(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		ViewState view, int rightX, int panelY, int offset, boolean hoverable, boolean entering,
+		long entranceStart, long now, ClickGuiMotion motion) {
+		var pose = graphics.pose();
+		pose.pushMatrix();
+		if (offset != 0) pose.translate(offset, 0.0f);
+		List<Module> modules = ModuleManager.modules(view.category);
+		if (view.module != null && modules.contains(view.module)) {
+			double scroll = transitionFrom == null ? settingsScrollVisual : view.settingsScroll;
+			renderSettingsView(graphics, font, mouseX, mouseY, rightX, panelY, view.module, scroll,
+				view.expandedColor, hoverable);
+		} else {
+			double scroll = transitionFrom == null ? gridScrollVisual : view.gridScroll;
+			renderModuleGrid(graphics, font, mouseX, mouseY, modules, rightX, panelY, scroll,
+				hoverable, entering, entranceStart, now, motion);
+		}
+		pose.popMatrix();
+	}
+
 	// ---- module grid --------------------------------------------------------------------
 
-	private void renderModuleGrid(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, List<Module> modules, int x, int panelY) {
+	private void renderModuleGrid(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		List<Module> modules, int x, int panelY, double scroll, boolean hoverable, boolean entering,
+		long entranceStart, long now, ClickGuiMotion motion) {
 		Rect viewport = gridViewport(x, panelY);
-		List<CardRect> cards = cardRects(modules, x, panelY);
-		boolean hoverable = viewport.contains(mouseX, mouseY);
+		List<CardRect> cards = cardRects(modules, x, panelY, scroll);
+		boolean insideViewport = viewport.contains(mouseX, mouseY);
 
 		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
-		for (CardRect card : cards) {
-			renderCard(graphics, font, mouseX, mouseY, card, hoverable);
+		for (int i = 0; i < cards.size(); i++) {
+			CardRect card = cards.get(i);
+			boolean cardHoverable = hoverable && insideViewport;
+			float entrance = entering ? cardEntrance(i, entranceStart, now, motion) : 1.0f;
+			float lift = (1.0f - entrance) * (motion == ClickGuiMotion.EXPRESSIVE ? 10.0f : 5.0f);
+			float cardScale = 0.97f + 0.03f * (motion == ClickGuiMotion.EXPRESSIVE
+				? motion.spring(entrance) : entrance);
+			var pose = graphics.pose();
+			pose.pushMatrix();
+			pose.translate(card.bounds.x + card.bounds.w / 2.0f, card.bounds.y + card.bounds.h / 2.0f + lift);
+			pose.scale(cardScale, cardScale);
+			pose.translate(-(card.bounds.x + card.bounds.w / 2.0f), -(card.bounds.y + card.bounds.h / 2.0f));
+			renderCard(graphics, font, mouseX, mouseY, card, cardHoverable, now, motion);
+			pose.popMatrix();
 		}
 		graphics.disableScissor();
 
-		renderScrollbar(graphics, viewport, gridContentHeight(modules), gridScroll);
+		renderScrollbar(graphics, viewport, gridContentHeight(modules), (int) Math.round(scroll));
 	}
 
-	private void renderCard(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, CardRect card, boolean hoverable) {
+	private float cardEntrance(int index, long entranceStart, long now, ClickGuiMotion motion) {
+		if (motion == ClickGuiMotion.NONE) return 1.0f;
+		int staggerIndex = Math.min(index, 5);
+		long delayed = elapsedMillis(entranceStart, now) - (long) staggerIndex * motion.cardStaggerMillis();
+		return motion.ease(delayed / (float) Math.max(1, motion.transitionMillis()));
+	}
+
+	private void renderCard(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		CardRect card, boolean hoverable, long now, ClickGuiMotion motion) {
 		Module module = card.module;
 		Rect bounds = card.bounds;
 		boolean enabled = module.isEnabled();
@@ -244,6 +496,11 @@ public class ClickGuiScreen extends Screen {
 
 		int background = enabled ? CARD_BG_ENABLED : (hovered ? CARD_BG_HOVER : CARD_BG);
 		int border = enabled ? CARD_BORDER_ENABLED : CARD_BORDER;
+		float pulse = interactionPulse(module, now, motion);
+		if (pulse > 0.0f) {
+			background = lerpColor(background, CARD_BG_HOVER, pulse * 0.65f);
+			border = lerpColor(border, PANEL_HIGHLIGHT, pulse);
+		}
 		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL, background, background, border);
 
 		// The card reflects the switch the user set and nothing else. Context idling used to mute
@@ -310,9 +567,13 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private List<CardRect> cardRects(List<Module> modules, int x, int panelY) {
+		return cardRects(modules, x, panelY, gridScrollVisual);
+	}
+
+	private List<CardRect> cardRects(List<Module> modules, int x, int panelY, double scroll) {
 		Rect viewport = gridViewport(x, panelY);
 		int maxScroll = Math.max(0, gridContentHeight(modules) - viewport.h);
-		gridScroll = Math.max(0, Math.min(maxScroll, gridScroll));
+		int appliedScroll = Math.max(0, Math.min(maxScroll, (int) Math.round(scroll)));
 
 		int cardWidth = cardWidth();
 		int cardHeight = cardHeight(modules);
@@ -321,7 +582,7 @@ public class ClickGuiScreen extends Screen {
 			int column = i % CARD_COLUMNS;
 			int row = i / CARD_COLUMNS;
 			int cardX = x + PADDING + column * (cardWidth + CARD_GAP);
-			int cardY = viewport.y + row * (cardHeight + CARD_GAP) - gridScroll;
+			int cardY = viewport.y + row * (cardHeight + CARD_GAP) - appliedScroll;
 			cards.add(new CardRect(modules.get(i), new Rect(cardX, cardY, cardWidth, cardHeight)));
 		}
 		return cards;
@@ -329,42 +590,44 @@ public class ClickGuiScreen extends Screen {
 
 	// ---- settings view ------------------------------------------------------------------
 
-	private void renderSettingsView(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, int x, int y) {
+	private void renderSettingsView(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		int x, int y, Module module, double scroll, ColorSetting expandedColor, boolean hoverable) {
 		Rect header = headerRow(x, y);
-		if (header.contains(mouseX, mouseY)) {
+		if (hoverable && header.contains(mouseX, mouseY)) {
 			roundedRect(graphics, header.x + 5, header.y, header.w - 10, header.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, "< " + openSettingsModule.name(), header.x + 14, header.y + (header.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+		graphics.text(font, "< " + module.name(), header.x + 14, header.y + (header.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 
 		Rect viewport = settingsViewport(x, y);
-		List<Row> rows = settingsRows(openSettingsModule, x, y);
-		boolean hoverable = viewport.contains(mouseX, mouseY);
+		boolean insideViewport = hoverable && viewport.contains(mouseX, mouseY);
+		List<Row> rows = settingsRows(module, x, y, scroll, expandedColor);
 
 		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
 		for (Row row : rows) {
 			switch (row) {
-				case GroupRow groupRow -> renderGroupRow(graphics, font, mouseX, mouseY, groupRow, hoverable);
-				case ColorRow colorRow -> renderColorRow(graphics, font, mouseX, mouseY, colorRow, hoverable);
+				case GroupRow groupRow -> renderGroupRow(graphics, font, mouseX, mouseY, groupRow, module, insideViewport);
+				case ColorRow colorRow -> renderColorRow(graphics, font, mouseX, mouseY, colorRow, insideViewport);
 				case NumberRow numberRow -> renderNumberRow(graphics, font, numberRow);
-				case ToggleRow toggleRow -> renderToggleRow(graphics, font, mouseX, mouseY, toggleRow, hoverable);
-				case ChoiceRow choiceRow -> renderChoiceRow(graphics, font, mouseX, mouseY, choiceRow, hoverable);
+				case ToggleRow toggleRow -> renderToggleRow(graphics, font, mouseX, mouseY, toggleRow, insideViewport);
+				case ChoiceRow choiceRow -> renderChoiceRow(graphics, font, mouseX, mouseY, choiceRow, insideViewport);
 				case TextRow textRow -> renderTextRow(graphics, font, textRow);
-				case ActionRow actionRow -> renderActionRow(graphics, font, mouseX, mouseY, actionRow, hoverable);
+				case ActionRow actionRow -> renderActionRow(graphics, font, mouseX, mouseY, actionRow, insideViewport);
 			}
 		}
 		graphics.disableScissor();
 
-		renderScrollbar(graphics, viewport, settingsContentHeight(openSettingsModule, x), settingsScroll);
+		renderScrollbar(graphics, viewport, settingsContentHeight(module, x, expandedColor), (int) Math.round(scroll));
 	}
 
-	private void renderGroupRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY, GroupRow groupRow, boolean hoverable) {
+	private void renderGroupRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		GroupRow groupRow, Module module, boolean hoverable) {
 		Rect bounds = groupRow.bounds;
 		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
 		// A nested section is stepped in from its parent, so the two never read as siblings.
 		int indent = groupRow.depth * GROUP_INDENT;
 		roundedRect(graphics, bounds.x + 5 + indent, bounds.y + 1, bounds.w - 10 - indent, bounds.h - 3,
 			RADIUS_SMALL, hovered ? CARD_BG_HOVER : GROUP_HEADER);
-		boolean collapsed = ClickGuiState.isCollapsed(openSettingsModule, groupRow.group);
+		boolean collapsed = ClickGuiState.isCollapsed(module, groupRow.group);
 		graphics.text(font, collapsed ? "▸" : "▾", bounds.x + 12 + indent, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 		graphics.text(font, groupRow.group.name(), bounds.x + 24 + indent, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 
@@ -590,15 +853,23 @@ public class ClickGuiScreen extends Screen {
 
 	/** Setting rows with the current scroll already applied, so callers can hit-test them directly. */
 	private List<Row> settingsRows(Module module, int x, int panelY) {
+		return settingsRows(module, x, panelY, settingsScrollVisual, expandedColorSetting);
+	}
+
+	private List<Row> settingsRows(Module module, int x, int panelY, double scroll, ColorSetting expandedColor) {
 		Rect viewport = settingsViewport(x, panelY);
-		int maxScroll = Math.max(0, settingsContentHeight(module, x) - viewport.h);
-		settingsScroll = Math.max(0, Math.min(maxScroll, settingsScroll));
-		return layoutRows(module, x, viewport.y - settingsScroll);
+		int maxScroll = Math.max(0, settingsContentHeight(module, x, expandedColor) - viewport.h);
+		int appliedScroll = Math.max(0, Math.min(maxScroll, (int) Math.round(scroll)));
+		return layoutRows(module, x, viewport.y - appliedScroll, expandedColor);
 	}
 
 	/** Measured by running the same layout, so it can never drift from what is drawn. */
 	private int settingsContentHeight(Module module, int x) {
-		List<Row> rows = layoutRows(module, x, 0);
+		return settingsContentHeight(module, x, expandedColorSetting);
+	}
+
+	private int settingsContentHeight(Module module, int x, ColorSetting expandedColor) {
+		List<Row> rows = layoutRows(module, x, 0, expandedColor);
 		int bottom = 0;
 		for (Row row : rows) {
 			Rect bounds = row.bounds();
@@ -608,15 +879,24 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private int colorRowHeight(ColorSetting setting) {
-		return ROW_HEIGHT + (setting == expandedColorSetting ? PICKER_HEIGHT : 0);
+		return colorRowHeight(setting, expandedColorSetting);
+	}
+
+	private int colorRowHeight(ColorSetting setting, ColorSetting expandedColor) {
+		return ROW_HEIGHT + (setting == expandedColor ? PICKER_HEIGHT : 0);
 	}
 
 	/** @param startY where the first row begins; already offset by the scroll position */
 	private List<Row> layoutRows(Module module, int x, int startY) {
+		return layoutRows(module, x, startY, expandedColorSetting);
+	}
+
+	/** @param startY where the first row begins; already offset by the scroll position */
+	private List<Row> layoutRows(Module module, int x, int startY, ColorSetting expandedColor) {
 		List<Row> rows = new ArrayList<>();
 		int cursorY = startY;
 		for (SettingGroup group : module.groups()) {
-			cursorY = layoutGroup(module, group, x, cursorY, 0, rows);
+			cursorY = layoutGroup(module, group, x, cursorY, 0, rows, expandedColor);
 		}
 		return rows;
 	}
@@ -627,7 +907,8 @@ public class ClickGuiScreen extends Screen {
 	 * @param depth how deep this section is nested, which is what indents its heading
 	 * @return where the next row begins
 	 */
-	private int layoutGroup(Module module, SettingGroup group, int x, int cursorY, int depth, List<Row> rows) {
+	private int layoutGroup(Module module, SettingGroup group, int x, int cursorY, int depth,
+		List<Row> rows, ColorSetting expandedColor) {
 		int moduleWidth = moduleWidth();
 
 		if (group.name() != null) {
@@ -645,9 +926,9 @@ public class ClickGuiScreen extends Screen {
 		for (Setting setting : group.settings()) {
 			switch (setting) {
 				case ColorSetting colorSetting -> {
-					int rowHeight = colorRowHeight(colorSetting);
+					int rowHeight = colorRowHeight(colorSetting, expandedColor);
 					rows.add(new ColorRow(colorSetting, new Rect(x, cursorY, moduleWidth, rowHeight),
-						picker(colorSetting, x, cursorY, moduleWidth)));
+						picker(colorSetting, x, cursorY, moduleWidth, expandedColor)));
 					cursorY += rowHeight;
 				}
 				case NumberSetting numberSetting -> {
@@ -680,13 +961,13 @@ public class ClickGuiScreen extends Screen {
 		}
 
 		for (SettingGroup child : group.children()) {
-			cursorY = layoutGroup(module, child, x, cursorY, depth + 1, rows);
+			cursorY = layoutGroup(module, child, x, cursorY, depth + 1, rows, expandedColor);
 		}
 		return cursorY;
 	}
 
-	private Picker picker(ColorSetting setting, int x, int cursorY, int moduleWidth) {
-		if (setting != expandedColorSetting) return null;
+	private Picker picker(ColorSetting setting, int x, int cursorY, int moduleWidth, ColorSetting expandedColor) {
+		if (setting != expandedColor) return null;
 		int left = x + PICKER_INSET;
 		int width = moduleWidth - PICKER_INSET * 2;
 		int top = cursorY + ROW_HEIGHT;
@@ -703,6 +984,7 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+		if (closing) return true;
 		int mouseX = (int) event.x();
 		int mouseY = (int) event.y();
 		int panelX = panelX();
@@ -718,7 +1000,9 @@ public class ClickGuiScreen extends Screen {
 
 		if (left && moveElementsRect(panelX, panelY).contains(mouseX, mouseY)) {
 			persistView();
-			this.minecraft.setScreen(new MoveUiScreen(this));
+			markInteraction("Move Elements");
+			playClick();
+			beginClose(new MoveUiScreen(this));
 			return true;
 		}
 
@@ -726,9 +1010,12 @@ public class ClickGuiScreen extends Screen {
 		Category[] categories = Category.values();
 		for (int i = 0; i < categories.length; i++) {
 			if (left && categoryRows.get(i).contains(mouseX, mouseY)) {
-				selectedCategory = categories[i];
-				closeSettings();
-				gridScroll = 0;
+				ViewState target = new ViewState(categories[i], null, 0, 0, null);
+				if (!currentView().equals(target)) {
+					markInteraction(categories[i]);
+					playClick();
+					requestNavigation(target, Integer.compare(i, indexOf(selectedCategory)));
+				}
 				return true;
 			}
 		}
@@ -739,19 +1026,21 @@ public class ClickGuiScreen extends Screen {
 			return settingsClicked(openSettingsModule, mouseX, mouseY, rightX, panelY, left);
 		}
 
-		for (CardRect card : cardRects(modules, rightX, panelY)) {
+		for (CardRect card : cardRects(modules, rightX, panelY,
+			transitionFrom == null ? gridScrollVisual : currentView().gridScroll)) {
 			if (!card.bounds.contains(mouseX, mouseY)) continue;
 			// The switch is the only thing that toggles the module; anywhere else on the card
 			// opens its settings, on either button, so there is no hidden right-click gesture.
 			if (left && switchRect(card.bounds).contains(mouseX, mouseY)) {
+				markInteraction(card.module);
+				playClick();
 				card.module.toggle();
 				persistView();
 				ModConfig.save();
 			} else if (card.module.hasSettings()) {
-				openSettingsModule = card.module;
-				expandedColorSetting = null;
-				settingsScroll = 0;
-				persistView();
+				markInteraction(card.module);
+				playClick();
+				requestNavigation(new ViewState(selectedCategory, card.module, gridScroll, 0, null), 1);
 			}
 			return true;
 		}
@@ -762,7 +1051,9 @@ public class ClickGuiScreen extends Screen {
 	private boolean settingsClicked(Module module, int mouseX, int mouseY, int x, int panelY, boolean left) {
 		Rect header = headerRow(x, panelY);
 		if (left && header.contains(mouseX, mouseY)) {
-			closeSettings();
+			markInteraction(module);
+			playClick();
+			requestNavigation(new ViewState(selectedCategory, null, gridScroll, 0, null), -1);
 			return true;
 		}
 
@@ -778,12 +1069,16 @@ public class ClickGuiScreen extends Screen {
 					// The switch is tested first: it sits inside the header, which would otherwise
 					// fold the section shut under the cursor instead.
 					if (groupRow.toggle != null && groupRow.toggle.contains(mouseX, mouseY)) {
+						markInteraction(groupRow.group);
+						playClick();
 						groupRow.group.toggle().toggle();
 						persistView();
 						ModConfig.save();
 						return true;
 					}
 					if (groupRow.bounds.contains(mouseX, mouseY)) {
+						markInteraction(groupRow.group);
+						playClick();
 						ClickGuiState.toggleCollapsed(module, groupRow.group);
 						ModConfig.save();
 						return true;
@@ -793,27 +1088,37 @@ public class ClickGuiScreen extends Screen {
 					Picker picker = colorRow.picker;
 					if (picker != null) {
 						if (picker.square.contains(mouseX, mouseY)) {
+							markInteraction(colorRow.setting);
+							playClick();
 							draggingPicker = PickerPart.SQUARE;
 							applyPicker(colorRow.setting, picker, mouseX, mouseY);
 							return true;
 						}
 						if (picker.hue.contains(mouseX, mouseY)) {
+							markInteraction(colorRow.setting);
+							playClick();
 							draggingPicker = PickerPart.HUE;
 							applyPicker(colorRow.setting, picker, mouseX, mouseY);
 							return true;
 						}
 						if (picker.alpha.contains(mouseX, mouseY)) {
+							markInteraction(colorRow.setting);
+							playClick();
 							draggingPicker = PickerPart.ALPHA;
 							applyPicker(colorRow.setting, picker, mouseX, mouseY);
 							return true;
 						}
 						if (picker.hex.contains(mouseX, mouseY)) {
+							markInteraction(colorRow.setting);
+							playClick();
 							focusedHexSetting = colorRow.setting;
 							hexInput = colorRow.setting.hex();
 							return true;
 						}
 					}
 					if (new Rect(colorRow.bounds.x, colorRow.bounds.y, colorRow.bounds.w, ROW_HEIGHT).contains(mouseX, mouseY)) {
+						markInteraction(colorRow.setting);
+						playClick();
 						expandedColorSetting = expandedColorSetting == colorRow.setting ? null : colorRow.setting;
 						persistView();
 						return true;
@@ -821,6 +1126,8 @@ public class ClickGuiScreen extends Screen {
 				}
 				case NumberRow numberRow -> {
 					if (numberRow.slider.contains(mouseX, mouseY)) {
+						markInteraction(numberRow.setting);
+						playClick();
 						draggingNumberSetting = numberRow.setting;
 						applyNumberSlider(numberRow.setting, numberRow.slider, mouseX);
 						return true;
@@ -828,6 +1135,8 @@ public class ClickGuiScreen extends Screen {
 				}
 				case ToggleRow toggleRow -> {
 					if (toggleRow.bounds.contains(mouseX, mouseY)) {
+						markInteraction(toggleRow.setting);
+						playClick();
 						toggleRow.setting.toggle();
 						persistView();
 						ModConfig.save();
@@ -836,6 +1145,8 @@ public class ClickGuiScreen extends Screen {
 				}
 				case ChoiceRow choiceRow -> {
 					if (choiceRow.bounds.contains(mouseX, mouseY)) {
+						markInteraction(choiceRow.setting);
+						playClick();
 						if (left) choiceRow.setting.selectNext();
 						else choiceRow.setting.selectPrevious();
 						ModConfig.save();
@@ -844,12 +1155,16 @@ public class ClickGuiScreen extends Screen {
 				}
 				case TextRow textRow -> {
 					if (textRow.field.contains(mouseX, mouseY)) {
+						markInteraction(textRow.setting);
+						playClick();
 						focusedTextSetting = textRow.setting;
 						return true;
 					}
 				}
 				case ActionRow actionRow -> {
 					if (actionRow.bounds.contains(mouseX, mouseY)) {
+						markInteraction(actionRow.action);
+						playClick();
 						actionRow.action.onClick().run();
 						return true;
 					}
@@ -1028,10 +1343,29 @@ public class ClickGuiScreen extends Screen {
 		return rows;
 	}
 
+	private static int indexOf(Category category) {
+		Category[] categories = Category.values();
+		for (int i = 0; i < categories.length; i++) {
+			if (categories[i] == category) return i;
+		}
+		return 0;
+	}
+
+	private static float lerp(float from, float to, float progress) {
+		return from + (to - from) * progress;
+	}
+
 	private record Rect(int x, int y, int w, int h) {
 		boolean contains(double px, double py) {
 			return px >= x && px < x + w && py >= y && py < y + h;
 		}
+	}
+
+	private record ViewState(Category category, Module module, int gridScroll, int settingsScroll,
+		ColorSetting expandedColor) {
+	}
+
+	private record NavigationRequest(ViewState view, int direction) {
 	}
 
 	/** The four hit areas of an expanded colour row. */
