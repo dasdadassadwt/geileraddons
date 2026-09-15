@@ -232,11 +232,20 @@ public final class GuiTheme {
 
 	/** A pill-shaped on/off switch, the control that enables a module. */
 	public static void toggleSwitch(GuiGraphicsExtractor graphics, int x, int y, int w, int h, boolean on) {
+		toggleSwitch(graphics, x, y, w, h, on ? 1.0f : 0.0f);
+	}
+
+	/**
+	 * Animated switch variant. The track colour and knob position use the same fraction so a
+	 * setting feels like it physically travels to its new state instead of teleporting there.
+	 */
+	public static void toggleSwitch(GuiGraphicsExtractor graphics, int x, int y, int w, int h, float position) {
+		position = Math.max(0.0f, Math.min(1.0f, position));
 		int radius = h / 2;
-		int track = on ? SWITCH_ON : SWITCH_OFF;
+		int track = lerpColor(SWITCH_OFF, SWITCH_ON, position);
 		roundedRectBordered(graphics, x, y, w, h, radius, track, track, SWITCH_BORDER);
 		int knobSize = h - 4;
-		int knobX = on ? x + w - knobSize - 2 : x + 2;
+		int knobX = Math.round(lerp(x + 2, x + w - knobSize - 2, position));
 		roundedRect(graphics, knobX, y + 2, knobSize, knobSize, knobSize / 2, SWITCH_KNOB, SWITCH_KNOB);
 	}
 
@@ -268,6 +277,10 @@ public final class GuiTheme {
 	private static int withAlphaScale(int color, double scale) {
 		int alpha = (int) Math.round(((color >>> 24) & 0xFF) * scale);
 		return (Math.max(0, Math.min(255, alpha)) << 24) | (color & 0x00FFFFFF);
+	}
+
+	private static float lerp(float from, float to, float fraction) {
+		return from + (to - from) * fraction;
 	}
 
 	public static int lerpColor(int from, int to, float fraction) {
