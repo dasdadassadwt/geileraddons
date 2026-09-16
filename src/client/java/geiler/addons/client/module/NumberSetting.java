@@ -2,6 +2,7 @@ package geiler.addons.client.module;
 
 public final class NumberSetting implements Setting {
 	private final String name;
+	private final String displayName;
 	private final float min;
 	private final float max;
 	/** Whole-number setting (tick counts and the like): snapped on every write, shown without decimals. */
@@ -9,11 +10,21 @@ public final class NumberSetting implements Setting {
 	private float value;
 
 	public NumberSetting(String name, float min, float max, float defaultValue) {
-		this(name, min, max, defaultValue, false);
+		this(name, name, min, max, defaultValue, false);
 	}
 
 	public NumberSetting(String name, float min, float max, float defaultValue, boolean integer) {
+		this(name, name, min, max, defaultValue, integer);
+	}
+
+	public NumberSetting(String name, String displayName, float min, float max, float defaultValue) {
+		this(name, displayName, min, max, defaultValue, false);
+	}
+
+	public NumberSetting(String name, String displayName, float min, float max, float defaultValue,
+		boolean integer) {
 		this.name = name;
+		this.displayName = displayName;
 		this.min = min;
 		this.max = max;
 		this.integer = integer;
@@ -23,6 +34,11 @@ public final class NumberSetting implements Setting {
 	@Override
 	public String name() {
 		return name;
+	}
+
+	@Override
+	public String displayName() {
+		return displayName;
 	}
 
 	public float value() {

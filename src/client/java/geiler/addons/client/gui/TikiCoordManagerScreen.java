@@ -98,7 +98,16 @@ public class TikiCoordManagerScreen extends Screen {
 			renderAddDialog(graphics, mouseX, mouseY);
 		}
 		// Draws the EditBoxes last so they sit on top of the dialog panel.
-		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
+		if (addMode) {
+			Rect dialog = dialogRect();
+			// EditBox extraction is separate from the dialog renderer, so it needs the same clip or
+			// its widgets can escape on a very small framebuffer while the dialog is being resized.
+			graphics.enableScissor(dialog.x, dialog.y, dialog.x + dialog.w, dialog.y + dialog.h);
+			super.extractRenderState(graphics, mouseX, mouseY, partialTick);
+			graphics.disableScissor();
+		} else {
+			super.extractRenderState(graphics, mouseX, mouseY, partialTick);
+		}
 	}
 
 	private void renderList(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
@@ -359,7 +368,8 @@ public class TikiCoordManagerScreen extends Screen {
 	private Rect listViewport() {
 		int top = panelY() + HEADER_HEIGHT;
 		int height = panelHeight() - HEADER_HEIGHT - FOOTER_HEIGHT;
-		return new Rect(panelX() + PADDING, top, panelWidth() - 2 * PADDING, Math.max(1, height));
+		return new Rect(panelX() + PADDING, top, Math.max(1, panelWidth() - 2 * PADDING),
+			Math.max(1, height));
 	}
 
 	private Rect rowRect(int index) {

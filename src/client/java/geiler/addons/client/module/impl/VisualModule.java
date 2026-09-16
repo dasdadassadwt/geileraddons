@@ -42,7 +42,7 @@ public final class VisualModule extends Module {
 		super("Theme", "Colours for the menu and every HUD panel. Pick a preset or build your own.",
 			Category.VISUAL,
 			s.background, s.border, s.accent, s.text, s.muted,
-			s.tracker, s.amethyst, s.midnight, s.forest);
+			s.tracker, s.amethyst, s.midnight, s.forest, s.clickGuiMotion);
 		this.background = s.background;
 		this.border = s.border;
 		this.accent = s.accent;

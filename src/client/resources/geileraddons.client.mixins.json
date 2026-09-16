@@ -3,7 +3,11 @@
 	"package": "geiler.addons.client.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
+		"AbstractContainerMenuMixin",
 		"AbstractContainerScreenMixin",
+		"AbstractContainerScreenInvoker",
+		"ContainerScreenMixin",
+		"ScreenMixin",
 		"ClientPacketListenerMixin",
 		"MinecraftMixin"
 	],

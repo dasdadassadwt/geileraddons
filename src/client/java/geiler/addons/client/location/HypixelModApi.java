@@ -23,18 +23,29 @@ public final class HypixelModApi {
 
 	/** The island named by the latest valid location event, or {@link Island#NONE} if unknown. */
 	public static Island currentIsland() {
-		return ModConfig.hypixelModApi() ? island : Island.NONE;
+		if (!ModConfig.hypixelModApi()) {
+			reset();
+			return Island.NONE;
+		}
+		return island;
 	}
 
 	/** Whether the official API has supplied a location event for the current connection. */
 	public static boolean hasLocation() {
-		return ModConfig.hypixelModApi() && located;
+		if (!ModConfig.hypixelModApi()) {
+			reset();
+			return false;
+		}
+		return located;
 	}
 
 	/** Why the player is not on {@code wanted}, or null if they are. */
 	public static String reasonNotOn(Island wanted) {
+		if (!ModConfig.hypixelModApi()) {
+			reset();
+			return "Island detection is off in the config";
+		}
 		if (island == wanted) return null;
-		if (!ModConfig.hypixelModApi()) return "Island detection is off in the config";
 		if (!located) return "Waiting for the server to name the island";
 		return "Not " + wanted.displayName();
 	}
@@ -45,10 +56,10 @@ public final class HypixelModApi {
 			HypixelModAPI api = HypixelModAPI.getInstance();
 			api.createHandler(ClientboundLocationPacket.class, HypixelModApi::onLocation);
 			api.subscribeToEventPacket(ClientboundLocationPacket.class);
+			ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> reset());
+			ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> reset());
 			initialized = true;
 		}
-		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> reset());
-		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> reset());
 	}
 
 	private static void reset() {

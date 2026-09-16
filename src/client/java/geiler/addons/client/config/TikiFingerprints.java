@@ -16,9 +16,9 @@ import java.util.Set;
  *
  * <p>There is no way to know Torrhus Canyon's terrain ahead of time other than a client that has
  * actually stood there and looked - so rather than ship guessed data, each coordinate's fingerprint
- * is learned the first time its chunk is seen loaded, and kept from then on. Backs
- * {@link geiler.addons.client.location.TorrhusPresence}, which is what actually decides presence
- * from these once several agree.
+ * was learned by older builds the first time its chunk was seen loaded, and kept from then on.
+ * The records remain readable for config compatibility; current Torrhus presence is decided only
+ * by the official Hypixel Mod API.
  *
  * <p>Never overwritten once learned: the ground under a tiki spawn is undecorated map terrain, not
  * something a player can break or place on, so a fingerprint that was ever right stays right. Kept

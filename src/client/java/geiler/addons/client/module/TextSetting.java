@@ -9,12 +9,18 @@ package geiler.addons.client.module;
  */
 public final class TextSetting implements Setting {
 	private final String name;
+	private final String displayName;
 	private final String defaultValue;
 	private final int maxLength;
 	private String value;
 
 	public TextSetting(String name, String defaultValue, int maxLength) {
+		this(name, name, defaultValue, maxLength);
+	}
+
+	public TextSetting(String name, String displayName, String defaultValue, int maxLength) {
 		this.name = name;
+		this.displayName = displayName;
 		this.defaultValue = defaultValue;
 		this.maxLength = maxLength;
 		this.value = defaultValue;
@@ -23,6 +29,11 @@ public final class TextSetting implements Setting {
 	@Override
 	public String name() {
 		return name;
+	}
+
+	@Override
+	public String displayName() {
+		return displayName;
 	}
 
 	public String value() {

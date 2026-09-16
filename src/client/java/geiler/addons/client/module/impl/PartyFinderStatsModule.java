@@ -100,7 +100,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		group(new SettingGroup("Display", settings.compact, settings.showCata, settings.showClass,
 			settings.showClassAverage, settings.showMagicalPower, settings.showSecretAverage,
 			settings.showPersonalBest, settings.showTerminator, settings.showHyperion,
-			settings.showGoldenDragon, settings.showBank), new SettingGroup("Diagnostics", settings.debug));
+			settings.showGoldenDragon, settings.showBank), SettingGroup.debug("Diagnostics", settings.debug));
 	}
 
 	private static final class Settings {
@@ -115,7 +115,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		final BooleanSetting showHyperion = new BooleanSetting("Hyperion", true);
 		final BooleanSetting showGoldenDragon = new BooleanSetting("GDrag", true);
 		final BooleanSetting showBank = new BooleanSetting("Bank", true);
-		final BooleanSetting debug = new BooleanSetting("Debug", false);
+		final BooleanSetting debug = BooleanSetting.debug("Debug", false);
 
 		List<Setting> allSettings() {
 			return List.of(compact, showCata, showClass, showClassAverage, showMagicalPower,

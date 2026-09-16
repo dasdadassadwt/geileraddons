@@ -59,10 +59,14 @@ public final class HudManager {
 		Font font = mc.font;
 		int width = graphics.guiWidth();
 		int height = graphics.guiHeight();
+		// Fractions keep normal placements inside the screen, but a user-sized label can still be
+		// wider than a tiny viewport. Keep every custom HUD element inside the framebuffer as well.
+		graphics.enableScissor(0, 0, width, height);
 		for (HudElement element : elements) {
 			if (!element.visible()) continue;
 			element.render(graphics, font, x(element, font, width), y(element, font, height));
 		}
+		graphics.disableScissor();
 	}
 
 	public static Map<String, float[]> positions() {

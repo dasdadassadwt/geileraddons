@@ -6,20 +6,25 @@ package geiler.addons.client.gui;
  * numbers through its input and rendering paths.
  */
 public enum ClickGuiMotion {
-	NONE("None", 0, 0, 0),
-	REDUCED("Reduced", 140, 180, 0),
-	EXPRESSIVE("Expressive", 280, 360, 28);
+	NONE("None", 0, 0, 0, 0, 0.0f),
+	REDUCED("Reduced", 140, 220, 0, 180, 0.65f),
+	EXPRESSIVE("Expressive", 280, 420, 28, 280, 1.35f);
 
 	private final String settingValue;
 	private final int transitionMillis;
 	private final int lifecycleMillis;
 	private final int cardStaggerMillis;
+	private final int hoverMillis;
+	private final float hoverAmplitude;
 
-	ClickGuiMotion(String settingValue, int transitionMillis, int lifecycleMillis, int cardStaggerMillis) {
+	ClickGuiMotion(String settingValue, int transitionMillis, int lifecycleMillis, int cardStaggerMillis,
+		int hoverMillis, float hoverAmplitude) {
 		this.settingValue = settingValue;
 		this.transitionMillis = transitionMillis;
 		this.lifecycleMillis = lifecycleMillis;
 		this.cardStaggerMillis = cardStaggerMillis;
+		this.hoverMillis = hoverMillis;
+		this.hoverAmplitude = hoverAmplitude;
 	}
 
 	public int transitionMillis() {
@@ -32,6 +37,14 @@ public enum ClickGuiMotion {
 
 	public int cardStaggerMillis() {
 		return cardStaggerMillis;
+	}
+
+	public int hoverMillis() {
+		return hoverMillis;
+	}
+
+	public float hoverAmplitude() {
+		return hoverAmplitude;
 	}
 
 	public boolean animated() {

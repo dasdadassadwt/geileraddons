@@ -55,7 +55,7 @@ public final class AutoKickModule extends Module {
 		policies = settings.policies;
 		debug = settings.debug;
 		group(
-			new SettingGroup("Diagnostics", settings.debug),
+			SettingGroup.debug("Diagnostics", settings.debug),
 			new SettingGroup("Normal")
 				.containing(settings.normal.stream().map(FloorPolicy::group).toArray(SettingGroup[]::new)),
 			new SettingGroup("Master")
@@ -242,7 +242,7 @@ public final class AutoKickModule extends Module {
 	}
 
 	private static final class Settings {
-		final BooleanSetting debug = new BooleanSetting("Debug", false);
+		final BooleanSetting debug = BooleanSetting.debug("Debug", false);
 		final EnumMap<DungeonFloor, FloorPolicy> policies = new EnumMap<>(DungeonFloor.class);
 		final List<FloorPolicy> normal = new ArrayList<>();
 		final List<FloorPolicy> master = new ArrayList<>();
@@ -283,20 +283,20 @@ public final class AutoKickModule extends Module {
 		FloorPolicy(DungeonFloor floor) {
 			this.floor = floor;
 			String prefix = floor.displayName() + " ";
-			autoKick = new BooleanSetting(prefix + "Auto Kick", false);
-			askBeforeKick = new BooleanSetting(prefix + "Ask Before", false);
-			dupeCheck = new BooleanSetting(prefix + "Dupe", false);
-			minCata = new TextSetting(prefix + "Cata", "0", 6);
-			minClass = new TextSetting(prefix + "Class", "0", 6);
-			minClassAverage = new TextSetting(prefix + "Class Avg", "0", 8);
-			minSecrets = new TextSetting(prefix + "Secrets", "0", 12);
-			minSecretAverage = new TextSetting(prefix + "Secret Avg", "0", 8);
-			minMagicalPower = new TextSetting(prefix + "MP", "0", 8);
-			personalBestLimit = new TextSetting(prefix + "Minimum PB", "0", 8);
-			minBank = new TextSetting(prefix + "Bank", "0", 14);
-			terminator = new BooleanSetting(prefix + "Terminator", false);
-			hyperion = new BooleanSetting(prefix + "Hyperion", false);
-			goldenDragon = new BooleanSetting(prefix + "GDrag", false);
+			autoKick = new BooleanSetting(prefix + "Auto Kick", "Auto Kick", false);
+			askBeforeKick = new BooleanSetting(prefix + "Ask Before", "Ask Before", false);
+			dupeCheck = new BooleanSetting(prefix + "Dupe", "Dupe", false);
+			minCata = new TextSetting(prefix + "Cata", "Min Cata Level", "0", 6);
+			minClass = new TextSetting(prefix + "Class", "Min Class Level", "0", 6);
+			minClassAverage = new TextSetting(prefix + "Class Avg", "Min Class Avg", "0", 8);
+			minSecrets = new TextSetting(prefix + "Secrets", "Min Secrets", "0", 12);
+			minSecretAverage = new TextSetting(prefix + "Secret Avg", "Min Secret Avg", "0", 8);
+			minMagicalPower = new TextSetting(prefix + "MP", "Min MP", "0", 8);
+			personalBestLimit = new TextSetting(prefix + "Minimum PB", "Minimum PB", "0", 8);
+			minBank = new TextSetting(prefix + "Bank", "Min Bank", "0", 14);
+			terminator = new BooleanSetting(prefix + "Terminator", "Terminator", false);
+			hyperion = new BooleanSetting(prefix + "Hyperion", "Hyperion", false);
+			goldenDragon = new BooleanSetting(prefix + "GDrag", "GDrag", false);
 		}
 
 		List<Setting> settings() {

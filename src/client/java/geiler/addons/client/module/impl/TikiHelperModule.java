@@ -193,7 +193,7 @@ public final class TikiHelperModule extends Module {
 			new SettingGroup("Solver", s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range,
 				s.labelHeight, s.textSize, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
 				s.showFuturePlan, s.futureColor),
-			new SettingGroup("Debug Logging", s.debugLogging, s.trackRadius, s.trackSounds,
+			SettingGroup.debug("Debug Logging", s.debugLogging, s.trackRadius, s.trackSounds,
 				s.trackChat, s.verifySolver, s.echoToChat),
 			new SettingGroup("Coordinates", s.manageCoords)
 		);
@@ -203,7 +203,7 @@ public final class TikiHelperModule extends Module {
 	private static final class Settings {
 		final BooleanSetting waypoints = new BooleanSetting("Waypoints", true);
 		final BooleanSetting solver = new BooleanSetting("Solver", true);
-		final BooleanSetting debugLogging = new BooleanSetting("Debug Logging", false);
+		final BooleanSetting debugLogging = BooleanSetting.debug("Debug Logging", false);
 
 		final ColorSetting validColor = new ColorSetting("Valid Color", 0, 255, 0, 128);
 		final ColorSetting invalidColor = new ColorSetting("Invalid Color", 255, 0, 0, 128);

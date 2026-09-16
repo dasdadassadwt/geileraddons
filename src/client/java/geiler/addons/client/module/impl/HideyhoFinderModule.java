@@ -89,7 +89,7 @@ public final class HideyhoFinderModule extends Module {
 		/** Ticks between sweeps; the default is one a second. */
 		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 20, true);
 		/** Boxes every fake player instead, which is how to tell a miss from a bad skin match. */
-		final BooleanSetting debugMode = new BooleanSetting("Debug Mode", false);
+		final BooleanSetting debugMode = BooleanSetting.debug("Debug Mode", false);
 	}
 
 	// ---- lifecycle ----------------------------------------------------------------------

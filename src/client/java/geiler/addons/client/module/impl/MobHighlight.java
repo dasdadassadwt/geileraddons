@@ -106,14 +106,13 @@ public final class MobHighlight {
 	 * Whether this highlight is wanted on the island the player is currently on.
 	 *
 	 * <p>Islands start switched off, so a new highlight does nothing until it is told where it
-	 * belongs. The filter only applies once there is an island to apply it to, though: with no
-	 * answer from the Mod API - single player, a server that isn't Hypixel, island detection
-	 * switched off in the config, or simply the seconds before the handshake lands - there is
-	 * nothing to match against, and refusing to draw would make the module look broken rather
-	 * than filtered.
+	 * belongs. The filter also fails closed until the shared API has supplied a location: an
+	 * unknown or non-SkyBlock connection must not accidentally activate an island-specific
+	 * highlight while a join or location transition is still settling.
 	 */
 	boolean appliesOn(Island current) {
-		if (!HypixelModApi.hasLocation()) return true;
+		if (!HypixelModApi.hasLocation() || current == null
+			|| current == Island.NONE || current == Island.OTHER) return false;
 		BooleanSetting setting = islands.get(current);
 		return setting != null && setting.value();
 	}

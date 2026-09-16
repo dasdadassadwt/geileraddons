@@ -151,7 +151,8 @@ public final class ModConfig {
 				}
 			}
 			for (ChoiceSetting setting : module.choiceSettings()) {
-				setting.setValue(settingValue(data.choices, module, setting.name()));
+				String value = settingValue(data.choices, module, setting.name());
+				if (value != null) setting.setValue(value);
 			}
 			for (TextSetting setting : module.textSettings()) {
 				String value = settingValue(data.texts, module, setting.name());
@@ -229,7 +230,9 @@ public final class ModConfig {
 				data.numbers.put(settingKey(module, setting.name()), setting.value());
 			}
 			for (BooleanSetting setting : module.booleanSettings()) {
-				data.toggles.put(settingKey(module, setting.name()), setting.value());
+				// Debug-only toggles expose an effective false while the global gate is off. Persist the
+				// raw user choice so disabling diagnostics never erases what re-enabling should restore.
+				data.toggles.put(settingKey(module, setting.name()), setting.rawValue());
 			}
 			for (ChoiceSetting setting : module.choiceSettings()) {
 				data.choices.put(settingKey(module, setting.name()), setting.value());
@@ -258,17 +261,17 @@ public final class ModConfig {
 		for (MobHighlight highlight : MobHighlightModule.INSTANCE.highlights()) {
 			MobHighlightData saved = new MobHighlightData();
 			saved.id = highlight.id();
-			saved.enabled = highlight.enabled().value();
-			saved.matchName = highlight.matchName().value();
+			saved.enabled = highlight.enabled().rawValue();
+			saved.matchName = highlight.matchName().rawValue();
 			saved.matchText = highlight.matchText().value();
 			saved.outlineColor = rgba(highlight.outlineColor());
 			saved.fillColor = rgba(highlight.fillColor());
-			saved.depthCheck = highlight.depthCheck().value();
+			saved.depthCheck = highlight.depthCheck().rawValue();
 			saved.scanInterval = highlight.scanInterval().value();
 			saved.displayName = highlight.displayName().value();
 			saved.islands = new LinkedHashMap<>();
 			for (Map.Entry<Island, BooleanSetting> island : highlight.islands().entrySet()) {
-				saved.islands.put(island.getKey().name(), island.getValue().value());
+				saved.islands.put(island.getKey().name(), island.getValue().rawValue());
 			}
 			data.mobHighlights.add(saved);
 		}

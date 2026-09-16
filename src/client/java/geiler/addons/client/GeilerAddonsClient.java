@@ -11,6 +11,7 @@ import geiler.addons.client.module.impl.HideyhoFinderModule;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.MobHighlightModule;
 import geiler.addons.client.module.impl.AutoKickModule;
+import geiler.addons.client.module.impl.DebugModule;
 import geiler.addons.client.module.impl.PartyFinderStatsModule;
 import geiler.addons.client.party.PartyListBackend;
 import geiler.addons.client.module.impl.SafariFloorDropsModule;
@@ -19,6 +20,7 @@ import geiler.addons.client.module.impl.TikiHelperModule;
 import geiler.addons.client.module.impl.TreeNotifierModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
 import geiler.addons.client.module.impl.VisualModule;
+import geiler.addons.client.module.impl.ExperimentSolverModule;
 import geiler.addons.client.update.UpdateChecker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
@@ -30,7 +32,10 @@ import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 public class GeilerAddonsClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
+		// Register first so ModConfig can restore the global gate before loading module state.
+		ModuleManager.register(DebugModule.INSTANCE);
 		ModuleManager.register(I4HelperModule.INSTANCE);
+		ModuleManager.register(ExperimentSolverModule.INSTANCE);
 		ModuleManager.register(AutoKickModule.INSTANCE);
 		ModuleManager.register(PartyFinderStatsModule.INSTANCE);
 		ModuleManager.register(TikiHelperModule.INSTANCE);
@@ -70,6 +75,7 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			TorrhusPresence.tick();
 			UpdateChecker.tick();
 			I4HelperModule.INSTANCE.tick();
+			ExperimentSolverModule.INSTANCE.tick();
 			TikiHelperModule.INSTANCE.tick();
 			SafariFloorDropsModule.INSTANCE.tick();
 			HideyhoFinderModule.INSTANCE.tick();

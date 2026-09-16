@@ -6,6 +6,7 @@ import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ChoiceSetting;
 import geiler.addons.client.module.ColorSetting;
+import geiler.addons.client.module.DebugState;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.ModuleManager;
@@ -30,6 +31,7 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -122,14 +124,14 @@ public class ClickGuiScreen extends Screen {
 	private Object lastInteraction;
 	private long lastInteractionNanos;
 	private final Map<Object, TogglePulse> togglePulses = new IdentityHashMap<>();
+	/** Hover motion is edge-triggered so a cursor resting on a card does not make it vibrate. */
+	private final Map<Object, Boolean> hoverStates = new IdentityHashMap<>();
+	private final Map<Object, HoverPulse> hoverPulses = new IdentityHashMap<>();
 
 	private ColorSetting expansionFrom;
 	private ColorSetting expansionTo;
 	private long expansionStartedNanos;
-	private List<Row> settingsLayoutFrom;
-	private List<Row> settingsLayoutTo;
-	private Module settingsLayoutModule;
-	private long settingsLayoutStartedNanos;
+	private SettingsLayoutTransition settingsLayoutTransition;
 
 	public ClickGuiScreen() {
 		super(Component.literal("GeilerAddons"));
@@ -209,12 +211,10 @@ public class ClickGuiScreen extends Screen {
 			expansionFrom = null;
 			expansionTo = null;
 		}
-		if (settingsLayoutFrom != null
+		if (settingsLayoutTransition != null
 			&& (motion == ClickGuiMotion.NONE
-				|| elapsedMillis(settingsLayoutStartedNanos, now) >= motion.transitionMillis())) {
-			settingsLayoutFrom = null;
-			settingsLayoutTo = null;
-			settingsLayoutModule = null;
+				|| elapsedMillis(settingsLayoutTransition.startedNanos(), now) >= motion.transitionMillis())) {
+			settingsLayoutTransition = null;
 		}
 	}
 
@@ -310,6 +310,28 @@ public class ClickGuiScreen extends Screen {
 		return 1.0f - motion.ease(elapsedMillis(lastInteractionNanos, now) / 180.0f);
 	}
 
+	private void updateHoverPulse(Object target, boolean hovered, long now, ClickGuiMotion motion) {
+		boolean wasHovered = Boolean.TRUE.equals(hoverStates.put(target, hovered));
+		if (motion == ClickGuiMotion.NONE || !hovered) {
+			hoverPulses.remove(target);
+			return;
+		}
+		if (!wasHovered) hoverPulses.put(target, new HoverPulse(now));
+	}
+
+	private float hoverJiggle(Object target, long now, ClickGuiMotion motion) {
+		if (motion == ClickGuiMotion.NONE) return 0.0f;
+		HoverPulse pulse = hoverPulses.get(target);
+		if (pulse == null) return 0.0f;
+		float progress = elapsedMillis(pulse.startedNanos, now) / (float) motion.hoverMillis();
+		if (progress >= 1.0f) {
+			hoverPulses.remove(target);
+			return 0.0f;
+		}
+		float envelope = 1.0f - progress;
+		return (float) (Math.sin(progress * Math.PI * 6.0) * envelope * envelope * motion.hoverAmplitude());
+	}
+
 	private void animateToggle(Object target, boolean from, boolean to) {
 		if (from == to || motion() == ClickGuiMotion.NONE) {
 			togglePulses.remove(target);
@@ -345,20 +367,16 @@ public class ClickGuiScreen extends Screen {
 
 	private void startSettingsLayoutTransition(Module module, List<Row> from, List<Row> to) {
 		if (motion() == ClickGuiMotion.NONE || from.equals(to)) {
-			settingsLayoutFrom = null;
-			settingsLayoutTo = null;
-			settingsLayoutModule = null;
+			settingsLayoutTransition = null;
 			return;
 		}
-		settingsLayoutModule = module;
-		settingsLayoutFrom = from;
-		settingsLayoutTo = to;
-		settingsLayoutStartedNanos = System.nanoTime();
+		settingsLayoutTransition = SettingsLayoutTransition.create(module, from, to, System.nanoTime());
 	}
 
 	private float settingsLayoutProgress(long now, ClickGuiMotion motion) {
-		if (settingsLayoutFrom == null || motion == ClickGuiMotion.NONE) return 1.0f;
-		return motion.ease(elapsedMillis(settingsLayoutStartedNanos, now) / (float) motion.transitionMillis());
+		if (settingsLayoutTransition == null || motion == ClickGuiMotion.NONE) return 1.0f;
+		return motion.ease(elapsedMillis(settingsLayoutTransition.startedNanos(), now)
+			/ (float) motion.transitionMillis());
 	}
 
 	private float expansionProgress(long now, ClickGuiMotion motion) {
@@ -393,12 +411,16 @@ public class ClickGuiScreen extends Screen {
 		if (byWidth >= MIN_PANEL_WIDTH && byHeight >= MIN_PANEL_WIDTH) {
 			width = Math.max(MIN_PANEL_WIDTH, width);
 		}
-		// Even, so panelHeight() is exactly half and the 2:1 ratio holds after integer division.
-		return Math.max(2, Math.min(width, this.width) & ~1);
+		// Even, so panelHeight() is exactly half and the 2:1 ratio holds on real screens. Keep a
+		// one-pixel fallback for synthetic/tiny viewports used by resize paths instead of creating a
+		// panel that extends beyond the actual framebuffer.
+		int bounded = Math.max(1, Math.min(width, Math.max(1, this.width)));
+		if (bounded < 2) return bounded;
+		return Math.max(2, bounded & ~1);
 	}
 
 	private int panelHeight() {
-		return panelWidth() / 2;
+		return Math.max(1, Math.min(Math.max(1, this.height), panelWidth() / 2));
 	}
 
 	private int categoryWidth() {
@@ -442,7 +464,8 @@ public class ClickGuiScreen extends Screen {
 
 		float lifecycle = lifecycleProgress(now, motion);
 		float visible = closing ? 1.0f - lifecycle : lifecycle;
-		graphics.fill(0, 0, this.width, this.height, withOpacity(0xC0000000, visible * 0.58f));
+		float shade = motion == ClickGuiMotion.EXPRESSIVE ? 0.78f : 0.66f;
+		graphics.fill(0, 0, this.width, this.height, withOpacity(0xC0000000, visible * shade));
 
 		int panelX = panelX();
 		int panelY = panelY();
@@ -455,10 +478,16 @@ public class ClickGuiScreen extends Screen {
 
 		var pose = graphics.pose();
 		pose.pushMatrix();
-		float scale = motion == ClickGuiMotion.NONE ? 1.0f
-			: closing
-				? 1.0f - 0.055f * motion.ease(lifecycle)
-				: 0.945f + 0.055f * motion.spring(lifecycle);
+		float scale;
+		if (motion == ClickGuiMotion.NONE) {
+			scale = 1.0f;
+		} else if (motion == ClickGuiMotion.REDUCED) {
+			float progress = closing ? 1.0f - lifecycle : lifecycle;
+			scale = 0.90f + 0.10f * progress;
+		} else {
+			float progress = motion.spring(lifecycle);
+			scale = closing ? 0.72f + 0.28f * (1.0f - progress) : 0.72f + 0.28f * progress;
+		}
 		pose.translate(this.width / 2.0f, this.height / 2.0f);
 		pose.scale(scale, scale);
 		pose.translate(-this.width / 2.0f, -this.height / 2.0f);
@@ -480,11 +509,21 @@ public class ClickGuiScreen extends Screen {
 		renderCategories(graphics, font, mouseX, mouseY, panelX, panelY, now, motion);
 		renderView(graphics, font, mouseX, mouseY, rightX, panelY, now, motion, lifecycle);
 		graphics.disableScissor();
+		if (visible < 1.0f && motion != ClickGuiMotion.NONE) {
+			// A dark veil over the panel makes the zoom read as a fade as well. It is removed as the
+			// panel settles in and applied during close while the panel shrinks away.
+			float fade = (1.0f - visible) * (motion == ClickGuiMotion.EXPRESSIVE ? 0.42f : 0.20f);
+			roundedRect(graphics, panelX, panelY, panelWidth, panelHeight, RADIUS,
+				withOpacity(0xFF000000, fade));
+		}
 		pose.popMatrix();
 	}
 
 	private void renderCategories(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
 		int panelX, int panelY, long now, ClickGuiMotion motion) {
+		// Category labels and their hover jiggle belong to this column only. The outer panel clip
+		// contains the whole menu, so establish the narrower clip before drawing this side.
+		graphics.enableScissor(panelX, panelY, panelX + categoryWidth(), panelY + panelHeight());
 		List<Rect> categoryRows = categoryRows(panelX, panelY);
 		Category[] categories = Category.values();
 		boolean moving = transitionFrom != null && transitionFrom.category != selectedCategory;
@@ -500,28 +539,36 @@ public class ClickGuiScreen extends Screen {
 			Category category = categories[i];
 			boolean selected = category == selectedCategory;
 			boolean hovered = row.contains(mouseX, mouseY);
+			updateHoverPulse(category, hovered, now, motion);
+			var pose = graphics.pose();
+			pose.pushMatrix();
+			pose.translate(hoverJiggle(category, now, motion), 0.0f);
 			if (!moving && selected) {
 				roundedRect(graphics, row.x + 5, row.y, row.w - 10, row.h - 2, RADIUS_SMALL, CATEGORY_SELECTED);
 			} else if (hovered) {
 				roundedRect(graphics, row.x + 5, row.y, row.w - 10, row.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 			}
 			int color = selected ? TEXT_PRIMARY : TEXT_SECONDARY;
-			graphics.text(font, category.displayName(), row.x + 14, row.y + (row.h - TEXT_HEIGHT) / 2, color);
+			graphics.text(font, textFit(font, category.displayName(), Math.max(1, row.w - 20)),
+				row.x + 14, row.y + (row.h - TEXT_HEIGHT) / 2, color);
+			pose.popMatrix();
 		}
 
 		Rect move = moveElementsRect(panelX, panelY);
 		boolean moveHovered = move.contains(mouseX, mouseY);
 		roundedRect(graphics, move.x, move.y, move.w, move.h, RADIUS_SMALL, moveHovered ? BUTTON_HOVER : BUTTON_BG);
-		graphics.centeredText(font, "Move Elements", move.x + move.w / 2, move.y + (move.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+		graphics.centeredText(font, textFit(font, "Move Elements", Math.max(1, move.w - 6)),
+			move.x + move.w / 2, move.y + (move.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 
 		// The update notice sits above the button. Clipped to the panel rather than left to
 		// spill across the module list, since this column is narrow on a small screen.
 		String notice = UpdateChecker.bannerText();
 		if (notice != null) {
-			int available = categoryWidth() - 28;
-			String text = font.width(notice) <= available ? notice : font.plainSubstrByWidth(notice, available);
+			int available = Math.max(1, categoryWidth() - 28);
+			String text = textFit(font, notice, available);
 			graphics.text(font, text, panelX + 14, move.y - 4 - TEXT_HEIGHT, TEXT_WARN);
 		}
+		graphics.disableScissor();
 	}
 
 	private Rect moveElementsRect(int panelX, int panelY) {
@@ -617,9 +664,16 @@ public class ClickGuiScreen extends Screen {
 		Rect bounds = card.bounds;
 		boolean enabled = module.isEnabled();
 		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
+		updateHoverPulse(module, hovered, now, motion);
+		var pose = graphics.pose();
+		pose.pushMatrix();
+		pose.translate(hoverJiggle(module, now, motion), 0.0f);
 
-		int background = enabled ? CARD_BG_ENABLED : (hovered ? CARD_BG_HOVER : CARD_BG);
-		int border = enabled ? CARD_BORDER_ENABLED : CARD_BORDER;
+		float togglePosition = togglePosition(module, enabled, now, motion);
+		int background = lerpColor(CARD_BG, CARD_BG_ENABLED, togglePosition);
+		int hoverBackground = lerpColor(CARD_BG_HOVER, CARD_BG_ENABLED, togglePosition);
+		if (hovered) background = lerpColor(background, hoverBackground, 0.85f);
+		int border = lerpColor(CARD_BORDER, CARD_BORDER_ENABLED, togglePosition);
 		float pulse = interactionPulse(module, now, motion);
 		if (pulse > 0.0f) {
 			background = lerpColor(background, CARD_BG_HOVER, pulse * 0.65f);
@@ -649,12 +703,8 @@ public class ClickGuiScreen extends Screen {
 
 		Rect toggle = switchRect(bounds);
 		toggleSwitch(graphics, toggle.x, toggle.y, toggle.w, toggle.h,
-			togglePosition(module, enabled, now, motion));
-
-		if (module.hasSettings()) {
-			graphics.text(font, "⚙", bounds.x + bounds.w - CARD_INSET - 6,
-				bounds.y + bounds.h - CARD_INSET - TEXT_HEIGHT, TEXT_MUTED);
-		}
+			togglePosition);
+		pose.popMatrix();
 	}
 
 	private Rect switchRect(Rect card) {
@@ -733,7 +783,8 @@ public class ClickGuiScreen extends Screen {
 		if (hoverable && header.contains(mouseX, mouseY)) {
 			roundedRect(graphics, header.x + 5, header.y, header.w - 10, header.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, "< " + module.name(), header.x + 14, header.y + (header.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+		graphics.text(font, textFit(font, "< " + module.name(), Math.max(1, header.w - 28)),
+			header.x + 14, header.y + (header.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 
 		Rect viewport = settingsViewport(x, y);
 		boolean insideViewport = hoverable && viewport.contains(mouseX, mouseY);
@@ -742,17 +793,10 @@ public class ClickGuiScreen extends Screen {
 
 		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
 		renderPreview(graphics, font, module, viewport, appliedScroll);
-		if (settingsLayoutFrom != null && settingsLayoutModule == module && transitionFrom == null) {
+		if (settingsLayoutTransition != null && settingsLayoutTransition.module() == module && transitionFrom == null) {
 			float progress = settingsLayoutProgress(now, motion);
-			var pose = graphics.pose();
-			pose.pushMatrix();
-			pose.translate(0.0f, -8.0f * progress);
-			renderSettingRows(graphics, font, mouseX, mouseY, settingsLayoutFrom, module, false, now, motion);
-			pose.popMatrix();
-			pose.pushMatrix();
-			pose.translate(0.0f, 8.0f * (1.0f - progress));
-			renderSettingRows(graphics, font, mouseX, mouseY, settingsLayoutTo, module, insideViewport, now, motion);
-			pose.popMatrix();
+			renderSettingsLayoutTransition(graphics, font, mouseX, mouseY,
+				settingsLayoutTransition, viewport, progress, now, motion);
 		} else {
 			renderSettingRows(graphics, font, mouseX, mouseY, rows, module, insideViewport, now, motion);
 		}
@@ -764,16 +808,120 @@ public class ClickGuiScreen extends Screen {
 	private void renderSettingRows(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
 		List<Row> rows, Module module, boolean hoverable, long now, ClickGuiMotion motion) {
 		for (Row row : rows) {
-			switch (row) {
-				case GroupRow groupRow -> renderGroupRow(graphics, font, mouseX, mouseY, groupRow, module, hoverable, now, motion);
-				case ColorRow colorRow -> renderColorRow(graphics, font, mouseX, mouseY, colorRow, hoverable, now, motion);
-				case NumberRow numberRow -> renderNumberRow(graphics, font, numberRow, now, motion);
-				case ToggleRow toggleRow -> renderToggleRow(graphics, font, mouseX, mouseY, toggleRow, hoverable, now, motion);
-				case ChoiceRow choiceRow -> renderChoiceRow(graphics, font, mouseX, mouseY, choiceRow, hoverable, now, motion);
-				case TextRow textRow -> renderTextRow(graphics, font, textRow, now, motion);
-				case ActionRow actionRow -> renderActionRow(graphics, font, mouseX, mouseY, actionRow, hoverable, now, motion);
-			}
+			renderSettingRow(graphics, font, mouseX, mouseY, row, module, hoverable, now, motion);
 		}
+	}
+
+	/**
+	 * Renders one row per setting identity while a group changes shape. Shared rows move between
+	 * their old and new bounds; rows introduced or removed by the group are revealed through one
+	 * bounded window. Keeping the identity in one transition entry prevents the old/new snapshot
+	 * pair from ever being painted as two complete lists on top of each other.
+	 */
+	private void renderSettingsLayoutTransition(GuiGraphicsExtractor graphics, Font font, int mouseX,
+		int mouseY, SettingsLayoutTransition transition, Rect viewport, float progress, long now,
+		ClickGuiMotion motion) {
+		List<RowTransition> rows = new ArrayList<>(transition.rows());
+		rows.sort(Comparator.comparingInt((RowTransition row) -> transitionBounds(row, progress).y)
+			.thenComparingInt(RowTransition::order));
+		for (RowTransition row : rows) {
+			Rect bounds = transitionBounds(row, progress);
+			Row source = transitionSource(row, progress);
+			Row rendered = withBounds(source, bounds);
+			Rect reveal = transitionReveal(row, transition, progress);
+			if (reveal == null) {
+				renderSettingRow(graphics, font, mouseX, mouseY, rendered, transition.module(), false, now, motion);
+				continue;
+			}
+
+			Rect clip = intersection(viewport, reveal);
+			if (clip == null || clip.w <= 0 || clip.h <= 0) continue;
+			graphics.enableScissor(clip.x, clip.y, clip.x + clip.w, clip.y + clip.h);
+			renderSettingRow(graphics, font, mouseX, mouseY, rendered, transition.module(), false, now, motion);
+			graphics.disableScissor();
+		}
+	}
+
+	private void renderSettingRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		Row row, Module module, boolean hoverable, long now, ClickGuiMotion motion) {
+		switch (row) {
+			case GroupRow groupRow -> renderGroupRow(graphics, font, mouseX, mouseY, groupRow, module, hoverable, now, motion);
+			case ColorRow colorRow -> renderColorRow(graphics, font, mouseX, mouseY, colorRow, hoverable, now, motion);
+			case NumberRow numberRow -> renderNumberRow(graphics, font, numberRow, now, motion);
+			case ToggleRow toggleRow -> renderToggleRow(graphics, font, mouseX, mouseY, toggleRow, hoverable, now, motion);
+			case ChoiceRow choiceRow -> renderChoiceRow(graphics, font, mouseX, mouseY, choiceRow, hoverable, now, motion);
+			case TextRow textRow -> renderTextRow(graphics, font, textRow, now, motion);
+			case ActionRow actionRow -> renderActionRow(graphics, font, mouseX, mouseY, actionRow, hoverable, now, motion);
+		}
+	}
+
+	private Row transitionSource(RowTransition transition, float progress) {
+		if (transition.from() == null) return transition.to();
+		if (transition.to() == null) return transition.from();
+		return progress < 0.5f ? transition.from() : transition.to();
+	}
+
+	private Rect transitionBounds(RowTransition transition, float progress) {
+		Rect from = transition.from() == null ? transition.to().bounds() : transition.from().bounds();
+		Rect to = transition.to() == null ? transition.from().bounds() : transition.to().bounds();
+		return new Rect(
+			Math.round(lerp(from.x, to.x, progress)),
+			Math.round(lerp(from.y, to.y, progress)),
+			Math.max(1, Math.round(lerp(from.w, to.w, progress))),
+			Math.max(1, Math.round(lerp(from.h, to.h, progress))));
+	}
+
+	private Rect transitionReveal(RowTransition row, SettingsLayoutTransition transition, float progress) {
+		if (row.from() != null && row.to() == null && transition.fromReveal() != null) {
+			Rect bounds = transition.fromReveal();
+			return new Rect(bounds.x, bounds.y, bounds.w,
+				Math.max(0, Math.round(bounds.h * (1.0f - progress))));
+		}
+		if (row.from() == null && row.to() != null && transition.toReveal() != null) {
+			Rect bounds = transition.toReveal();
+			return new Rect(bounds.x, bounds.y, bounds.w,
+				Math.max(0, Math.round(bounds.h * progress)));
+		}
+		return null;
+	}
+
+	/** Rebuilds a row's secondary hit geometry after its animated bounds move. */
+	private Row withBounds(Row row, Rect bounds) {
+		Rect original = row.bounds();
+		int dx = bounds.x - original.x;
+		int dy = bounds.y - original.y;
+		return switch (row) {
+			case GroupRow groupRow -> new GroupRow(groupRow.group, bounds,
+				translateRect(groupRow.toggle, dx, dy), groupRow.depth, groupRow.collapsed);
+			case ColorRow colorRow -> new ColorRow(colorRow.setting, bounds,
+				translatePicker(colorRow.picker, dx, dy));
+			case NumberRow numberRow -> new NumberRow(numberRow.setting, bounds,
+				translateRect(numberRow.slider, dx, dy));
+			case ToggleRow toggleRow -> new ToggleRow(toggleRow.setting, bounds);
+			case ChoiceRow choiceRow -> new ChoiceRow(choiceRow.setting, bounds,
+				translateRect(choiceRow.field, dx, dy));
+			case TextRow textRow -> new TextRow(textRow.setting, bounds,
+				translateRect(textRow.field, dx, dy));
+			case ActionRow actionRow -> new ActionRow(actionRow.action, bounds);
+		};
+	}
+
+	private static Rect translateRect(Rect rect, int dx, int dy) {
+		return rect == null ? null : new Rect(rect.x + dx, rect.y + dy, rect.w, rect.h);
+	}
+
+	private static Picker translatePicker(Picker picker, int dx, int dy) {
+		if (picker == null) return null;
+		return new Picker(translateRect(picker.square, dx, dy), translateRect(picker.hue, dx, dy),
+			translateRect(picker.alpha, dx, dy), translateRect(picker.hex, dx, dy));
+	}
+
+	private static Rect intersection(Rect first, Rect second) {
+		int left = Math.max(first.x, second.x);
+		int top = Math.max(first.y, second.y);
+		int right = Math.min(first.x + first.w, second.x + second.w);
+		int bottom = Math.min(first.y + first.h, second.y + second.h);
+		return right <= left || bottom <= top ? null : new Rect(left, top, right - left, bottom - top);
 	}
 
 	private void renderPreview(GuiGraphicsExtractor graphics, Font font, Module module, Rect viewport,
@@ -832,7 +980,7 @@ public class ClickGuiScreen extends Screen {
 			int highlight = hovered ? CATEGORY_HOVER : withOpacity(PANEL_HIGHLIGHT, pulse * 0.35f);
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, ROW_HEIGHT - 2, RADIUS_SMALL, highlight);
 		}
-		graphics.text(font, textFit(font, setting.name(), bounds.w - VALUE_GUTTER - 28),
+		graphics.text(font, textFit(font, setting.displayName(), bounds.w - VALUE_GUTTER - 28),
 			bounds.x + 16, bounds.y + (ROW_HEIGHT - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		int swatchSize = 12;
@@ -849,10 +997,12 @@ public class ClickGuiScreen extends Screen {
 		if (revealHeight <= 0) return;
 		var pose = graphics.pose();
 		pose.pushMatrix();
-		if (motion == ClickGuiMotion.EXPRESSIVE && reveal < 1.0f) pose.translate(0.0f, (1.0f - reveal) * 7.0f);
+		int translation = motion == ClickGuiMotion.EXPRESSIVE && reveal < 1.0f
+			? Math.round((1.0f - reveal) * 7.0f) : 0;
+		if (translation != 0) pose.translate(0.0f, translation);
 		// Capture the reveal clip after the animated translation so the clip and picker move together.
-		graphics.enableScissor(colorRow.bounds.x, picker.square.y, colorRow.bounds.x + colorRow.bounds.w,
-			picker.square.y + revealHeight);
+		graphics.enableScissor(colorRow.bounds.x, picker.square.y + translation,
+			colorRow.bounds.x + colorRow.bounds.w, picker.square.y + translation + revealHeight);
 		renderSaturationSquare(graphics, picker.square, setting);
 		renderHueBar(graphics, picker.hue, setting);
 		renderAlphaBar(graphics, picker.alpha, setting);
@@ -958,7 +1108,7 @@ public class ClickGuiScreen extends Screen {
 
 	private void renderNumberRow(GuiGraphicsExtractor graphics, Font font, NumberRow numberRow,
 		long now, ClickGuiMotion motion) {
-		graphics.text(font, textFit(font, numberRow.setting.name(), numberRow.bounds.w - VALUE_GUTTER - 28),
+		graphics.text(font, textFit(font, numberRow.setting.displayName(), numberRow.bounds.w - VALUE_GUTTER - 28),
 			numberRow.bounds.x + 16, numberRow.bounds.y + 1, TEXT_SECONDARY);
 		Rect slider = numberRow.slider;
 		float pulse = interactionPulse(numberRow.setting, now, motion);
@@ -981,7 +1131,7 @@ public class ClickGuiScreen extends Screen {
 			int highlight = hovered ? CATEGORY_HOVER : withOpacity(PANEL_HIGHLIGHT, pulse * 0.35f);
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, bounds.h - 2, RADIUS_SMALL, highlight);
 		}
-		graphics.text(font, textFit(font, toggleRow.setting.name(), bounds.w - SWITCH_WIDTH - 36),
+		graphics.text(font, textFit(font, toggleRow.setting.displayName(), bounds.w - SWITCH_WIDTH - 36),
 			bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		int switchX = bounds.x + bounds.w - SWITCH_WIDTH - 14;
@@ -998,7 +1148,7 @@ public class ClickGuiScreen extends Screen {
 		if (hovered) {
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, bounds.h - 2, RADIUS_SMALL, CATEGORY_HOVER);
 		}
-		graphics.text(font, textFit(font, choiceRow.setting.name(), bounds.w - choiceRow.field.w - 36),
+		graphics.text(font, textFit(font, choiceRow.setting.displayName(), bounds.w - choiceRow.field.w - 36),
 			bounds.x + 16,
 			bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
@@ -1017,7 +1167,7 @@ public class ClickGuiScreen extends Screen {
 		Rect bounds = textRow.bounds;
 		Rect field = textRow.field;
 		boolean focused = textRow.setting == focusedTextSetting;
-		graphics.text(font, textFit(font, textRow.setting.name(), bounds.w - textRow.field.w - 36),
+		graphics.text(font, textFit(font, textRow.setting.displayName(), bounds.w - textRow.field.w - 36),
 			bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
 
 		float pulse = interactionPulse(textRow.setting, now, motion);
@@ -1163,11 +1313,12 @@ public class ClickGuiScreen extends Screen {
 	private int layoutGroup(Module module, SettingGroup group, int x, int cursorY, int depth,
 		List<Row> rows, ColorSetting expandedColor) {
 		int moduleWidth = moduleWidth();
+		if (!visibleGroup(group)) return cursorY;
 
 		if (group.name() != null) {
 			Rect bounds = new Rect(x, cursorY, moduleWidth, GROUP_HEADER_HEIGHT);
 			// Lined up with the switch on a toggle row, so the column reads straight down.
-			Rect toggle = group.toggle() == null ? null
+			Rect toggle = group.toggle() == null || !visibleSetting(group.toggle()) ? null
 				: new Rect(bounds.x + bounds.w - SWITCH_WIDTH - 14,
 					bounds.y + (bounds.h - SWITCH_HEIGHT) / 2, SWITCH_WIDTH, SWITCH_HEIGHT);
 			boolean collapsed = ClickGuiState.isCollapsed(module, group);
@@ -1178,6 +1329,7 @@ public class ClickGuiScreen extends Screen {
 		}
 
 		for (Setting setting : group.settings()) {
+			if (!visibleSetting(setting)) continue;
 			switch (setting) {
 				case ColorSetting colorSetting -> {
 					int rowHeight = colorRowHeight(colorSetting, expandedColor);
@@ -1223,6 +1375,22 @@ public class ClickGuiScreen extends Screen {
 		return cursorY;
 	}
 
+	private boolean visibleSetting(Setting setting) {
+		return DebugState.enabled() || !setting.isDebugOnly();
+	}
+
+	private boolean visibleGroup(SettingGroup group) {
+		if (!DebugState.enabled() && group.debugOnly()) return false;
+		if (group.name() != null && group.toggle() != null && visibleSetting(group.toggle())) return true;
+		for (Setting setting : group.settings()) {
+			if (visibleSetting(setting)) return true;
+		}
+		for (SettingGroup child : group.children()) {
+			if (visibleGroup(child)) return true;
+		}
+		return false;
+	}
+
 	private Picker picker(ColorSetting setting, int x, int cursorY, int moduleWidth, ColorSetting expandedColor) {
 		if (setting != expandedColor) return null;
 		int left = x + PICKER_INSET;
@@ -1241,7 +1409,8 @@ public class ClickGuiScreen extends Screen {
 	// ---- input --------------------------------------------------------------------------
 
 	private boolean inputSettled() {
-		if (closing || transitionFrom != null) return false;
+		if (closing || transitionFrom != null || settingsLayoutTransition != null
+			|| expansionFrom != null || expansionTo != null) return false;
 		ClickGuiMotion motion = motion();
 		return motion == ClickGuiMotion.NONE
 			|| elapsedMillis(lifecycleStartedNanos, System.nanoTime()) >= motion.lifecycleMillis();
@@ -1350,6 +1519,10 @@ public class ClickGuiScreen extends Screen {
 						playClick();
 						List<Row> before = settingsRows(module, x, panelY);
 						ClickGuiState.toggleCollapsed(module, groupRow.group);
+						// A collapse can make the old scroll point past the new content. Clamp the
+						// logical and visual scroll before capturing the incoming layout so the
+						// transition never targets an unreachable scrollbar position.
+						clampViewScroll();
 						List<Row> after = settingsRows(module, x, panelY);
 						startSettingsLayoutTransition(module, before, after);
 						ModConfig.save();
@@ -1392,6 +1565,9 @@ public class ClickGuiScreen extends Screen {
 						markInteraction(colorRow.setting);
 						playClick();
 						setExpandedColor(expandedColorSetting == colorRow.setting ? null : colorRow.setting);
+						// The picker changes the content height immediately even while its reveal is animated.
+						// Clamp now so the temporary geometry and scrollbar cannot target a dead scroll point.
+						clampViewScroll();
 						persistView();
 						return true;
 					}
@@ -1653,6 +1829,62 @@ public class ClickGuiScreen extends Screen {
 	private record TogglePulse(boolean from, boolean to, long startedNanos) {
 	}
 
+	private record HoverPulse(long startedNanos) {
+	}
+
+	private record RowTransition(Object identity, Row from, Row to, int order) {
+	}
+
+	private record SettingsLayoutTransition(Module module, List<RowTransition> rows, Rect fromReveal,
+		Rect toReveal, long startedNanos) {
+		private static SettingsLayoutTransition create(Module module, List<Row> from, List<Row> to,
+			long startedNanos) {
+			IdentityHashMap<Object, Row> fromByIdentity = new IdentityHashMap<>();
+			IdentityHashMap<Object, Row> toByIdentity = new IdentityHashMap<>();
+			List<Object> identities = new ArrayList<>();
+
+			for (Row row : from) {
+				Object identity = rowIdentity(row);
+				if (!fromByIdentity.containsKey(identity)) {
+					fromByIdentity.put(identity, row);
+					identities.add(identity);
+				}
+			}
+			for (Row row : to) {
+				Object identity = rowIdentity(row);
+				if (!toByIdentity.containsKey(identity)) toByIdentity.put(identity, row);
+				if (!fromByIdentity.containsKey(identity)) identities.add(identity);
+			}
+
+			List<RowTransition> rows = new ArrayList<>(identities.size());
+			for (int i = 0; i < identities.size(); i++) {
+				Object identity = identities.get(i);
+				rows.add(new RowTransition(identity, fromByIdentity.get(identity), toByIdentity.get(identity), i));
+			}
+			return new SettingsLayoutTransition(module, rows,
+				revealBounds(rows, true), revealBounds(rows, false), startedNanos);
+		}
+
+		private static Rect revealBounds(List<RowTransition> rows, boolean fromSide) {
+			int left = Integer.MAX_VALUE;
+			int top = Integer.MAX_VALUE;
+			int right = Integer.MIN_VALUE;
+			int bottom = Integer.MIN_VALUE;
+			for (RowTransition row : rows) {
+				boolean belongs = fromSide
+					? row.from() != null && row.to() == null
+					: row.from() == null && row.to() != null;
+				if (!belongs) continue;
+				Rect bounds = fromSide ? row.from().bounds() : row.to().bounds();
+				left = Math.min(left, bounds.x);
+				top = Math.min(top, bounds.y);
+				right = Math.max(right, bounds.x + bounds.w);
+				bottom = Math.max(bottom, bounds.y + bounds.h);
+			}
+			return left == Integer.MAX_VALUE ? null : new Rect(left, top, right - left, bottom - top);
+		}
+	}
+
 	/** The four hit areas of an expanded colour row. */
 	private record Picker(Rect square, Rect hue, Rect alpha, Rect hex) {
 	}
@@ -1663,6 +1895,18 @@ public class ClickGuiScreen extends Screen {
 	/** One laid-out line in the settings panel. */
 	private sealed interface Row permits GroupRow, ColorRow, NumberRow, ToggleRow, ChoiceRow, TextRow, ActionRow {
 		Rect bounds();
+	}
+
+	private static Object rowIdentity(Row row) {
+		return switch (row) {
+			case GroupRow groupRow -> groupRow.group;
+			case ColorRow colorRow -> colorRow.setting;
+			case NumberRow numberRow -> numberRow.setting;
+			case ToggleRow toggleRow -> toggleRow.setting;
+			case ChoiceRow choiceRow -> choiceRow.setting;
+			case TextRow textRow -> textRow.setting;
+			case ActionRow actionRow -> actionRow.action;
+		};
 	}
 
 	/**

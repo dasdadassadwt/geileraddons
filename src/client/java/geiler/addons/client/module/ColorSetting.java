@@ -6,6 +6,7 @@ public final class ColorSetting implements Setting {
 	public enum Channel { RED, GREEN, BLUE, ALPHA }
 
 	private final String name;
+	private final String displayName;
 	private int red;
 	private int green;
 	private int blue;
@@ -23,13 +24,23 @@ public final class ColorSetting implements Setting {
 	private float brightness;
 
 	public ColorSetting(String name, int red, int green, int blue, int alpha) {
+		this(name, name, red, green, blue, alpha);
+	}
+
+	public ColorSetting(String name, String displayName, int red, int green, int blue, int alpha) {
 		this.name = name;
+		this.displayName = displayName;
 		set(red, green, blue, alpha);
 	}
 
 	@Override
 	public String name() {
 		return name;
+	}
+
+	@Override
+	public String displayName() {
+		return displayName;
 	}
 
 	public int red() {

@@ -117,7 +117,7 @@ public final class SparklingCritterModule extends Module {
 		/** Ticks between sweeps; the default is one a second. */
 		final NumberSetting rescanTime = new NumberSetting("Rescan Time", 1, 200, 20, true);
 		/** Prints what would be sent instead of sending it, and never sends while it is on. */
-		final BooleanSetting debug = new BooleanSetting("Debug", false);
+		final BooleanSetting debug = BooleanSetting.debug("Debug", false);
 		final BooleanSetting announce = new BooleanSetting("Announce to Party Chat", false);
 		/** How close a sparkling has to be before the party is told, in blocks. */
 		final TextSetting rangeToSend = new TextSetting("Range to Send", "5", MAX_RANGE_TEXT_LENGTH);

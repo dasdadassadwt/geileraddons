@@ -16,6 +16,10 @@ repositories {
 		name = "Hypixel"
 		url = uri("https://repo.hypixel.net/repository/Hypixel/")
 	}
+	maven {
+		name = "Modrinth"
+		url = uri("https://api.modrinth.com/maven")
+	}
 }
 
 loom {
@@ -40,6 +44,9 @@ dependencies {
 	// Compile against the shared protocol API. The official Fabric implementation is supplied as
 	// a separate mod so GeilerAddons and SkyHanni use one channel owner at runtime.
 	implementation "net.hypixel:mod-api:${project.hypixel_mod_api_version}"
+	// The Fabric bridge owns registration and decoding at runtime. Keep it as a mod so every
+	// consumer resolves the same shared channel owner instead of bundling a second copy.
+	runtimeOnly "maven.modrinth:hypixel-mod-api:${project.hypixel_mod_api_fabric_version}"
 }
 
 processResources {

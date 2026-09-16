@@ -8,4 +8,17 @@ package geiler.addons.client.module;
  */
 public sealed interface Setting permits BooleanSetting, ChoiceSetting, ColorSetting, NumberSetting, TextSetting, ModuleAction {
 	String name();
+
+	/**
+	 * Label shown in the settings panel. Keep this separate from {@link #name()}, which is the
+	 * stable persistence key for the setting.
+	 */
+	default String displayName() {
+		return name();
+	}
+
+	/** Whether this row is part of the optional diagnostic surface. */
+	default boolean isDebugOnly() {
+		return false;
+	}
 }

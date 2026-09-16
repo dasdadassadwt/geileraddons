@@ -2,9 +2,11 @@ package geiler.addons.client.module;
 
 public enum Category {
 	F7("Dungeons"),
+	ENCHANTING("Enchanting"),
 	HUNTING("Hunting"),
 	FORAGING("Foraging"),
-	VISUAL("Visual");
+	VISUAL("Visual"),
+	DEV("Dev");
 
 	private final String displayName;
 

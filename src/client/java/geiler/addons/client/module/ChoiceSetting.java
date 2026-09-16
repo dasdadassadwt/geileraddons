@@ -49,7 +49,7 @@ public final class ChoiceSetting implements Setting {
 
 	/** Applies a persisted or programmatic value, ignoring unknown choices safely. */
 	public void setValue(String value) {
-		if (choices.contains(value)) this.value = value;
+		if (value != null && choices.contains(value)) this.value = value;
 	}
 
 	public void selectNext() {
