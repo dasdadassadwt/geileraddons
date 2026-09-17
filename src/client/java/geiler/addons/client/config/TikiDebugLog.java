@@ -12,6 +12,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * One log file per debug session under the game's {@code logs/} folder. Lines are queued to a
@@ -21,11 +22,13 @@ public final class TikiDebugLog {
 	private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss-SSS");
 	private static final DateTimeFormatter LINE_STAMP = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 	private static final String STOP = "\u0000GEILERADDONS_TIKI_STOP\u0000";
+	private static final int MAX_QUEUED_LINES = 8192;
 
 	private static volatile Path path;
 	private static volatile Writer writer;
 	private static volatile LinkedBlockingQueue<String> queue;
 	private static volatile Thread worker;
+	private static final AtomicLong droppedLines = new AtomicLong();
 
 	private TikiDebugLog() {
 	}
@@ -43,7 +46,8 @@ public final class TikiDebugLog {
 			path = candidate;
 			opened = Files.newBufferedWriter(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
 			writer = opened;
-			queue = new LinkedBlockingQueue<>();
+			queue = new LinkedBlockingQueue<>(MAX_QUEUED_LINES);
+			droppedLines.set(0);
 			LinkedBlockingQueue<String> sessionQueue = queue;
 			Thread sessionWorker = new Thread(() -> runWriter(sessionQueue), "GeilerAddons tiki log");
 			sessionWorker.setDaemon(true);
@@ -61,6 +65,8 @@ public final class TikiDebugLog {
 			}
 			path = null;
 			writer = null;
+			queue = null;
+			worker = null;
 		}
 	}
 
@@ -75,7 +81,9 @@ public final class TikiDebugLog {
 			return;
 		}
 		write(0, "SESSION END");
-		currentQueue.offer(STOP);
+		// A bounded queue can be full while a large scan is being logged. Make room for the
+		// sentinel so close never leaves a writer thread alive indefinitely.
+		while (!currentQueue.offer(STOP)) currentQueue.poll();
 		try {
 			currentWorker.join(1_000);
 		} catch (InterruptedException interrupted) {
@@ -95,8 +103,11 @@ public final class TikiDebugLog {
 	public static void write(long tick, String line) {
 		LinkedBlockingQueue<String> currentQueue = queue;
 		if (writer == null || currentQueue == null) return;
-		currentQueue.offer("[" + LocalDateTime.now().format(LINE_STAMP) + "] [t" + tick + "] "
-			+ line + System.lineSeparator());
+		String entry = "[" + LocalDateTime.now().format(LINE_STAMP) + "] [t" + tick + "] "
+			+ line + System.lineSeparator();
+		if (!currentQueue.offer(entry)) {
+			droppedLines.incrementAndGet();
+		}
 	}
 
 	public static Path path() {
@@ -141,10 +152,24 @@ public final class TikiDebugLog {
 		} catch (IOException e) {
 			GeilerAddons.LOGGER.error("Could not write to the tiki debug log", e);
 		} finally {
+			long dropped = droppedLines.getAndSet(0);
+			if (dropped > 0) {
+				GeilerAddons.LOGGER.warn("Dropped {} queued tiki debug lines because the log queue was full", dropped);
+			}
 			try {
 				currentWriter.close();
 			} catch (IOException e) {
 				GeilerAddons.LOGGER.error("Could not close the tiki debug log", e);
+			}
+			synchronized (TikiDebugLog.class) {
+				// A writer can fail while the module remains armed. Clear all handles so the next tick
+				// can reopen a fresh session instead of silently discarding every later line.
+				if (writer == currentWriter) {
+					path = null;
+					writer = null;
+					queue = null;
+					worker = null;
+				}
 			}
 		}
 	}

@@ -456,6 +456,11 @@ public final class TikiHelperModule extends Module {
 			setArmed(nearest != null, nearest);
 		}
 		if (!armed) return;
+		if (TikiDebugLog.path() == null) {
+			// The asynchronous writer can fail independently of the game thread. Reopen it while the
+			// player remains in range so debug mode does not look enabled while silently losing logs.
+			TikiDebugLog.open();
+		}
 
 		if (pending != null && tick - pending.tick >= VERIFY_DELAY) {
 			runVerification(level);

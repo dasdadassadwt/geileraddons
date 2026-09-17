@@ -54,8 +54,8 @@ import java.util.regex.Pattern;
  * <p>The actual solver is deliberately not coupled to rendering or input. This adapter owns the
  * short-lived container snapshot needed to draw a custom surface, remembers Superpairs stacks
  * while Hypixel hides them, and translates an accepted custom hit back into vanilla's
- * {@code slotClicked} call. In particular, 0 Ping never changes the packet path: it only lets the
- * local surface advance its prediction before the server acknowledgement arrives.</p>
+ * {@code slotClicked} call. Sequence progress advances only after that ordinary vanilla dispatch,
+ * so the custom surface never predicts a click that the server has not accepted.</p>
  */
 public final class ExperimentSolverModule extends Module {
 	public static final ExperimentSolverModule INSTANCE = new ExperimentSolverModule();
@@ -65,7 +65,6 @@ public final class ExperimentSolverModule extends Module {
 	private static final int BASE_PANEL_PADDING = 2;
 	private static final int SCREEN_MARGIN = 4;
 	private static final int INFO_HEIGHT = 46;
-	private static final long FIRST_CLICK_PROTECTION_NANOS = 500_000_000L;
 	private static final long SUPERPAIRS_CLICK_FEEDBACK_NANOS = 280_000_000L;
 	private static final int SUPERPAIRS_UNKNOWN_COLOR = 0xFFFFFFFF;
 	private static final int SUPERPAIRS_UNKNOWN_BORDER = 0xFF25252D;
@@ -87,11 +86,7 @@ public final class ExperimentSolverModule extends Module {
 	private final BooleanSetting superpairs;
 	private final NumberSetting chronomatronFutureClicks;
 	private final NumberSetting ultrasequencerFutureClicks;
-	private final BooleanSetting zeroPing;
 	private final BooleanSetting preventMisclicks;
-	private final BooleanSetting firstClickProtection;
-	private final BooleanSetting accountForServerLag;
-	private final NumberSetting lagProtectionTicks;
 	private final NumberSetting serumsConsumed;
 	private final NumberSetting size;
 	private final NumberSetting roundness;
@@ -117,7 +112,6 @@ public final class ExperimentSolverModule extends Module {
 
 	private Session session;
 	private SolverView solverView = SolverView.idle();
-	private long clientTick;
 	private boolean maxAlerted;
 	private boolean dispatchingCustomClick;
 	private int superpairsFeedbackSlot = -1;
@@ -131,8 +125,7 @@ public final class ExperimentSolverModule extends Module {
 		super("Solver", "Solves Experimentation Table games.", Category.ENCHANTING,
 			settings.chronomatron, settings.ultrasequencer, settings.superpairs,
 			settings.chronomatronFutureClicks, settings.ultrasequencerFutureClicks,
-			settings.zeroPing, settings.preventMisclicks, settings.firstClickProtection,
-			settings.accountForServerLag, settings.lagProtectionTicks, settings.serumsConsumed,
+			settings.preventMisclicks, settings.serumsConsumed,
 			settings.size, settings.roundness, settings.slotGap,
 			settings.clickSounds, settings.clickSound, settings.clickSoundPitch, settings.clickSoundVolume,
 			settings.completeSounds, settings.maxClickAlert, settings.completeSound, settings.completeSoundPitch,
@@ -144,11 +137,7 @@ public final class ExperimentSolverModule extends Module {
 		this.superpairs = settings.superpairs;
 		this.chronomatronFutureClicks = settings.chronomatronFutureClicks;
 		this.ultrasequencerFutureClicks = settings.ultrasequencerFutureClicks;
-		this.zeroPing = settings.zeroPing;
 		this.preventMisclicks = settings.preventMisclicks;
-		this.firstClickProtection = settings.firstClickProtection;
-		this.accountForServerLag = settings.accountForServerLag;
-		this.lagProtectionTicks = settings.lagProtectionTicks;
 		this.serumsConsumed = settings.serumsConsumed;
 		this.size = settings.size;
 		this.roundness = settings.roundness;
@@ -173,9 +162,7 @@ public final class ExperimentSolverModule extends Module {
 		group(
 			new SettingGroup("Experiments", settings.chronomatron, settings.ultrasequencer, settings.superpairs),
 			new SettingGroup("Preview", settings.chronomatronFutureClicks, settings.ultrasequencerFutureClicks),
-			new SettingGroup("Protection", settings.zeroPing, settings.preventMisclicks,
-				settings.firstClickProtection, settings.accountForServerLag, settings.lagProtectionTicks,
-				settings.serumsConsumed),
+			new SettingGroup("Protection", settings.preventMisclicks, settings.serumsConsumed),
 			new SettingGroup("Appearance", settings.size, settings.roundness, settings.slotGap),
 			new SettingGroup("Sounds", settings.clickSounds, settings.clickSound,
 				settings.clickSoundPitch, settings.clickSoundVolume, settings.completeSounds, settings.maxClickAlert,
@@ -194,11 +181,7 @@ public final class ExperimentSolverModule extends Module {
 			"Chronomatron Future Clicks", 0, 3, 1, true);
 		final NumberSetting ultrasequencerFutureClicks = new NumberSetting(
 			"Ultrasequencer Future Clicks", 0, 3, 2, true);
-		final BooleanSetting zeroPing = new BooleanSetting("0 Ping", false);
 		final BooleanSetting preventMisclicks = new BooleanSetting("Prevent Misclicks", true);
-		final BooleanSetting firstClickProtection = new BooleanSetting("First Click Protection", true);
-		final BooleanSetting accountForServerLag = new BooleanSetting("Account For Server Lag", false);
-		final NumberSetting lagProtectionTicks = new NumberSetting("Lag Protection Ticks", 1, 20, 8, true);
 		final NumberSetting serumsConsumed = new NumberSetting("Serums Consumed", 0, 3, 0, true);
 		// Keep the original persistence key while removing dungeon-terminal wording from the UI.
 		final NumberSetting size = new NumberSetting("Term Size", "Size", 1.0f, 3.0f, 2.0f);
@@ -240,7 +223,7 @@ public final class ExperimentSolverModule extends Module {
 	}
 
 	public ExperimentSolverEngine.Configuration configuration() {
-		return new ExperimentSolverEngine.Configuration(zeroPing.value(), serumsConsumed.intValue());
+		return new ExperimentSolverEngine.Configuration(serumsConsumed.intValue());
 	}
 
 	public BooleanSetting chronomatron() {
@@ -273,17 +256,12 @@ public final class ExperimentSolverModule extends Module {
 		return true;
 	}
 
-	public BooleanSetting zeroPing() {
-		return zeroPing;
-	}
-
 	public NumberSetting serumsConsumed() {
 		return serumsConsumed;
 	}
 
 	/** Called once per client tick, before the screen is drawn. */
 	public void tick() {
-		clientTick++;
 		if (!isEnabled()) {
 			reset();
 			return;
@@ -529,22 +507,15 @@ public final class ExperimentSolverModule extends Module {
 		}
 		if (hit == null || !accepts(hit.visual)) return true;
 
-		// This is the only local prediction performed by 0 Ping. The outgoing operation below is
-		// exactly the ordinary PICKUP call and therefore remains packet-neutral.
+		// The outgoing operation below is exactly the ordinary PICKUP call and remains packet-neutral.
 		BoardSlot boardSlot = hit.visual.boardSlot;
 		var decision = engine.onClick(boardSlot.slot.index);
 		if (solverView.type() == ExperimentType.SUPERPAIRS
 			&& (!decision.expected() || !decision.visualStateChanged())) return true;
-		session.acceptedSlotId = boardSlot.slot.index;
 		if (solverView.type() == ExperimentType.SUPERPAIRS) {
-			// Skyblocker records the last clicked slot and learns its real stack on the next client
-			// tick. Keeping this marker separate from the pure card model prevents a placeholder frame
-			// from being mistaken for a discovered item.
-			session.lastClickedSlot = boardSlot.slot.index;
 			superpairsFeedbackSlot = boardSlot.slot.index;
 			superpairsFeedbackStartedNanos = System.nanoTime();
 		}
-		session.lastAcceptedTick = clientTick;
 		playClickSound();
 		dispatchingCustomClick = true;
 		try {
@@ -553,13 +524,9 @@ public final class ExperimentSolverModule extends Module {
 			dispatchingCustomClick = false;
 		}
 		if (solverView.type() != ExperimentType.SUPERPAIRS && decision.expected()) {
-			if (zeroPing.value()) {
-				// 0 Ping permits the visual cursor to run ahead while server updates are in flight.
-			} else {
-				// A correct menu click is not required to mutate the visible ItemStack. Advance after
-				// the vanilla dispatch instead of waiting for a packet diff that may never arrive.
-				engine.confirmClick(boardSlot.slot.index);
-			}
+			// A correct menu click is not required to mutate the visible ItemStack. Advance after
+			// the vanilla dispatch instead of waiting for a packet diff that may never arrive.
+			engine.confirmClick(boardSlot.slot.index);
 		}
 		// Expose the local cursor update before another container snapshot arrives.
 		solverView = engine.view();
@@ -568,17 +535,6 @@ public final class ExperimentSolverModule extends Module {
 
 	private boolean accepts(SlotVisual visual) {
 		if (solverView.phase() != ExperimentPhase.SOLVE) return false;
-		// The replacement surface consumes the opening mouse event itself. Keep the short protection
-		// window active for the first valid tile so the click that opened the container cannot be
-		// replayed against the first puzzle control.
-		if (firstClickProtection.value() && session.firstClickPending()
-			&& System.nanoTime() - session.startedNanos < FIRST_CLICK_PROTECTION_NANOS) {
-			return false;
-		}
-		if (accountForServerLag.value() && session.lastAcceptedTick >= 0
-			&& clientTick - session.lastAcceptedTick <= lagProtectionTicks.intValue()) {
-			return false;
-		}
 		if (displayPhase() != Phase.SOLVE) return false;
 		if (!preventMisclicks.value()) return true;
 		if (solverView.type() == ExperimentType.SUPERPAIRS) {
@@ -609,14 +565,14 @@ public final class ExperimentSolverModule extends Module {
 			if (session.type == ExperimentType.ULTRASEQUENCER) continue;
 			ChronomatronEvent event = session.type == ExperimentType.CHRONOMATRON
 				? update.chronomatronEvent() : null;
-			solverView = engine.observe(session.snapshot(screen, zeroPing.value(), update), event);
+			solverView = engine.observe(session.snapshot(screen, false, update), event);
 		}
 		if (session.type == ExperimentType.ULTRASEQUENCER && solverView.type() == null) {
 			// Establish the model before mutation callbacks; capture the memory only on a tick.
 			solverView = engine.observe(new ExperimentSnapshot(title, "", List.of()));
 		} else if (session.type != ExperimentType.ULTRASEQUENCER) {
 			if (session.type != ExperimentType.SUPERPAIRS || superpairsChanged || solverView.type() == null) {
-				solverView = engine.observe(session.snapshot(screen, zeroPing.value()));
+				solverView = engine.observe(session.snapshot(screen, false));
 			}
 		}
 		// Rebuild the render list after the queue has drained. Superpairs values are learned only from
@@ -897,7 +853,6 @@ public final class ExperimentSolverModule extends Module {
 		final ExperimentType type;
 		final ExperimentTier tier;
 		final int menuId;
-		final long startedNanos = System.nanoTime();
 		final Map<Integer, ItemStack> rememberedStacks = new LinkedHashMap<>();
 		final List<ItemStack> superpairTypes = new ArrayList<>();
 		final Map<Integer, String> superpairValues = new LinkedHashMap<>();
@@ -910,12 +865,10 @@ public final class ExperimentSolverModule extends Module {
 		boolean statusCacheInitialized;
 		final SuperpairsCacheGate superpairCache = new SuperpairsCacheGate();
 		List<BoardSlot> slots = List.of();
+		long renderSlotsRevision = Long.MIN_VALUE;
 		String instruction = "";
 		Phase phase = Phase.WAITING;
 		final List<SlotUpdate> slotUpdates = new ArrayList<>();
-		int acceptedSlotId = -1;
-		int lastClickedSlot = -1;
-		long lastAcceptedTick = -1;
 		int serverClicksRemaining = -1;
 		AbstractContainerMenu attachedMenu;
 		long updateSequence;
@@ -924,6 +877,10 @@ public final class ExperimentSolverModule extends Module {
 			public void slotChanged(AbstractContainerMenu handler, int slotId, ItemStack stack) {
 				if (slotId < 0 || type == null) return;
 				ItemStack updateStack = stack == null ? ItemStack.EMPTY : stack.copy();
+				// Ultrasequencer is reconstructed from the authoritative menu once per client tick.
+				// Its pane animation can update many slots in one packet; queueing a complete board
+				// snapshot for every setter only repeats work and cannot improve the model.
+				if (type == ExperimentType.ULTRASEQUENCER) return;
 				if (slotId == 49) {
 					if (type == ExperimentType.SUPERPAIRS) {
 						// The next tick reads the cached status stack once. There is no useful historical
@@ -1004,7 +961,9 @@ public final class ExperimentSolverModule extends Module {
 			}
 			// Do not touch solver memory here. The queued listener frames are drained immediately
 			// afterward and must be interpreted against the exact historical order they captured.
-			slots = List.copyOf(boardSlots(menuSlots, false));
+			if (slots.isEmpty() || renderSlotsRevision != updateSequence) {
+				slots = List.copyOf(boardSlots(menuSlots, false));
+			}
 			return true;
 		}
 
@@ -1044,6 +1003,7 @@ public final class ExperimentSolverModule extends Module {
 				for (Slot slot : menuSlots) superpairLiveStacks.put(slot.index, slot.getItem().copy());
 				return;
 			}
+			if (!slots.isEmpty() && renderSlotsRevision == updateSequence) return;
 			captureSuperpairReveal(screen);
 			List<Slot> menuSlots = new ArrayList<>();
 			for (Slot slot : screen.getMenu().slots) {
@@ -1051,6 +1011,7 @@ public final class ExperimentSolverModule extends Module {
 			}
 			menuSlots.sort(Comparator.comparingInt(slot -> slot.index));
 			slots = List.copyOf(boardSlots(menuSlots, true));
+			renderSlotsRevision = updateSequence;
 		}
 
 		private List<BoardSlot> boardSlots(List<Slot> menuSlots, boolean rememberReveals) {
@@ -1091,7 +1052,6 @@ public final class ExperimentSolverModule extends Module {
 			superpairValues.clear();
 			superpairLiveStacks.clear();
 			superpairCache.invalidateRender();
-			lastClickedSlot = -1;
 		}
 
 		boolean takeSuperpairsObservationDirty() {
@@ -1345,10 +1305,6 @@ public final class ExperimentSolverModule extends Module {
 				}
 			}
 			return name;
-		}
-
-		boolean firstClickPending() {
-			return acceptedSlotId < 0;
 		}
 
 		private static boolean isHiddenCard(ItemStack stack) {

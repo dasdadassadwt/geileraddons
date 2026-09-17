@@ -1,6 +1,7 @@
 package geiler.addons.client.location;
 
 import geiler.addons.client.config.ModConfig;
+import net.minecraft.client.Minecraft;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.hypixel.data.type.ServerType;
 import net.hypixel.modapi.HypixelModAPI;
@@ -14,8 +15,9 @@ import net.hypixel.modapi.packet.impl.clientbound.event.ClientboundLocationPacke
  * owner instead of competing for the same custom-payload identifiers.
  */
 public final class HypixelModApi {
-	private static Island island = Island.NONE;
-	private static boolean located;
+	private static volatile Island island = Island.NONE;
+	private static volatile boolean located;
+	private static volatile long connectionEpoch;
 	private static boolean initialized;
 
 	private HypixelModApi() {
@@ -63,19 +65,26 @@ public final class HypixelModApi {
 	}
 
 	private static void reset() {
+		connectionEpoch++;
 		island = Island.NONE;
 		located = false;
 	}
 
 	private static void onLocation(ClientboundLocationPacket packet) {
 		if (!ModConfig.hypixelModApi()) return;
-		located = true;
+		long eventEpoch = connectionEpoch;
 		ServerType serverType = packet.getServerType().orElse(null);
+		String serverTypeName = serverType == null ? null : serverType.name();
+		String mode = packet.getMode().orElse(null);
 		// A missing or unknown server type is not proof that the mode belongs to SkyBlock.
-		if (serverType == null || !"SKYBLOCK".equalsIgnoreCase(serverType.name())) {
-			island = Island.OTHER;
-			return;
-		}
-		island = Island.fromMode(packet.getMode().orElse(null));
+		Minecraft.getInstance().execute(() -> {
+			if (eventEpoch != connectionEpoch || !ModConfig.hypixelModApi()) return;
+			located = true;
+			if (!"SKYBLOCK".equalsIgnoreCase(serverTypeName)) {
+				island = Island.OTHER;
+				return;
+			}
+			island = Island.fromMode(mode);
+		});
 	}
 }

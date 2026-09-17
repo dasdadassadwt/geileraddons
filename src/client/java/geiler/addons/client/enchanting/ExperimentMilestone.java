@@ -33,9 +33,13 @@ public record ExperimentMilestone(ExperimentType type, ExperimentTier tier, int 
 	}
 
 	public boolean reached(int currentSequenceLength, int completedRounds) {
+		// Chronomatron exposes the current round's full sequence before the player clicks it. The
+		// final click therefore reaches the configured target immediately; waiting for the next
+		// round's completion counter made the MAX CLICKS state appear one cycle late.
+		if (type == ExperimentType.CHRONOMATRON) {
+			return currentSequenceLength >= displayedSequenceLength;
+		}
 		if (completedRounds >= 0) return completedRounds >= completedRoundThreshold;
-		return type == ExperimentType.ULTRASEQUENCER
-			? currentSequenceLength >= displayedSequenceLength
-			: currentSequenceLength > displayedSequenceLength;
+		return currentSequenceLength >= displayedSequenceLength;
 	}
 }

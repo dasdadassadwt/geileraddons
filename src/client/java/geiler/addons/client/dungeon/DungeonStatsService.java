@@ -24,6 +24,7 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,6 +39,7 @@ public final class DungeonStatsService {
 	private static final String API_BASE = "https://hypixel.odtheking.com/";
 	private static final String UUID_BASE = "https://api.minecraftservices.com/minecraft/profile/lookup/name/";
 	private static final long CACHE_TTL_MILLIS = 5 * 60 * 1000L;
+	private static final int MAX_CACHE_ENTRIES = 512;
 	private static final Duration TIMEOUT = Duration.ofSeconds(10);
 	/** Profile responses are untrusted remote input; never let one consume arbitrary memory. */
 	private static final int MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -49,6 +51,10 @@ public final class DungeonStatsService {
 	private static final int MAX_NBT_DEPTH = 32;
 	private static final int MAX_NBT_NODES = 20_000;
 	private static final int MAX_NBT_STRING_CHARS = 8 * 1024;
+	/** Keys that identify an actual item entry inside one of the supported inventory containers. */
+	private static final Set<String> ITEM_ID_KEYS = Set.of(
+		"id", "item_id", "itemid", "item_name", "itemname", "internalname", "internal_name",
+		"displayname", "display_name", "tag", "nbt");
 	private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2, r -> {
 		Thread thread = new Thread(r, "GeilerAddons dungeon stats");
 		thread.setDaemon(true);
@@ -79,6 +85,7 @@ public final class DungeonStatsService {
 			return;
 		}
 		String key = name.toLowerCase(Locale.ROOT);
+		pruneCache(System.currentTimeMillis());
 		CacheEntry cached = CACHE.get(key);
 		if (!forceRefresh && cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_TTL_MILLIS) {
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Cache hit for {}", name);
@@ -100,6 +107,22 @@ public final class DungeonStatsService {
 
 	public static void clearCache() {
 		CACHE.clear();
+	}
+
+	private static void pruneCache(long now) {
+		for (Map.Entry<String, CacheEntry> entry : CACHE.entrySet()) {
+			if (now - entry.getValue().timestamp >= CACHE_TTL_MILLIS) {
+				CACHE.remove(entry.getKey(), entry.getValue());
+			}
+		}
+		if (CACHE.size() <= MAX_CACHE_ENTRIES) return;
+		// The cache is keyed by player name rather than access order. Removing arbitrary survivors is
+		// preferable to retaining unbounded remote data; a subsequent request simply refreshes it.
+		int excess = CACHE.size() - MAX_CACHE_ENTRIES;
+		for (String key : CACHE.keySet()) {
+			if (excess-- <= 0) break;
+			CACHE.remove(key);
+		}
 	}
 
 	public record Result(DungeonStats stats, String error) {
@@ -133,6 +156,7 @@ public final class DungeonStatsService {
 			DungeonStats stats = parseStats(returnedName == null ? name : returnedName, uuid, profile, member);
 			if (stats.cacheable()) {
 				CACHE.put(name.toLowerCase(Locale.ROOT), new CacheEntry(stats, System.currentTimeMillis()));
+				pruneCache(System.currentTimeMillis());
 			} else {
 				GeilerAddons.LOGGER.debug("[Dungeon Stats] Keeping incomplete profile for {} out of cache", name);
 			}
@@ -243,8 +267,10 @@ public final class DungeonStatsService {
 		Map<DungeonFloor, Long> pbs = new EnumMap<>(DungeonFloor.class);
 		readPbs(pbs, catacombs, false);
 		readPbs(pbs, master, true);
-		boolean gearKnown = hasInventoryData(member) || allText.contains("terminator") || allText.contains("hyperion")
-			|| allText.contains("golden_dragon") || allText.contains("golden dragon");
+		// The text collector is only a name extractor. Gate its result with validated item-shaped
+		// inventory evidence so an API error/status string containing "terminator" cannot authorize a
+		// gear check and turn an incomplete profile into a false kick.
+		boolean gearKnown = hasInventoryData(member);
 		if (gearKnown) available.add(DungeonStats.DataField.GEAR);
 		DungeonClass selectedClass = DungeonClass.parse(firstString(dungeons, "selected_dungeon_class", "selectedClass"));
 		if (selectedClass != null) available.add(DungeonStats.DataField.SELECTED_CLASS);
@@ -368,6 +394,11 @@ public final class DungeonStatsService {
 		return findInventoryData(element, 0, new JsonBudget(MAX_JSON_NODES));
 	}
 
+	/** Package boundary for the offline parser checks; AutoKick uses the field set on DungeonStats. */
+	static boolean hasValidatedInventoryData(JsonElement element) {
+		return hasInventoryData(element);
+	}
+
 	private static boolean findInventoryData(JsonElement element, int depth, JsonBudget budget) {
 		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return false;
 		if (element.isJsonArray()) {
@@ -399,6 +430,7 @@ public final class DungeonStatsService {
 		if (value == null || value.isJsonNull()) return false;
 		if (depth > MAX_JSON_DEPTH || !budget.visit()) return false;
 		if (value.isJsonObject()) {
+			if (isItemObject(value.getAsJsonObject())) return true;
 			for (Map.Entry<String, JsonElement> entry : value.getAsJsonObject().entrySet()) {
 				if (inventoryValueIsReadable(entry.getValue(), depth + 1, budget)) return true;
 			}
@@ -415,8 +447,39 @@ public final class DungeonStatsService {
 		String text = value.getAsString();
 		if (text.isBlank()) return false;
 		if (text.length() > MAX_COMPRESSED_VALUE_CHARS) return false;
-		return text.length() <= 32 || !text.matches("[A-Za-z0-9+/=]+")
-			|| searchCompressedNbtReadable(text, new StringBuilder());
+		if (text.length() > 32 && text.matches("[A-Za-z0-9+/=]+")) {
+			return searchCompressedNbtReadable(text, new StringBuilder());
+		}
+		return likelyItemIdentifier(text);
+	}
+
+	/**
+	 * A container is only complete when it contains an item-shaped object or a recognizable item
+	 * identifier. Arbitrary status/error strings are deliberately not enough to authorize gear
+	 * enforcement in AutoKick.
+	 */
+	private static boolean isItemObject(JsonObject object) {
+		for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+			String key = entry.getKey().toLowerCase(Locale.ROOT);
+			if (!ITEM_ID_KEYS.contains(key)) continue;
+			JsonElement value = entry.getValue();
+			if (value == null || value.isJsonNull()) continue;
+			if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
+				if (!value.getAsString().isBlank()) return true;
+			} else if (key.equals("tag") || key.equals("nbt")) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean likelyItemIdentifier(String value) {
+		String normalized = value.trim();
+		String lower = normalized.toLowerCase(Locale.ROOT);
+		if (lower.contains("terminator") || lower.contains("hyperion")
+			|| lower.contains("golden_dragon") || lower.contains("golden dragon")) return true;
+		if (normalized.contains(":")) return normalized.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+");
+		return normalized.matches("[A-Z0-9]+(?:_[A-Z0-9]+)+");
 	}
 
 	private static JsonObject object(JsonObject parent, String name) {
@@ -484,7 +547,13 @@ public final class DungeonStatsService {
 	}
 
 	private static boolean hasCompletions(JsonObject type) {
-		return object(type, "tier_completions") != null || object(type, "tierCompletions") != null;
+		JsonObject completions = object(type, "tier_completions");
+		if (completions == null) completions = object(type, "tierCompletions");
+		if (completions == null) return false;
+		for (int i = 1; i <= 7; i++) {
+			if (hasNumber(completions, String.valueOf(i), "floor_" + i)) return true;
+		}
+		return false;
 	}
 
 	private record NumberValue(long value, boolean present) {

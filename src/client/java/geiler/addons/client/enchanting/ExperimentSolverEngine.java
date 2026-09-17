@@ -15,13 +15,13 @@ import java.util.Optional;
  * delayed counter.</p>
  */
 public final class ExperimentSolverEngine {
-	public record Configuration(boolean zeroPing, int serumsConsumed) {
+	public record Configuration(int serumsConsumed) {
 		public Configuration {
 			serumsConsumed = Math.max(0, Math.min(3, serumsConsumed));
 		}
 
 		public static Configuration defaults() {
-			return new Configuration(false, 0);
+			return new Configuration(0);
 		}
 	}
 
@@ -118,7 +118,7 @@ public final class ExperimentSolverEngine {
 		};
 	}
 
-	/** Records a local click and predicts only the visual cursor when 0 Ping is enabled. */
+	/** Records a local click; sequence progress advances only after server-confirmed state. */
 	public ClickDecision onClick(int slotId) {
 		if (type == null) return new ClickDecision(slotId, false, false, false, false, "no experiment");
 		if (phase != ExperimentPhase.SOLVE) {
@@ -132,13 +132,7 @@ public final class ExperimentSolverEngine {
 		if (!expectedSequenceSlot(slotId)) {
 			return new ClickDecision(slotId, true, false, false, false, "unexpected slot");
 		}
-		if (!configuration.zeroPing()) {
-			return new ClickDecision(slotId, true, true, false, false, "awaiting server confirmation");
-		}
-		if (!advanceSequenceClick(slotId)) {
-			return new ClickDecision(slotId, true, false, false, false, "unexpected slot");
-		}
-		return new ClickDecision(slotId, true, true, true, true, "visual prediction only");
+		return new ClickDecision(slotId, true, true, false, false, "awaiting server confirmation");
 	}
 
 	/**
@@ -302,7 +296,7 @@ public final class ExperimentSolverEngine {
 	private int displayIndex() {
 		if (type == ExperimentType.CHRONOMATRON) return chronomatron.currentOrdinal();
 		if (type == ExperimentType.ULTRASEQUENCER) return ultrasequencer.currentIndex();
-		return configuration.zeroPing() ? predictedIndex : authoritativeIndex;
+		return authoritativeIndex;
 	}
 
 	private static Optional<SequenceStep> stepAt(List<SequenceStep> steps, int index) {

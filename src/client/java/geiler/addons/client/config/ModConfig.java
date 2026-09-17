@@ -35,6 +35,10 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /** Persists module enabled-state, settings and the Tiki coordinate list across restarts. */
 public final class ModConfig {
@@ -118,9 +122,18 @@ public final class ModConfig {
 
 	/** How long a debounced change may sit unwritten; a crash can cost at most this much of it. */
 	private static final long FLUSH_INTERVAL_MILLIS = 60_000;
+	private static final Object SAVE_LOCK = new Object();
+	private static final ExecutorService SAVE_EXECUTOR = Executors.newSingleThreadExecutor(task -> {
+		Thread thread = new Thread(task, "GeilerAddons config writer");
+		thread.setDaemon(true);
+		return thread;
+	});
 
-	private static boolean dirty;
-	private static long lastFlush;
+	private static volatile boolean dirty;
+	private static volatile long lastFlush;
+	private static volatile long mutationVersion;
+	private static Future<?> pendingSave;
+	private static long queuedVersion = -1;
 
 	public static boolean checkForUpdates() {
 		return checkForUpdates;
@@ -200,7 +213,10 @@ public final class ModConfig {
 	 * {@link #FLUSH_INTERVAL_MILLIS}.
 	 */
 	public static void markDirty() {
-		dirty = true;
+		synchronized (SAVE_LOCK) {
+			dirty = true;
+			mutationVersion++;
+		}
 	}
 
 	/** Call once per client tick. Writes only if something asked for it and enough time has passed. */
@@ -213,12 +229,47 @@ public final class ModConfig {
 
 	/** Writes a pending change immediately - for shutdown, where there is no next tick. */
 	public static void flushNow() {
+		Future<?> future;
 		if (dirty) {
-			save();
+			future = enqueueSave(snapshotData(), mutationVersion);
+		} else {
+			synchronized (SAVE_LOCK) {
+				future = pendingSave;
+			}
+		}
+		waitFor(future);
+	}
+
+	/** Queues an explicit snapshot so closing a settings screen never performs disk I/O inline. */
+	public static void save() {
+		enqueueSave(snapshotData(), mutationVersion);
+	}
+
+	private static Future<?> enqueueSave(Data data, long version) {
+		if (data == null) return null;
+		synchronized (SAVE_LOCK) {
+			if (pendingSave != null && !pendingSave.isDone() && queuedVersion >= version) {
+				return pendingSave;
+			}
+			pendingSave = SAVE_EXECUTOR.submit(() -> writeSnapshot(data, version));
+			queuedVersion = version;
+			return pendingSave;
 		}
 	}
 
-	public static void save() {
+	private static void waitFor(Future<?> future) {
+		if (future == null) return;
+		try {
+			future.get();
+		} catch (InterruptedException interrupted) {
+			Thread.currentThread().interrupt();
+			GeilerAddons.LOGGER.warn("Interrupted while saving GeilerAddons config");
+		} catch (ExecutionException error) {
+			GeilerAddons.LOGGER.error("Config writer failed", error.getCause());
+		}
+	}
+
+	private static Data snapshotData() {
 		Data data = new Data();
 		for (Module module : ModuleManager.modules()) {
 			data.enabled.put(module.name(), module.isEnabled());
@@ -281,7 +332,12 @@ public final class ModConfig {
 		data.uiCollapsedGroups = new ArrayList<>(ClickGuiState.collapsedGroups());
 		data.checkForUpdates = checkForUpdates;
 		data.hypixelModApi = hypixelModApi;
+		return data;
+	}
+
+	private static void writeSnapshot(Data data, long version) {
 		Path temporary = null;
+		boolean success = false;
 		try {
 			Files.createDirectories(PATH.getParent());
 			temporary = Files.createTempFile(PATH.getParent(), "config-", ".tmp");
@@ -294,14 +350,11 @@ public final class ModConfig {
 				Files.move(temporary, PATH, StandardCopyOption.REPLACE_EXISTING);
 			}
 			temporary = null;
-			dirty = false;
-			lastFlush = System.currentTimeMillis();
+			success = true;
 		} catch (IOException e) {
-			// Never propagated: save() runs from screen teardown and from every setting toggle, so
-			// a read-only config dir or a full disk would otherwise take the screen down with it. Keep
-			// dirty set so the next debounced flush can retry the complete snapshot.
-			dirty = true;
 			GeilerAddons.LOGGER.error("Failed to save GeilerAddons config to {}", PATH, e);
+		} catch (RuntimeException e) {
+			GeilerAddons.LOGGER.error("Failed to serialize GeilerAddons config to {}", PATH, e);
 		} finally {
 			if (temporary != null) {
 				try {
@@ -309,6 +362,11 @@ public final class ModConfig {
 				} catch (IOException cleanupError) {
 					GeilerAddons.LOGGER.debug("Failed to remove temporary config file {}", temporary, cleanupError);
 				}
+			}
+			synchronized (SAVE_LOCK) {
+				lastFlush = System.currentTimeMillis();
+				if (!success || mutationVersion != version) dirty = true;
+				else dirty = false;
 			}
 		}
 	}

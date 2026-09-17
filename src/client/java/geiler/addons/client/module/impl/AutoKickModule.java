@@ -233,6 +233,14 @@ public final class AutoKickModule extends Module {
 				ProfileRetry current = profileRetries.get(retry.key);
 				if (current != retry) return;
 				retry.inFlight = false;
+				// A response that crossed the retry deadline is still useful for the next
+				// manual decision, but must never turn an expired safety window into an
+				// automatic kick.
+				if (System.currentTimeMillis() - retry.startedAt >= profileRetryWindowMillis()) {
+					profileRetries.remove(retry.key);
+					if (manualFallbacks.add(retry.key)) queueManualFallback(retry);
+					return;
+				}
 				if (!result.available()) {
 					retry.lastError = result.error();
 					debug("Profile retry %d for %s failed: %s", retry.attempts, retry.name, retry.lastError);
@@ -265,7 +273,8 @@ public final class AutoKickModule extends Module {
 		Component message = Component.literal("[Auto Kick] ").withStyle(ChatFormatting.YELLOW)
 			.append(Component.literal(retry.name + " could not be verified after "
 				+ Math.round(profileRetryWindowMillis() / 1000.0) + "s; automatic kick skipped. "
-				+ "Missing: " + reason + suffix + " ").withStyle(ChatFormatting.GRAY))
+				+ "Missing: " + reason + suffix + ". Choose Kick or manually ban/ignore them: ")
+				.withStyle(ChatFormatting.GRAY))
 			.append(kickAction(retry.name));
 		queueNotice(message);
 	}
@@ -488,7 +497,12 @@ public final class AutoKickModule extends Module {
 			if (dupeCheck.value() && dungeonClass == null) result.unknowns.add("Class");
 			if (dupeCheck.value() && dungeonClass != null) {
 				for (PartyMember other : snapshot.members()) {
-					if (!other.name().equalsIgnoreCase(member.name()) && dungeonClass == other.dungeonClass()) {
+					if (other.name().equalsIgnoreCase(member.name())) continue;
+					if (other.dungeonClass() == null) {
+						if (!result.unknowns.contains("Party classes")) result.unknowns.add("Party classes");
+						continue;
+					}
+					if (dungeonClass == other.dungeonClass()) {
 						result.failures.add("duplicate " + dungeonClass.displayName());
 						break;
 					}

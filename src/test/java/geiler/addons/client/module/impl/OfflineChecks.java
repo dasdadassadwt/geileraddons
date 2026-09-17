@@ -1,5 +1,6 @@
 package geiler.addons.client.module.impl;
 
+import geiler.addons.client.dungeon.DungeonStatsChecks;
 import geiler.addons.client.enchanting.ExperimentCell;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
 import geiler.addons.client.enchanting.ChronomatronEvent;
@@ -30,6 +31,7 @@ public final class OfflineChecks {
 
 	public static void main(String[] args) {
 		checkIslandModes();
+		DungeonStatsChecks.run();
 		checkPersonalBestBoundaries();
 		checkAutoKickLabels();
 		checkExperimentPreviewConfiguration();
@@ -182,6 +184,12 @@ public final class OfflineChecks {
 		assertTrue(AutoKickRules.personalBestPasses(59, 60), "faster PB passes");
 		assertFalse(AutoKickRules.personalBestPasses(61, 60), "slower PB fails");
 		assertFalse(AutoKickRules.personalBestPasses(0, 60), "missing PB fails a configured check");
+		ExperimentMilestone chrono = ExperimentMilestone.forExperiment(
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, 0).orElseThrow();
+		assertFalse(chrono.reached(chrono.displayedSequenceLength() - 1, 0),
+			"Chronomatron does not reach max clicks before the final sequence is known");
+		assertTrue(chrono.reached(chrono.displayedSequenceLength(), 0),
+			"Chronomatron reaches max clicks as soon as the final sequence is displayed");
 	}
 
 	private static void checkAutoKickLabels() {
@@ -352,7 +360,7 @@ public final class OfflineChecks {
 		assertFalse(pairsGeometry.containsSlot(10), "High Superpairs excludes the side frame");
 
 		ExperimentSolverEngine engine = new ExperimentSolverEngine(
-			new ExperimentSolverEngine.Configuration(true, 0));
+			new ExperimentSolverEngine.Configuration(0));
 		String chronoTitle = "Chronomatron (Metaphysical)";
 		var memory = engine.observe(new ExperimentSnapshot(chronoTitle,
 			"Remember the pattern!", List.of(), -1, 0, -1, 1),
@@ -501,21 +509,25 @@ public final class OfflineChecks {
 			"a stale memory label cannot end an unfinished solve");
 
 		var predictionEngine = new ExperimentSolverEngine(
-			new ExperimentSolverEngine.Configuration(true, 0));
+			new ExperimentSolverEngine.Configuration(0));
 		predictionEngine.observe(new ExperimentSnapshot(chronoTitle, "Remember the pattern!", List.of(),
 			-1, 0, -1, 31), ChronomatronEvent.board(17, "red", true));
 		predictionEngine.observe(new ExperimentSnapshot(chronoTitle, "Timer: 4.0s", List.of(),
 			-1, 0, -1, 32), ChronomatronEvent.status("Timer: 4.0s"));
 		predictionEngine.observe(new ExperimentSnapshot(chronoTitle, "Timer: 4.0s",
 			List.of(ExperimentCell.token(17, "red", false)), -1, 0, -1, 32));
-		assertTrue(predictionEngine.onClick(17).predicted(), "0 Ping advances only the local model");
+		var pendingPrediction = predictionEngine.onClick(17);
+		assertTrue(pendingPrediction.expected(), "sequence click is accepted for vanilla dispatch");
+		assertFalse(pendingPrediction.predicted(), "sequence clicks never use local 0 Ping prediction");
 		predictionEngine.observe(new ExperimentSnapshot(chronoTitle, "Timer: 3.0s",
 			List.of(ExperimentCell.token(17, "red", false)), -1, 0, 0, 33));
-		assertEquals(1, predictionEngine.view().visualIndex(),
-			"a later snapshot cannot overwrite the 0 Ping cursor");
+		assertEquals(0, predictionEngine.view().visualIndex(),
+			"a later snapshot leaves the cursor unchanged until confirmation");
+		assertTrue(predictionEngine.confirmClick(17).visualStateChanged(),
+			"vanilla dispatch confirmation advances the sequence cursor");
 
 		var normalEngine = new ExperimentSolverEngine(
-			new ExperimentSolverEngine.Configuration(false, 0));
+			new ExperimentSolverEngine.Configuration(0));
 		normalEngine.observe(new ExperimentSnapshot(chronoTitle, "Remember the pattern!", List.of(),
 			-1, 0, -1, 1), ChronomatronEvent.board(17, "red", true));
 		normalEngine.observe(new ExperimentSnapshot(chronoTitle, "Timer: 4.0s", List.of(),
@@ -527,7 +539,7 @@ public final class OfflineChecks {
 			"normal click confirmation advances without an item-stack diff");
 		assertEquals(1, normalEngine.view().visualIndex(), "normal click advances the authoritative cursor");
 
-		var ultra = new ExperimentSolverEngine(new ExperimentSolverEngine.Configuration(false, 3));
+		var ultra = new ExperimentSolverEngine(new ExperimentSolverEngine.Configuration(3));
 		var ultraMemory = ultra.observe(new ExperimentSnapshot("Ultrasequencer (Metaphysical)",
 			"Remember the pattern!", List.of(ExperimentCell.number(30, 1), ExperimentCell.number(31, 2),
 				ExperimentCell.number(32, 3), ExperimentCell.number(33, 4), ExperimentCell.number(34, 5),
@@ -552,19 +564,20 @@ public final class OfflineChecks {
 		assertEquals(6, milestone.displayedSequenceLength(), "serums lower the displayed target");
 		assertEquals(5, milestone.completedRoundThreshold(), "Ultrasequencer target is one round earlier");
 
-		var ultraZeroPing = new ExperimentSolverEngine(
-			new ExperimentSolverEngine.Configuration(true, 0));
-		String zeroPingTitle = "Ultrasequencer (High)";
-		ultraZeroPing.observe(new ExperimentSnapshot(zeroPingTitle, "Remember the pattern!",
+		var ultraPending = new ExperimentSolverEngine(new ExperimentSolverEngine.Configuration(0));
+		String ultraTitle = "Ultrasequencer (High)";
+		ultraPending.observe(new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
 			List.of(ExperimentCell.number(30, 1), ExperimentCell.number(31, 2)), "black", 50));
-		ultraZeroPing.observe(new ExperimentSnapshot(zeroPingTitle, "Timer: 1.0s",
+		ultraPending.observe(new ExperimentSnapshot(ultraTitle, "Timer: 1.0s",
 			List.of(ExperimentCell.token(30, "white", false)), "white", 51));
-		assertTrue(ultraZeroPing.onClick(30).predicted(),
-			"Ultrasequencer 0 Ping advances its local cursor immediately");
-		ultraZeroPing.observe(new ExperimentSnapshot(zeroPingTitle, "Timer: 0.5s",
+		assertFalse(ultraPending.onClick(30).predicted(),
+			"Ultrasequencer does not advance through local 0 Ping prediction");
+		ultraPending.observe(new ExperimentSnapshot(ultraTitle, "Timer: 0.5s",
 			List.of(ExperimentCell.token(30, "white", false)), "white", 52));
-		assertEquals(1, ultraZeroPing.view().visualIndex(),
-			"Ultrasequencer snapshots cannot overwrite a 0 Ping cursor");
+		assertEquals(0, ultraPending.view().visualIndex(),
+			"Ultrasequencer waits for dispatch confirmation");
+		assertTrue(ultraPending.confirmClick(30).visualStateChanged(),
+			"Ultrasequencer advances after dispatch confirmation");
 
 		SuperpairsBoard board = new SuperpairsBoard();
 		board.observe(List.of(new ExperimentCell(10, "BOOK", -1, true, false, false),

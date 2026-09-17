@@ -196,7 +196,8 @@ public final class I4HelperModule extends Module {
 
 	public void onChatMessage(String message) {
 		if (!isEnabled() || !onDevice) return;
-		var matcher = COMPLETED_DEVICE.matcher(message);
+		String normalized = ChatText.plain(message == null ? "" : message).trim();
+		var matcher = COMPLETED_DEVICE.matcher(normalized);
 		if (!matcher.matches()) return;
 
 		LocalPlayer player = Minecraft.getInstance().player;

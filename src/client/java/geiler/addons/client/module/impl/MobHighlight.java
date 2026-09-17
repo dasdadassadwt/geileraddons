@@ -12,6 +12,7 @@ import geiler.addons.client.module.TextSetting;
 import net.minecraft.world.entity.Entity;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -99,7 +100,9 @@ public final class MobHighlight {
 	}
 
 	public Map<Island, BooleanSetting> islands() {
-		return islands;
+		// The settings themselves remain mutable by the config/UI, but callers must not be able
+		// to add or remove enum entries and silently desynchronise the rendered group.
+		return Collections.unmodifiableMap(islands);
 	}
 
 	/**

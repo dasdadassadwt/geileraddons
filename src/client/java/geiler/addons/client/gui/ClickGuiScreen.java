@@ -167,6 +167,7 @@ public class ClickGuiScreen extends Screen {
 		ClickGuiState.setOpenModule(openSettingsModule);
 		ClickGuiState.setExpandedColor(expandedColorSetting);
 		ClickGuiState.setSettingsScroll(settingsScroll);
+		ModConfig.markDirty();
 	}
 
 	private ClickGuiMotion motion() {

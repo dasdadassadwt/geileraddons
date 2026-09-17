@@ -59,7 +59,8 @@ if leadership and membership are still valid. Multiple actions are serialized. *
 instead shows the reasons client-side with a clickable **Kick** button and schedules no command.
 Missing API data never causes an automatic kick.
 The profile retry window and retry interval are configurable under **Safety**; after the window
-expires the mod stops retrying and offers a manual **Kick** action instead.
+expires the mod stops retrying and offers a manual **Kick** action, with a reminder to ban or
+ignore the player yourself if that is what you want.
 
 </details>
 

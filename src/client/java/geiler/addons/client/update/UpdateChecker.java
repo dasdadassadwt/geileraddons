@@ -14,6 +14,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 /**
@@ -30,6 +34,7 @@ public final class UpdateChecker {
 	private static final String RELEASES_PAGE =
 		"https://github.com/dasdadassadwt/geileraddons/releases/latest";
 	private static final Duration TIMEOUT = Duration.ofSeconds(10);
+	private static final int MAX_RESPONSE_BYTES = 256 * 1024;
 
 	/** Non-null only when a strictly newer release exists. Written off-thread, so volatile. */
 	private static volatile String newerVersion;
@@ -89,13 +94,18 @@ public final class UpdateChecker {
 				.GET()
 				.build();
 
-			HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+			HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
 			if (response.statusCode() != 200) {
+				response.body().close();
 				GeilerAddons.LOGGER.debug("Update check got HTTP {}", response.statusCode());
 				return;
 			}
 
-			JsonObject json = new Gson().fromJson(response.body(), JsonObject.class);
+			String body;
+			try (InputStream input = response.body()) {
+				body = readLimited(input, MAX_RESPONSE_BYTES);
+			}
+			JsonObject json = new Gson().fromJson(body, JsonObject.class);
 			if (json == null || !json.has("tag_name")) return;
 			String tag = stripPrefix(json.get("tag_name").getAsString());
 			if (isNewer(tag, currentVersion)) {
@@ -107,6 +117,21 @@ public final class UpdateChecker {
 			// Offline, rate-limited, DNS-blocked, malformed body - none of it is worth a warning.
 			GeilerAddons.LOGGER.debug("Update check failed", e);
 		}
+	}
+
+	private static String readLimited(InputStream input, int maximumBytes) throws IOException {
+		ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(maximumBytes, 16 * 1024));
+		byte[] buffer = new byte[4096];
+		int total = 0;
+		while (true) {
+			int read = input.read(buffer);
+			if (read < 0) break;
+			if (read == 0) continue;
+			total += read;
+			if (total > maximumBytes) throw new IOException("Update response exceeded " + maximumBytes + " bytes");
+			output.write(buffer, 0, read);
+		}
+		return output.toString(StandardCharsets.UTF_8);
 	}
 
 	private static String stripPrefix(String tag) {
