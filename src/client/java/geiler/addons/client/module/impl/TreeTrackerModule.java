@@ -88,7 +88,7 @@ public final class TreeTrackerModule extends Module implements HudElement {
 	private static void resetSession() {
 		TreeTrackerModule module = INSTANCE;
 		module.tracker.resetSession(System.currentTimeMillis(), module.timeoutMillis());
-		ModConfig.save();
+		ModConfig.markDirty();
 	}
 
 	/** Ends whatever session was restored from disk, crediting it to the totals. */

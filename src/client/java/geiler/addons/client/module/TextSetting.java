@@ -21,9 +21,10 @@ public final class TextSetting implements Setting {
 	public TextSetting(String name, String displayName, String defaultValue, int maxLength) {
 		this.name = name;
 		this.displayName = displayName;
-		this.defaultValue = defaultValue;
-		this.maxLength = maxLength;
-		this.value = defaultValue;
+		this.defaultValue = defaultValue == null ? "" : defaultValue;
+		this.maxLength = Math.max(0, maxLength);
+		this.value = this.defaultValue.length() > this.maxLength
+			? this.defaultValue.substring(0, this.maxLength) : this.defaultValue;
 	}
 
 	@Override
@@ -45,6 +46,7 @@ public final class TextSetting implements Setting {
 	}
 
 	public void setValue(String value) {
+		if (value == null) return;
 		this.value = value.length() > maxLength ? value.substring(0, maxLength) : value;
 	}
 
@@ -77,6 +79,6 @@ public final class TextSetting implements Setting {
 	}
 
 	public void reset() {
-		value = defaultValue;
+		value = defaultValue.length() > maxLength ? defaultValue.substring(0, maxLength) : defaultValue;
 	}
 }

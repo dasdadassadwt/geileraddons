@@ -30,6 +30,7 @@ public final class PartyListBackend {
 	private static Map<String, PartyMember> listMetadata = Map.of();
 	private static String leaderName;
 	private static boolean inParty;
+	/** Session token: ordinary joins/leaves and repeated /p list snapshots do not invalidate work. */
 	private static long generation;
 	private static long tick;
 	private static long lastListMessageTick = Long.MIN_VALUE;
@@ -141,6 +142,10 @@ public final class PartyListBackend {
 		if (!listMessageDirty || tick - lastListMessageTick < 2) return false;
 		listMessageDirty = false;
 		listMetadata = Map.of();
+		if (MEMBERS.isEmpty()) {
+			inParty = false;
+			leaderName = null;
+		}
 		return true;
 	}
 
@@ -193,7 +198,6 @@ public final class PartyListBackend {
 		MEMBERS.clear();
 		leaderName = null;
 		inParty = true;
-		generation++;
 		markListMessage();
 	}
 

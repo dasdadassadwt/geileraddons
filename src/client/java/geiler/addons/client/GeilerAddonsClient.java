@@ -14,6 +14,7 @@ import geiler.addons.client.module.impl.AutoKickModule;
 import geiler.addons.client.module.impl.DebugModule;
 import geiler.addons.client.module.impl.PartyFinderStatsModule;
 import geiler.addons.client.party.PartyListBackend;
+import geiler.addons.client.tree.ChatText;
 import geiler.addons.client.module.impl.SafariFloorDropsModule;
 import geiler.addons.client.module.impl.SparklingCritterModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
@@ -56,14 +57,16 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		// Subscribe before joining a server; the official API owns the channel registration.
 		HypixelModApi.init();
 		ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> {
-			String content = message.getString();
+			String content = ChatText.plain(message.getString()).trim();
 			PartyListBackend.onChatMessage(content);
 			PartyFinderStatsModule.INSTANCE.onChatMessage(content);
 			I4HelperModule.INSTANCE.onChatMessage(content);
 			TikiHelperModule.INSTANCE.onChatMessage(content);
 			TreeTrackerModule.INSTANCE.onChatMessage(content);
-			// Observers always receive the raw server line before the only intentional suppression.
-			return overlay || !TreeNotifierModule.INSTANCE.onChatMessage(content, message);
+			// Observers receive the normalized line even for overlays; overlay rendering remains
+			// vanilla-owned, while TreeNotifier still gets a chance to classify the message.
+			boolean suppress = TreeNotifierModule.INSTANCE.onChatMessage(content, message);
+			return overlay || !suppress;
 		});
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {

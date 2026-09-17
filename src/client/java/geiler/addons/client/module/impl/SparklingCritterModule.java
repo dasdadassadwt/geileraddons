@@ -66,6 +66,7 @@ public final class SparklingCritterModule extends Module {
 	private static final int HUD_LABEL_HALF_HEIGHT = 4;
 	/** What an unreadable "Range to Send" falls back to, matching the setting's own default. */
 	private static final double DEFAULT_RANGE = 5;
+	private static final double MAX_ANNOUNCE_RANGE = 128;
 	private static final int MAX_RANGE_TEXT_LENGTH = 6;
 
 	private final ColorSetting color;
@@ -283,7 +284,9 @@ public final class SparklingCritterModule extends Module {
 	/** Falls back to the default rather than refusing to announce, if the box holds nonsense. */
 	private double rangeToSend() {
 		try {
-			return Math.max(0, Double.parseDouble(rangeToSend.value().trim()));
+			double parsed = Double.parseDouble(rangeToSend.value().trim());
+			if (!Double.isFinite(parsed)) return DEFAULT_RANGE;
+			return Math.min(MAX_ANNOUNCE_RANGE, Math.max(0, parsed));
 		} catch (NumberFormatException e) {
 			return DEFAULT_RANGE;
 		}

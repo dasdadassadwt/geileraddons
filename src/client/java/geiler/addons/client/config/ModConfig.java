@@ -28,6 +28,7 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -218,8 +219,6 @@ public final class ModConfig {
 	}
 
 	public static void save() {
-		dirty = false;
-		lastFlush = System.currentTimeMillis();
 		Data data = new Data();
 		for (Module module : ModuleManager.modules()) {
 			data.enabled.put(module.name(), module.isEnabled());
@@ -282,15 +281,35 @@ public final class ModConfig {
 		data.uiCollapsedGroups = new ArrayList<>(ClickGuiState.collapsedGroups());
 		data.checkForUpdates = checkForUpdates;
 		data.hypixelModApi = hypixelModApi;
+		Path temporary = null;
 		try {
 			Files.createDirectories(PATH.getParent());
-			try (Writer writer = Files.newBufferedWriter(PATH)) {
+			temporary = Files.createTempFile(PATH.getParent(), "config-", ".tmp");
+			try (Writer writer = Files.newBufferedWriter(temporary)) {
 				GSON.toJson(data, writer);
 			}
+			try {
+				Files.move(temporary, PATH, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+			} catch (AtomicMoveNotSupportedException unsupported) {
+				Files.move(temporary, PATH, StandardCopyOption.REPLACE_EXISTING);
+			}
+			temporary = null;
+			dirty = false;
+			lastFlush = System.currentTimeMillis();
 		} catch (IOException e) {
 			// Never propagated: save() runs from screen teardown and from every setting toggle, so
-			// a read-only config dir or a full disk would otherwise take the screen down with it.
+			// a read-only config dir or a full disk would otherwise take the screen down with it. Keep
+			// dirty set so the next debounced flush can retry the complete snapshot.
+			dirty = true;
 			GeilerAddons.LOGGER.error("Failed to save GeilerAddons config to {}", PATH, e);
+		} finally {
+			if (temporary != null) {
+				try {
+					Files.deleteIfExists(temporary);
+				} catch (IOException cleanupError) {
+					GeilerAddons.LOGGER.debug("Failed to remove temporary config file {}", temporary, cleanupError);
+				}
+			}
 		}
 	}
 

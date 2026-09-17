@@ -55,6 +55,7 @@ public final class TreeTracker {
 		for (TreeStats value : stats.values()) {
 			value.rollOver(now, timeoutMillis);
 		}
+		lastGifted = null;
 	}
 
 	/**
@@ -68,6 +69,7 @@ public final class TreeTracker {
 		for (TreeStats value : stats.values()) {
 			value.rollOver(0, 0);
 		}
+		lastGifted = null;
 	}
 
 	public boolean hasAnyData() {

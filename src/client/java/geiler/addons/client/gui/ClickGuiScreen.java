@@ -1473,7 +1473,7 @@ public class ClickGuiScreen extends Screen {
 				card.module.toggle();
 				animateToggle(card.module, wasEnabled, card.module.isEnabled());
 				persistView();
-				ModConfig.save();
+				ModConfig.markDirty();
 			} else if (card.module.hasSettings()) {
 				markInteraction(card.module);
 				playClick();
@@ -1512,7 +1512,7 @@ public class ClickGuiScreen extends Screen {
 						groupRow.group.toggle().toggle();
 						animateToggle(groupRow.group.toggle(), wasEnabled, groupRow.group.toggle().value());
 						persistView();
-						ModConfig.save();
+						ModConfig.markDirty();
 						return true;
 					}
 					if (groupRow.bounds.contains(mouseX, mouseY)) {
@@ -1526,7 +1526,7 @@ public class ClickGuiScreen extends Screen {
 						clampViewScroll();
 						List<Row> after = settingsRows(module, x, panelY);
 						startSettingsLayoutTransition(module, before, after);
-						ModConfig.save();
+						ModConfig.markDirty();
 						return true;
 					}
 				}
@@ -1590,7 +1590,7 @@ public class ClickGuiScreen extends Screen {
 						toggleRow.setting.toggle();
 						animateToggle(toggleRow.setting, wasEnabled, toggleRow.setting.value());
 						persistView();
-						ModConfig.save();
+						ModConfig.markDirty();
 						return true;
 					}
 				}
@@ -1600,7 +1600,7 @@ public class ClickGuiScreen extends Screen {
 						playClick();
 						if (left) choiceRow.setting.selectNext();
 						else choiceRow.setting.selectPrevious();
-						ModConfig.save();
+						ModConfig.markDirty();
 						return true;
 					}
 				}
@@ -1664,7 +1664,7 @@ public class ClickGuiScreen extends Screen {
 			draggingPicker = null;
 			draggingNumberSetting = null;
 			persistView();
-			ModConfig.save();
+			ModConfig.markDirty();
 			return true;
 		}
 		return super.mouseReleased(event);
@@ -1731,7 +1731,7 @@ public class ClickGuiScreen extends Screen {
 		focusedTextSetting = null;
 		focusedHexSetting = null;
 		hexInput = "";
-		ModConfig.save();
+		ModConfig.markDirty();
 	}
 
 	@Override

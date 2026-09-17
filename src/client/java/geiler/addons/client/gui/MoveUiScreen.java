@@ -112,7 +112,7 @@ public class MoveUiScreen extends Screen {
 	public boolean mouseReleased(MouseButtonEvent event) {
 		if (dragging == null) return super.mouseReleased(event);
 		dragging = null;
-		ModConfig.save();
+		ModConfig.markDirty();
 		return true;
 	}
 

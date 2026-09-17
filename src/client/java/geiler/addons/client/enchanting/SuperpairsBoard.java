@@ -18,6 +18,7 @@ import java.util.Set;
  * discovered identities, duplicate hints, and completed pairs.</p>
  */
 public final class SuperpairsBoard {
+	private static final long REVEAL_RETRY_DELAY_NANOS = 500_000_000L;
 	private final Set<Integer> slots = new LinkedHashSet<>();
 	private final Map<Integer, String> known = new LinkedHashMap<>();
 	private final Set<Integer> resolved = new LinkedHashSet<>();
@@ -25,6 +26,7 @@ public final class SuperpairsBoard {
 	private final Set<Integer> visibleSlots = new HashSet<>();
 	private int selectedSlot = -1;
 	private int awaitingRevealSlot = -1;
+	private long awaitingRevealAtNanos;
 	private int comparisonFirstSlot = -1;
 	private int comparisonSecondSlot = -1;
 	private boolean comparisonMatch;
@@ -39,6 +41,7 @@ public final class SuperpairsBoard {
 		visibleSlots.clear();
 		selectedSlot = -1;
 		awaitingRevealSlot = -1;
+		awaitingRevealAtNanos = 0;
 		clearComparison();
 	}
 
@@ -64,6 +67,7 @@ public final class SuperpairsBoard {
 
 		if (awaitingRevealSlot >= 0 && known.containsKey(awaitingRevealSlot)) {
 			awaitingRevealSlot = -1;
+			awaitingRevealAtNanos = 0;
 		}
 		evaluateComparison();
 		if (comparisonMatch && comparisonRevealed && pairHidden(visible)) {
@@ -71,10 +75,12 @@ public final class SuperpairsBoard {
 			resolved.add(comparisonSecondSlot);
 			selectedSlot = -1;
 			awaitingRevealSlot = -1;
+			awaitingRevealAtNanos = 0;
 			clearComparison();
 		} else if (comparisonMismatch && comparisonRevealed && pairHidden(visible)) {
 			selectedSlot = -1;
 			awaitingRevealSlot = -1;
+			awaitingRevealAtNanos = 0;
 			clearComparison();
 		}
 
@@ -108,18 +114,40 @@ public final class SuperpairsBoard {
 		comparisonMismatch = !comparisonMatch;
 	}
 
-	/** Records the last local click; it never blocks a later field while a reveal is in flight. */
+	/**
+	 * Records a local click. A second click is deliberately rejected until the first reveal is
+	 * observed; this prevents one pending server update from being attributed to the wrong card.
+	 * If the reveal never arrives, the same control becomes retryable after a short grace period.
+	 */
 	public boolean click(int slotId) {
+		return click(slotId, System.nanoTime());
+	}
+
+	boolean click(int slotId, long nowNanos) {
 		if (!slots.contains(slotId) || resolved.contains(slotId)) return false;
+		if (awaitingRevealSlot >= 0) {
+			if (nowNanos - awaitingRevealAtNanos < REVEAL_RETRY_DELAY_NANOS) return false;
+			// The old request is no longer trusted. Drop only the unconfirmed selection; learned
+			// identities and already completed pairs remain authoritative.
+			selectedSlot = -1;
+			awaitingRevealSlot = -1;
+			awaitingRevealAtNanos = 0;
+			clearComparison();
+		}
 		if (selectedSlot == slotId) return false;
 		int previous = selectedSlot;
 		selectedSlot = slotId;
 		awaitingRevealSlot = known.containsKey(slotId) ? -1 : slotId;
+		awaitingRevealAtNanos = awaitingRevealSlot >= 0 ? nowNanos : 0;
 		clearComparison();
 		if (previous >= 0 && previous != slotId && !resolved.contains(previous)) {
 			comparisonFirstSlot = previous;
 			comparisonSecondSlot = slotId;
-			comparisonRevealed = visibleSlots.contains(previous) || visibleSlots.contains(slotId);
+			// If both identities were already learned, the server may reveal and hide the pair in one
+			// update (the instant-reward event). Their identities are enough to classify the pair; the
+			// hide transition still remains the completion boundary below.
+			comparisonRevealed = visibleSlots.contains(previous) || visibleSlots.contains(slotId)
+				|| (known.containsKey(previous) && known.containsKey(slotId));
 			evaluateComparison();
 		}
 		return true;

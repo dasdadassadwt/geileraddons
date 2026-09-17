@@ -1,6 +1,5 @@
 package geiler.addons.client.dungeon;
 
-import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.world.entity.player.Inventory;
@@ -9,6 +8,7 @@ import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.TooltipFlag;
+import geiler.addons.client.tree.ChatText;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -26,9 +26,9 @@ public final class DungeonQueueFloorTracker {
 	private static final long CANDIDATE_MAX_AGE_NANOS = Duration.ofSeconds(15).toNanos();
 	private static final Pattern CURRENTLY_SELECTED = Pattern.compile("(?i)^Currently Selected:\\s*(.+)$");
 	private static final Pattern FLOOR = Pattern.compile(
-		"(?i)^(?:Floor\\s*)?(VII|VI|IV|V|III|II|I|[1-7])$");
+		"(?i)^(?:Floor\\s*)?(?:(F|M)\\s*)?(VII|VI|IV|V|III|II|I|[1-7])$");
 	private static final Pattern LISTING_FLOOR = Pattern.compile(
-		"(?i)^Floor:?\\s*(?:Floor\\s*)?(VII|VI|IV|V|III|II|I|[1-7])$");
+		"(?i)^Floor:?\\s*(?:Floor\\s*)?(?:(F|M)\\s*)?(VII|VI|IV|V|III|II|I|[1-7])$");
 
 	private static DungeonFloor candidate;
 	private static long candidateCapturedAt;
@@ -77,8 +77,9 @@ public final class DungeonQueueFloorTracker {
 			clearCandidate();
 			return CaptureResult.failed("the selected floor was not F1-F7 or M1-M7: " + clean(floorValue));
 		}
-		int floorNumber = romanFloor(floorMatcher.group(1));
-		boolean master = normalizedType.contains("master mode") || normalizedType.contains("master catacombs");
+		int floorNumber = romanFloor(floorMatcher.group(2));
+		boolean master = normalizedType.contains("master mode") || normalizedType.contains("master catacombs")
+			|| "M".equalsIgnoreCase(floorMatcher.group(1));
 		DungeonFloor captured = DungeonFloor.parse((master ? "M" : "F") + floorNumber);
 		if (captured == null) {
 			clearCandidate();
@@ -113,7 +114,10 @@ public final class DungeonQueueFloorTracker {
 				master = lower.contains("master mode") || lower.contains("master catacombs");
 			}
 			Matcher floorMatcher = LISTING_FLOOR.matcher(line);
-			if (floorMatcher.matches()) number = romanFloor(floorMatcher.group(1));
+			if (floorMatcher.matches()) {
+				number = romanFloor(floorMatcher.group(2));
+				if ("M".equalsIgnoreCase(floorMatcher.group(1))) master = true;
+			}
 		}
 		if (!catacombs || number == 0) {
 			clearJoinedListingCandidate();
@@ -237,8 +241,7 @@ public final class DungeonQueueFloorTracker {
 	}
 
 	private static String clean(String value) {
-		String stripped = ChatFormatting.stripFormatting(value == null ? "" : value);
-		return stripped == null ? "" : stripped.trim();
+		return ChatText.plain(value == null ? "" : value).trim();
 	}
 
 	private record MenuEntry(int slot, String name, List<String> tooltip, boolean emeraldBlock,

@@ -7,6 +7,18 @@ import java.util.UUID;
 
 /** Profile data used by Party Finder Stats and Auto Kick. */
 public final class DungeonStats {
+	/** Individual profile facts that can be unavailable even when the profile object exists. */
+	public enum DataField {
+		CATACOMBS_LEVEL,
+		SELECTED_CLASS,
+		CLASS_AVERAGE,
+		SECRETS,
+		RUNS,
+		MAGICAL_POWER,
+		BANK,
+		GEAR
+	}
+
 	private final String name;
 	private final UUID uuid;
 	private final int catacombsLevel;
@@ -22,6 +34,7 @@ public final class DungeonStats {
 	private final boolean gearKnown;
 	private final EnumSet<Gear> gear;
 	private final Map<DungeonFloor, Long> fastestSPlusSeconds;
+	private final EnumSet<DataField> availableFields;
 
 	public enum Gear { TERMINATOR, HYPERION, GOLDEN_DRAGON }
 
@@ -29,6 +42,15 @@ public final class DungeonStats {
 		Map<DungeonClass, Integer> classLevels,
 		double classAverage, long totalSecrets, long totalRuns, int magicalPower, long bank, boolean bankKnown,
 		boolean gearKnown, EnumSet<Gear> gear, Map<DungeonFloor, Long> fastestSPlusSeconds) {
+		this(name, uuid, catacombsLevel, selectedClass, classLevels, classAverage, totalSecrets, totalRuns,
+			magicalPower, bank, bankKnown, gearKnown, gear, fastestSPlusSeconds, EnumSet.noneOf(DataField.class));
+	}
+
+	public DungeonStats(String name, UUID uuid, int catacombsLevel, DungeonClass selectedClass,
+		Map<DungeonClass, Integer> classLevels,
+		double classAverage, long totalSecrets, long totalRuns, int magicalPower, long bank, boolean bankKnown,
+		boolean gearKnown, EnumSet<Gear> gear, Map<DungeonFloor, Long> fastestSPlusSeconds,
+		EnumSet<DataField> availableFields) {
 		this.name = name;
 		this.uuid = uuid;
 		this.catacombsLevel = catacombsLevel;
@@ -44,6 +66,7 @@ public final class DungeonStats {
 		this.gearKnown = gearKnown;
 		this.gear = gear.clone();
 		this.fastestSPlusSeconds = Map.copyOf(fastestSPlusSeconds);
+		this.availableFields = availableFields.clone();
 	}
 
 	public String name() { return name; }
@@ -61,6 +84,18 @@ public final class DungeonStats {
 	public boolean bankKnown() { return bankKnown; }
 	public boolean gearKnown() { return gearKnown; }
 	public boolean has(Gear item) { return gear.contains(item); }
+	public boolean has(DataField field) { return availableFields.contains(field); }
+	public boolean hasClassLevel(DungeonClass dungeonClass) {
+		return dungeonClass != null && classLevels.containsKey(dungeonClass);
+	}
+	public boolean hasPersonalBest(DungeonFloor floor) {
+		return floor != null && fastestSPlusSeconds.containsKey(floor);
+	}
+	public boolean cacheable() {
+		return has(DataField.CATACOMBS_LEVEL) && has(DataField.CLASS_AVERAGE)
+			&& has(DataField.SECRETS) && has(DataField.RUNS) && has(DataField.MAGICAL_POWER)
+			&& has(DataField.BANK) && has(DataField.GEAR);
+	}
 
 	public long fastestSPlusSeconds(DungeonFloor floor) {
 		return fastestSPlusSeconds.getOrDefault(floor, 0L);

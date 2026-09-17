@@ -23,6 +23,10 @@ public final class NumberSetting implements Setting {
 
 	public NumberSetting(String name, String displayName, float min, float max, float defaultValue,
 		boolean integer) {
+		if (!Float.isFinite(min) || !Float.isFinite(max) || min > max) {
+			throw new IllegalArgumentException("Invalid number setting range");
+		}
+		if (!Float.isFinite(defaultValue)) defaultValue = min;
 		this.name = name;
 		this.displayName = displayName;
 		this.min = min;
@@ -54,15 +58,18 @@ public final class NumberSetting implements Setting {
 	}
 
 	public void setValue(float value) {
+		if (!Float.isFinite(value)) return;
 		this.value = clamp(value);
 	}
 
 	/** 0-1 position along the slider track. */
 	public float fraction() {
+		if (max == min) return 0;
 		return (value - min) / (max - min);
 	}
 
 	public void setFraction(float fraction) {
+		if (!Float.isFinite(fraction)) return;
 		fraction = Math.max(0, Math.min(1, fraction));
 		this.value = clamp(min + (max - min) * fraction);
 	}

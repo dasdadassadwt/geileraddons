@@ -3,6 +3,7 @@ package geiler.addons.client.entity;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -36,12 +37,17 @@ public final class Nameplates {
 	 *         null when the label turns out to belong to no mob at all
 	 */
 	public static Entity resolveBody(ClientLevel level, Entity matched) {
-		if (hasBody(matched)) return matched;
+		return resolveBody(level, matched, false);
+	}
+
+	/** Resolves labels to real mob bodies; player bodies require an explicit opt-in. */
+	public static Entity resolveBody(ClientLevel level, Entity matched, boolean includePlayers) {
+		if (allowedBody(matched, includePlayers)) return matched;
 
 		Vec3 at = matched.position();
 		List<LivingEntity> nearby = level.getEntities(EntityTypeTest.forClass(LivingEntity.class),
 			AABB.ofSize(at, SEARCH_RADIUS * 2, SEARCH_RADIUS * 2, SEARCH_RADIUS * 2),
-			Nameplates::hasBody);
+			entity -> allowedBody(entity, includePlayers));
 
 		LivingEntity best = null;
 		double bestDistance = Double.MAX_VALUE;
@@ -53,5 +59,9 @@ public final class Nameplates {
 			}
 		}
 		return best;
+	}
+
+	private static boolean allowedBody(Entity entity, boolean includePlayers) {
+		return hasBody(entity) && (includePlayers || !(entity instanceof Player));
 	}
 }

@@ -10,59 +10,142 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
- * One log file per debug session under the game's {@code logs/} folder. Every line is flushed
- * immediately - a crash or an alt-F4 mid-experiment must not cost the data it was gathering.
+ * One log file per debug session under the game's {@code logs/} folder. Lines are queued to a
+ * daemon writer so block rescans never perform disk I/O on the client thread.
  */
 public final class TikiDebugLog {
-	private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
+	private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss-SSS");
 	private static final DateTimeFormatter LINE_STAMP = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+	private static final String STOP = "\u0000GEILERADDONS_TIKI_STOP\u0000";
 
-	private static Path path;
-	private static Writer writer;
+	private static volatile Path path;
+	private static volatile Writer writer;
+	private static volatile LinkedBlockingQueue<String> queue;
+	private static volatile Thread worker;
 
 	private TikiDebugLog() {
 	}
 
-	public static void open() {
+	public static synchronized void open() {
 		close();
+		Writer opened = null;
 		try {
 			Path directory = FabricLoader.getInstance().getGameDir().resolve("logs");
 			Files.createDirectories(directory);
-			path = directory.resolve("tiki-debug-" + LocalDateTime.now().format(FILE_STAMP) + ".log");
-			writer = Files.newBufferedWriter(path, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+			String stem = "tiki-debug-" + LocalDateTime.now().format(FILE_STAMP);
+			Path candidate = directory.resolve(stem + ".log");
+			int suffix = 1;
+			while (Files.exists(candidate)) candidate = directory.resolve(stem + "-" + suffix++ + ".log");
+			path = candidate;
+			opened = Files.newBufferedWriter(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+			writer = opened;
+			queue = new LinkedBlockingQueue<>();
+			LinkedBlockingQueue<String> sessionQueue = queue;
+			Thread sessionWorker = new Thread(() -> runWriter(sessionQueue), "GeilerAddons tiki log");
+			sessionWorker.setDaemon(true);
+			worker = sessionWorker;
+			sessionWorker.start();
 			write(0, "SESSION START");
 		} catch (IOException e) {
 			GeilerAddons.LOGGER.error("Could not open the tiki debug log", e);
+			if (opened != null) {
+				try {
+					opened.close();
+				} catch (IOException closeError) {
+					GeilerAddons.LOGGER.debug("Could not close a partially opened tiki debug log", closeError);
+				}
+			}
 			path = null;
 			writer = null;
 		}
 	}
 
-	public static void close() {
-		if (writer == null) return;
-		try {
-			write(0, "SESSION END");
-			writer.close();
-		} catch (IOException e) {
-			GeilerAddons.LOGGER.error("Could not close the tiki debug log", e);
+	public static synchronized void close() {
+		LinkedBlockingQueue<String> currentQueue = queue;
+		Thread currentWorker = worker;
+		if (writer == null || currentQueue == null || currentWorker == null) {
+			path = null;
+			writer = null;
+			queue = null;
+			worker = null;
+			return;
 		}
+		write(0, "SESSION END");
+		currentQueue.offer(STOP);
+		try {
+			currentWorker.join(1_000);
+		} catch (InterruptedException interrupted) {
+			Thread.currentThread().interrupt();
+			GeilerAddons.LOGGER.warn("Interrupted while closing the tiki debug log");
+		}
+		if (currentWorker.isAlive()) {
+			GeilerAddons.LOGGER.warn("Tiki debug log did not close within one second");
+		}
+		path = null;
 		writer = null;
+		queue = null;
+		worker = null;
 	}
 
 	/** @param tick client ticks since the module was enabled, so events can be ordered exactly */
 	public static void write(long tick, String line) {
-		if (writer == null) return;
-		try {
-			writer.write("[" + LocalDateTime.now().format(LINE_STAMP) + "] [t" + tick + "] " + line + System.lineSeparator());
-			writer.flush();
-		} catch (IOException e) {
-			GeilerAddons.LOGGER.error("Could not write to the tiki debug log", e);
-		}
+		LinkedBlockingQueue<String> currentQueue = queue;
+		if (writer == null || currentQueue == null) return;
+		currentQueue.offer("[" + LocalDateTime.now().format(LINE_STAMP) + "] [t" + tick + "] "
+			+ line + System.lineSeparator());
 	}
 
 	public static Path path() {
 		return path;
+	}
+
+	private static void runWriter(LinkedBlockingQueue<String> currentQueue) {
+		Writer currentWriter = writer;
+		if (currentWriter == null) return;
+		int pending = 0;
+		long lastFlush = System.nanoTime();
+		try {
+			while (true) {
+				String line = currentQueue.poll(250, TimeUnit.MILLISECONDS);
+				if (line == null) {
+					if (pending > 0) {
+						currentWriter.flush();
+						pending = 0;
+						lastFlush = System.nanoTime();
+					}
+					continue;
+				}
+				if (STOP.equals(line)) {
+					String remaining;
+					while ((remaining = currentQueue.poll()) != null) {
+						if (!STOP.equals(remaining)) currentWriter.write(remaining);
+					}
+					currentWriter.flush();
+					break;
+				}
+				currentWriter.write(line);
+				pending++;
+				if (pending >= 32 || System.nanoTime() - lastFlush >= 250_000_000L) {
+					currentWriter.flush();
+					pending = 0;
+					lastFlush = System.nanoTime();
+				}
+			}
+		} catch (InterruptedException interrupted) {
+			Thread.currentThread().interrupt();
+			GeilerAddons.LOGGER.warn("Tiki debug log writer interrupted");
+		} catch (IOException e) {
+			GeilerAddons.LOGGER.error("Could not write to the tiki debug log", e);
+		} finally {
+			try {
+				currentWriter.close();
+			} catch (IOException e) {
+				GeilerAddons.LOGGER.error("Could not close the tiki debug log", e);
+			}
+		}
 	}
 }

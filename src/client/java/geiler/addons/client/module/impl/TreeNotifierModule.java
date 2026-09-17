@@ -203,6 +203,10 @@ public final class TreeNotifierModule extends Module implements HudElement {
 		// Switching off mid-block must not strand a line that was never shown.
 		suppressor.endOfTick();
 		emitHeld();
+		shownUntil = 0;
+		shownText = "";
+		lastGiftTitle = 0;
+		lastTree = null;
 	}
 
 	private void show(TextSetting text, TextSetting sound, NumberSetting pitch, TreeType type, long now) {

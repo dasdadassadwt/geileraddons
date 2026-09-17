@@ -8,12 +8,16 @@ import geiler.addons.GeilerAddons;
 import net.minecraft.client.Minecraft;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.EnumMap;
@@ -35,6 +39,16 @@ public final class DungeonStatsService {
 	private static final String UUID_BASE = "https://api.minecraftservices.com/minecraft/profile/lookup/name/";
 	private static final long CACHE_TTL_MILLIS = 5 * 60 * 1000L;
 	private static final Duration TIMEOUT = Duration.ofSeconds(10);
+	/** Profile responses are untrusted remote input; never let one consume arbitrary memory. */
+	private static final int MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+	private static final int MAX_JSON_DEPTH = 32;
+	private static final int MAX_JSON_NODES = 50_000;
+	private static final int MAX_ITEM_TEXT_CHARS = 64 * 1024;
+	private static final int MAX_COMPRESSED_VALUE_CHARS = 256 * 1024;
+	private static final int MAX_NBT_BYTES = 2 * 1024 * 1024;
+	private static final int MAX_NBT_DEPTH = 32;
+	private static final int MAX_NBT_NODES = 20_000;
+	private static final int MAX_NBT_STRING_CHARS = 8 * 1024;
 	private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2, r -> {
 		Thread thread = new Thread(r, "GeilerAddons dungeon stats");
 		thread.setDaemon(true);
@@ -51,13 +65,22 @@ public final class DungeonStatsService {
 	}
 
 	public static void fetch(String name, Consumer<Result> callback) {
+		fetch(name, callback, false);
+	}
+
+	/** Fetches a fresh profile even when the normal five-minute cache contains an older result. */
+	public static void fetchFresh(String name, Consumer<Result> callback) {
+		fetch(name, callback, true);
+	}
+
+	private static void fetch(String name, Consumer<Result> callback, boolean forceRefresh) {
 		if (name == null || name.isBlank()) {
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Ignored blank profile request");
 			return;
 		}
 		String key = name.toLowerCase(Locale.ROOT);
 		CacheEntry cached = CACHE.get(key);
-		if (cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_TTL_MILLIS) {
+		if (!forceRefresh && cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_TTL_MILLIS) {
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Cache hit for {}", name);
 			Minecraft.getInstance().execute(() -> callback.accept(Result.success(cached.stats)));
 			return;
@@ -108,7 +131,11 @@ public final class DungeonStatsService {
 			}
 
 			DungeonStats stats = parseStats(returnedName == null ? name : returnedName, uuid, profile, member);
-			CACHE.put(name.toLowerCase(Locale.ROOT), new CacheEntry(stats, System.currentTimeMillis()));
+			if (stats.cacheable()) {
+				CACHE.put(name.toLowerCase(Locale.ROOT), new CacheEntry(stats, System.currentTimeMillis()));
+			} else {
+				GeilerAddons.LOGGER.debug("[Dungeon Stats] Keeping incomplete profile for {} out of cache", name);
+			}
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Loaded {}: cata={}, class={}, secrets={}, runs={}, mp={}",
 				stats.name(), stats.catacombsLevel(), stats.selectedClass(), stats.totalSecrets(), stats.totalRuns(), stats.magicalPower());
 			return Result.success(stats);
@@ -123,14 +150,41 @@ public final class DungeonStatsService {
 			.header("User-Agent", "GeilerAddons")
 			.header("Accept", "application/json")
 			.GET().build();
-		HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+		HttpResponse<InputStream> response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
 		GeilerAddons.LOGGER.debug("[Dungeon Stats] GET {} -> {} (final URI {})", url, response.statusCode(), response.uri());
 		if (response.statusCode() < 200 || response.statusCode() >= 300) {
+			try (InputStream ignored = response.body()) {
+				// Drain nothing on an error response; the status is enough to classify it.
+			}
 			throw new IOException("HTTP " + response.statusCode());
 		}
-		JsonElement parsed = JsonParser.parseString(response.body());
+		String body;
+		try (InputStream input = response.body()) {
+			body = readLimited(input, MAX_RESPONSE_BYTES);
+		}
+		JsonElement parsed;
+		try {
+			parsed = JsonParser.parseString(body);
+		} catch (StackOverflowError overflow) {
+			throw new IOException("Response nesting exceeded parser limits", overflow);
+		}
 		if (!parsed.isJsonObject()) throw new IOException("Response was not an object");
 		return parsed.getAsJsonObject();
+	}
+
+	private static String readLimited(InputStream input, int maximumBytes) throws IOException {
+		ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(maximumBytes, 64 * 1024));
+		byte[] buffer = new byte[8192];
+		int total = 0;
+		while (true) {
+			int read = input.read(buffer);
+			if (read < 0) break;
+			if (read == 0) continue;
+			total += read;
+			if (total > maximumBytes) throw new IOException("Response exceeded " + maximumBytes + " bytes");
+			output.write(buffer, 0, read);
+		}
+		return output.toString(StandardCharsets.UTF_8);
 	}
 
 	private static JsonObject profileMember(JsonObject root, String uuid) {
@@ -148,23 +202,37 @@ public final class DungeonStatsService {
 		JsonObject types = object(dungeons, "dungeon_types");
 		JsonObject catacombs = object(types, "catacombs");
 		JsonObject master = object(types, "master_catacombs");
+		EnumSet<DungeonStats.DataField> available = EnumSet.noneOf(DungeonStats.DataField.class);
 		int cata = level(number(catacombs, "experience"), 50);
+		if (hasNumber(catacombs, "experience")) available.add(DungeonStats.DataField.CATACOMBS_LEVEL);
 
 		Map<DungeonClass, Integer> classLevels = new EnumMap<>(DungeonClass.class);
 		JsonObject classes = object(dungeons, "player_classes");
+		boolean allClassesKnown = classes != null;
 		for (DungeonClass dungeonClass : DungeonClass.values()) {
 			JsonObject value = object(classes, dungeonClass.name().toLowerCase(Locale.ROOT));
-			classLevels.put(dungeonClass, level(number(value, "experience"), 50));
+			if (hasNumber(value, "experience")) {
+				classLevels.put(dungeonClass, level(number(value, "experience"), 50));
+			} else {
+				allClassesKnown = false;
+			}
 		}
 		double classAverage = classLevels.values().stream().mapToInt(Integer::intValue).average().orElse(0);
+		if (allClassesKnown) available.add(DungeonStats.DataField.CLASS_AVERAGE);
 
-		long secrets = firstNonZero(dungeons, "total_secrets", "totalSecrets", "secrets", "secrets_found");
+		NumberValue secretValue = findNumber(dungeons, "total_secrets", "totalSecrets", "secrets", "secrets_found");
+		long secrets = secretValue.present() ? secretValue.value() : 0;
+		if (secretValue.present()) available.add(DungeonStats.DataField.SECRETS);
 		long runs = totalRuns(catacombs, master);
+		if (hasCompletions(catacombs) || hasCompletions(master)) available.add(DungeonStats.DataField.RUNS);
 		JsonObject banking = object(profileForMember(root, uuid.toString()), "banking");
 		long bank = firstLong(banking, "balance", "bank_balance");
-		boolean bankKnown = banking != null && hasAny(banking, "balance", "bank_balance");
-		int magicalPower = (int) firstNonZero(member, "highest_magical_power", "magical_power",
+		boolean bankKnown = banking != null && hasNumber(banking, "balance", "bank_balance");
+		if (bankKnown) available.add(DungeonStats.DataField.BANK);
+		NumberValue magicalPowerValue = findNumber(member, "highest_magical_power", "magical_power",
 			"magicalPower", "magical_power_value");
+		int magicalPower = (int) (magicalPowerValue.present() ? magicalPowerValue.value() : 0);
+		if (magicalPowerValue.present()) available.add(DungeonStats.DataField.MAGICAL_POWER);
 
 		EnumSet<DungeonStats.Gear> gear = EnumSet.noneOf(DungeonStats.Gear.class);
 		String allText = collectItemText(member);
@@ -177,8 +245,11 @@ public final class DungeonStatsService {
 		readPbs(pbs, master, true);
 		boolean gearKnown = hasInventoryData(member) || allText.contains("terminator") || allText.contains("hyperion")
 			|| allText.contains("golden_dragon") || allText.contains("golden dragon");
-		return new DungeonStats(name, uuid, cata, DungeonClass.parse(firstString(dungeons, "selected_dungeon_class", "selectedClass")),
-			classLevels, classAverage, secrets, runs, magicalPower, bank, bankKnown, gearKnown, gear, pbs);
+		if (gearKnown) available.add(DungeonStats.DataField.GEAR);
+		DungeonClass selectedClass = DungeonClass.parse(firstString(dungeons, "selected_dungeon_class", "selectedClass"));
+		if (selectedClass != null) available.add(DungeonStats.DataField.SELECTED_CLASS);
+		return new DungeonStats(name, uuid, cata, selectedClass, classLevels, classAverage, secrets, runs,
+			magicalPower, bank, bankKnown, gearKnown, gear, pbs, available);
 	}
 
 	private static void readPbs(Map<DungeonFloor, Long> output, JsonObject type, boolean master) {
@@ -227,56 +298,125 @@ public final class DungeonStatsService {
 
 	private static String collectItemText(JsonElement element) {
 		StringBuilder out = new StringBuilder();
-		collectItemText(element, out);
+		collectInventoryText(element, out, 0, new JsonBudget(MAX_JSON_NODES), false);
 		return out.toString().toLowerCase(Locale.ROOT);
 	}
 
-	private static void collectItemText(JsonElement element, StringBuilder out) {
-		if (element == null || element.isJsonNull()) return;
-		if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+	private static void collectInventoryText(JsonElement element, StringBuilder out, int depth,
+		JsonBudget budget, boolean insideInventory) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return;
+		if (element.isJsonPrimitive()) {
+			if (!insideInventory || !element.getAsJsonPrimitive().isString()) return;
 			String value = element.getAsString();
-			out.append(value).append(' ');
-			if (value.length() > 32 && value.matches("[A-Za-z0-9+/=]+")) searchCompressedNbt(value, out);
-		} else if (element.isJsonArray()) {
-			for (JsonElement child : element.getAsJsonArray()) collectItemText(child, out);
-		} else if (element.isJsonObject()) {
-			for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
-				out.append(entry.getKey()).append(' ');
-				collectItemText(entry.getValue(), out);
+			appendLimited(out, value);
+			if (value.length() > 32 && value.length() <= MAX_COMPRESSED_VALUE_CHARS
+				&& value.matches("[A-Za-z0-9+/=]+")) searchCompressedNbt(value, out);
+			return;
+		}
+		if (element.isJsonArray()) {
+			for (JsonElement child : element.getAsJsonArray()) {
+				collectInventoryText(child, out, depth + 1, budget, insideInventory);
+				if (out.length() >= MAX_ITEM_TEXT_CHARS) return;
 			}
+			return;
+		}
+		if (!element.isJsonObject()) return;
+		for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+			boolean inventory = insideInventory || isInventoryKey(entry.getKey());
+			if (inventory) appendLimited(out, entry.getKey());
+			collectInventoryText(entry.getValue(), out, depth + 1, budget, inventory);
+			if (out.length() >= MAX_ITEM_TEXT_CHARS) return;
 		}
 	}
 
+	private static void appendLimited(StringBuilder out, String value) {
+		if (value == null || out.length() >= MAX_ITEM_TEXT_CHARS) return;
+		int remaining = MAX_ITEM_TEXT_CHARS - out.length();
+		out.append(value, 0, Math.min(value.length(), remaining)).append(' ');
+	}
+
+	private static boolean isInventoryKey(String key) {
+		if (key == null) return false;
+		String normalized = key.toLowerCase(Locale.ROOT);
+		return normalized.equals("inv_contents") || normalized.equals("ender_chest_contents")
+			|| normalized.equals("armor_contents") || normalized.equals("talisman_bag")
+			|| normalized.equals("wardrobe_contents") || normalized.equals("equipment_contents")
+			|| normalized.equals("inventory") || normalized.equals("items") || normalized.equals("item_data")
+			|| normalized.endsWith("_contents");
+	}
+
 	private static void searchCompressedNbt(String value, StringBuilder out) {
+		searchCompressedNbtReadable(value, out);
+	}
+
+	private static boolean searchCompressedNbtReadable(String value, StringBuilder out) {
 		try {
 			byte[] bytes = Base64.getDecoder().decode(value);
-			try (DataInputStream input = new DataInputStream(new GZIPInputStream(new ByteArrayInputStream(bytes)))) {
+			if (bytes.length == 0 || bytes.length > MAX_NBT_BYTES) return false;
+			try (GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(bytes));
+				DataInputStream input = new DataInputStream(new LimitedInputStream(gzip, MAX_NBT_BYTES))) {
 				NbtTextReader.read(input, out);
 			}
+			return true;
 		} catch (Exception ignored) {
 			// Inventory fields are optional and not every long string is compressed NBT.
+			return false;
 		}
 	}
 
 	private static boolean hasInventoryData(JsonElement element) {
-		if (element == null || element.isJsonNull()) return false;
+		return findInventoryData(element, 0, new JsonBudget(MAX_JSON_NODES));
+	}
+
+	private static boolean findInventoryData(JsonElement element, int depth, JsonBudget budget) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return false;
 		if (element.isJsonArray()) {
-			for (JsonElement child : element.getAsJsonArray()) if (hasInventoryData(child)) return true;
+			for (JsonElement child : element.getAsJsonArray()) {
+				if (findInventoryData(child, depth + 1, budget)) return true;
+			}
 			return false;
 		}
 		if (!element.isJsonObject()) return false;
 		for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
-			String key = entry.getKey().toLowerCase(Locale.ROOT);
 			JsonElement value = entry.getValue();
-			if ((key.equals("inv_contents") || key.equals("ender_chest_contents") || key.equals("armor_contents")
-				|| key.equals("talisman_bag")) && value != null && !value.isJsonNull()) {
-				if (value.isJsonPrimitive() && !value.getAsString().isBlank()) return true;
-				if (value.isJsonArray() && !value.getAsJsonArray().isEmpty()) return true;
-				if (value.isJsonObject() && !value.getAsJsonObject().entrySet().isEmpty()) return true;
+			if (isInventoryKey(entry.getKey())) {
+				// Do not descend through an inventory payload after it has been identified. Item
+				// metadata can contain arbitrary nested fields; only a non-empty, readable payload
+				// makes gear availability trustworthy.
+				if (inventoryValueIsReadable(value)) return true;
+				continue;
 			}
-			if (hasInventoryData(value)) return true;
+			if (findInventoryData(value, depth + 1, budget)) return true;
 		}
 		return false;
+	}
+
+	private static boolean inventoryValueIsReadable(JsonElement value) {
+		return inventoryValueIsReadable(value, 0, new JsonBudget(MAX_JSON_NODES));
+	}
+
+	private static boolean inventoryValueIsReadable(JsonElement value, int depth, JsonBudget budget) {
+		if (value == null || value.isJsonNull()) return false;
+		if (depth > MAX_JSON_DEPTH || !budget.visit()) return false;
+		if (value.isJsonObject()) {
+			for (Map.Entry<String, JsonElement> entry : value.getAsJsonObject().entrySet()) {
+				if (inventoryValueIsReadable(entry.getValue(), depth + 1, budget)) return true;
+			}
+			return false;
+		}
+		if (value.isJsonArray()) {
+			if (value.getAsJsonArray().isEmpty()) return false;
+			for (JsonElement child : value.getAsJsonArray()) {
+				if (inventoryValueIsReadable(child, depth + 1, budget)) return true;
+			}
+			return false;
+		}
+		if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return false;
+		String text = value.getAsString();
+		if (text.isBlank()) return false;
+		if (text.length() > MAX_COMPRESSED_VALUE_CHARS) return false;
+		return text.length() <= 32 || !text.matches("[A-Za-z0-9+/=]+")
+			|| searchCompressedNbtReadable(text, new StringBuilder());
 	}
 
 	private static JsonObject object(JsonObject parent, String name) {
@@ -302,36 +442,65 @@ public final class DungeonStatsService {
 		return 0;
 	}
 
-	private static long firstNonZero(JsonObject object, String... keys) {
-		long direct = firstLong(object, keys);
-		return direct != 0 ? direct : findLong(object, keys);
+	private static boolean hasNumber(JsonObject object, String... keys) {
+		if (object == null) return false;
+		for (String key : keys) {
+			if (!object.has(key) || !object.get(key).isJsonPrimitive()) continue;
+			try {
+				object.get(key).getAsLong();
+				return true;
+			} catch (RuntimeException ignored) {
+				// Try the next API spelling.
+			}
+		}
+		return false;
 	}
 
-	private static long findLong(JsonElement element, String... keys) {
-		if (element == null || element.isJsonNull()) return 0;
+	private static NumberValue findNumber(JsonElement element, String... keys) {
+		return findNumber(element, 0, new JsonBudget(MAX_JSON_NODES), keys);
+	}
+
+	private static NumberValue findNumber(JsonElement element, int depth, JsonBudget budget,
+		String... keys) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) {
+			return NumberValue.MISSING;
+		}
 		if (element.isJsonObject()) {
 			JsonObject object = element.getAsJsonObject();
 			for (String key : keys) {
-				long value = number(object, key);
-				if (value != 0) return value;
+				if (hasNumber(object, key)) return new NumberValue(number(object, key), true);
 			}
 			for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-				long value = findLong(entry.getValue(), keys);
-				if (value != 0) return value;
+				NumberValue found = findNumber(entry.getValue(), depth + 1, budget, keys);
+				if (found.present()) return found;
 			}
 		} else if (element.isJsonArray()) {
 			for (JsonElement child : element.getAsJsonArray()) {
-				long value = findLong(child, keys);
-				if (value != 0) return value;
+				NumberValue found = findNumber(child, depth + 1, budget, keys);
+				if (found.present()) return found;
 			}
 		}
-		return 0;
+		return NumberValue.MISSING;
 	}
 
-	private static boolean hasAny(JsonObject object, String... keys) {
-		if (object == null) return false;
-		for (String key : keys) if (object.has(key)) return true;
-		return false;
+	private static boolean hasCompletions(JsonObject type) {
+		return object(type, "tier_completions") != null || object(type, "tierCompletions") != null;
+	}
+
+	private record NumberValue(long value, boolean present) {
+		private static final NumberValue MISSING = new NumberValue(0, false);
+	}
+
+	private static final class JsonBudget {
+		private int remaining;
+
+		private JsonBudget(int maximumNodes) {
+			remaining = maximumNodes;
+		}
+
+		private boolean visit() {
+			return remaining-- > 0;
+		}
 	}
 
 	private static JsonObject profileForMember(JsonObject root, String uuid) {
@@ -340,7 +509,9 @@ public final class DungeonStatsService {
 		String compact = uuid.replace("-", "");
 		String dashed = withDashes(compact);
 		JsonObject fallback = null;
+		int inspected = 0;
 		for (JsonElement element : profiles) {
+			if (++inspected > 128) break;
 			if (!element.isJsonObject()) continue;
 			JsonObject profile = element.getAsJsonObject();
 			JsonObject members = object(profile, "members");
@@ -393,13 +564,16 @@ public final class DungeonStatsService {
 	/** Minimal NBT text walker used only to find item ids in compressed inventory fields. */
 	private static final class NbtTextReader {
 		static void read(DataInputStream input, StringBuilder out) throws IOException {
+			NbtBudget budget = new NbtBudget();
 			int type = input.readUnsignedByte();
 			if (type == 0) return;
-			input.readUTF();
-			readPayload(input, type, out);
+			readString(input, budget);
+			readPayload(input, type, out, budget, 0);
 		}
 
-		private static void readPayload(DataInputStream input, int type, StringBuilder out) throws IOException {
+		private static void readPayload(DataInputStream input, int type, StringBuilder out,
+			NbtBudget budget, int depth) throws IOException {
+			if (depth > MAX_NBT_DEPTH || !budget.visit()) throw new IOException("NBT limits exceeded");
 			switch (type) {
 				case 1 -> input.readByte();
 				case 2 -> input.readShort();
@@ -407,25 +581,90 @@ public final class DungeonStatsService {
 				case 4 -> input.readLong();
 				case 5 -> input.readFloat();
 				case 6 -> input.readDouble();
-				case 7 -> input.skipBytes(input.readInt());
-				case 8 -> out.append(input.readUTF()).append(' ');
+				case 7 -> skipBytes(input, input.readInt());
+				case 8 -> appendLimited(out, readString(input, budget));
 				case 9 -> {
 					int childType = input.readUnsignedByte();
 					int count = input.readInt();
-					for (int i = 0; i < count; i++) readPayload(input, childType, out);
+					if (count < 0 || count > MAX_NBT_NODES) throw new IOException("Invalid NBT list length");
+					for (int i = 0; i < count; i++) readPayload(input, childType, out, budget, depth + 1);
 				}
 				case 10 -> {
 					while (true) {
 						int childType = input.readUnsignedByte();
 						if (childType == 0) break;
-						out.append(input.readUTF()).append(' ');
-						readPayload(input, childType, out);
+						appendLimited(out, readString(input, budget));
+						readPayload(input, childType, out, budget, depth + 1);
 					}
 				}
-				case 11 -> input.skipBytes(input.readInt() * 4);
-				case 12 -> input.skipBytes(input.readInt() * 8);
+				case 11 -> skipArray(input, input.readInt(), 4);
+				case 12 -> skipArray(input, input.readInt(), 8);
 				default -> throw new IOException("Unknown NBT tag " + type);
 			}
+		}
+
+		private static String readString(DataInputStream input, NbtBudget budget) throws IOException {
+			int length = input.readUnsignedShort();
+			if (length > MAX_NBT_STRING_CHARS || !budget.consumeBytes(length)) {
+				throw new IOException("NBT string limit exceeded");
+			}
+			byte[] bytes = new byte[length];
+			input.readFully(bytes);
+			return new String(bytes, StandardCharsets.UTF_8);
+		}
+
+		private static void skipArray(DataInputStream input, int count, int bytesPerValue) throws IOException {
+			if (count < 0 || (long) count * bytesPerValue > MAX_NBT_BYTES) {
+				throw new IOException("NBT array limit exceeded");
+			}
+			skipBytes(input, count * bytesPerValue);
+		}
+
+		private static void skipBytes(DataInputStream input, int count) throws IOException {
+			if (count < 0 || count > MAX_NBT_BYTES) throw new IOException("NBT byte limit exceeded");
+			input.skipNBytes(count);
+		}
+	}
+
+	private static final class NbtBudget {
+		private int nodes = MAX_NBT_NODES;
+		private int bytes = MAX_NBT_BYTES;
+
+		private boolean visit() {
+			return nodes-- > 0;
+		}
+
+		private boolean consumeBytes(int amount) {
+			if (amount < 0 || amount > bytes) return false;
+			bytes -= amount;
+			return true;
+		}
+	}
+
+	/** Stops a compressed inventory payload from expanding without bound while it is parsed. */
+	private static final class LimitedInputStream extends FilterInputStream {
+		private int remaining;
+
+		private LimitedInputStream(InputStream input, int limit) {
+			super(input);
+			remaining = limit;
+		}
+
+		@Override
+		public int read() throws IOException {
+			if (remaining <= 0) throw new IOException("Input limit exceeded");
+			int value = super.read();
+			if (value >= 0) remaining--;
+			return value;
+		}
+
+		@Override
+		public int read(byte[] bytes, int offset, int length) throws IOException {
+			if (remaining <= 0) throw new IOException("Input limit exceeded");
+			int allowed = Math.min(length, remaining);
+			int read = super.read(bytes, offset, allowed);
+			if (read > 0) remaining -= read;
+			return read;
 		}
 	}
 }

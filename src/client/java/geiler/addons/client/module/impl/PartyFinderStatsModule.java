@@ -15,6 +15,7 @@ import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModulePreview;
 import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
+import geiler.addons.client.tree.ChatText;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -31,12 +32,11 @@ import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -73,9 +73,12 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	private boolean initialScanFinished;
 	private boolean localJoinedThroughFinder;
 	private int chatCardCooldown;
+	private long scanSequence;
+	private long activeScanToken = -1;
 	private final Map<String, DungeonStats> cycleStats = new HashMap<>();
 	private final Map<String, DungeonClass> deferredJoins = new LinkedHashMap<>();
-	private final Set<String> checkedPlayers = new HashSet<>();
+	private final Map<Long, Integer> scanPending = new HashMap<>();
+	private final Map<String, PartyMember> checkedPlayers = new HashMap<>();
 	private final Deque<Component> pendingChatCards = new ArrayDeque<>();
 
 	private PartyFinderStatsModule() {
@@ -125,7 +128,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	}
 
 	public void onChatMessage(String message) {
-		String normalized = message == null ? "" : message.trim();
+		String normalized = ChatText.plain(message == null ? "" : message).trim();
 		if (QUEUE_SUCCESS.matcher(normalized).matches()) {
 			DungeonFloor floor = DungeonQueueFloorTracker.confirmQueued();
 			requestedFloor = floor;
@@ -173,7 +176,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 				debug("Queued %s for the active initial party scan", name);
 			} else {
 				debug("Detected later join for %s as %s; fetching that player", name, classOrFloor);
-				fetchJoinedPlayer(effectiveFloor, currentParty.generation(), name, joinedClass);
+				fetchJoinedPlayer(effectiveFloor, name, joinedClass);
 			}
 			return;
 		}
@@ -181,6 +184,10 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		requestedFloor = floor;
 		cycleTargetName = name;
 		localJoinedThroughFinder = localJoin;
+		cycleStats.clear();
+		checkedPlayers.clear();
+		scanPending.clear();
+		activeScanToken = -1;
 		deferredJoins.clear();
 		fetchRequested = true;
 		cycleStarted = true;
@@ -202,20 +209,26 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 			pendingChatCards.clear();
 			debug("Cleared queued floor after a client-level change");
 		}
+		boolean stableList = PartyListBackend.consumeStableListResponse();
 		if (!fetchRequested) {
+			if (stableList && cycleStarted && initialScanFinished) {
+				reconcileStableList();
+			}
 			if (!PartyListBackend.snapshot().inParty()) {
 				cycleStarted = false;
 				pendingResults = 0;
 				initialDispatching = false;
 				initialScanFinished = false;
 				localJoinedThroughFinder = false;
+				activeScanToken = -1;
+				scanPending.clear();
+				cycleStats.clear();
 				deferredJoins.clear();
 				checkedPlayers.clear();
 			}
 			return;
 		}
 		ticksSinceRequest++;
-		boolean stableList = PartyListBackend.consumeStableListResponse();
 		if (!stableList && ticksSinceRequest < LIST_FALLBACK_TICKS) return;
 		fetchRequested = false;
 		PartySnapshot snapshot = PartyListBackend.snapshot();
@@ -224,9 +237,10 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 			return;
 		}
 		long generation = snapshot.generation();
+		long scanToken = ++scanSequence;
+		activeScanToken = scanToken;
 		DungeonFloor queuedFloor = requestedFloor;
 		String targetName = cycleTargetName;
-		cycleStats.clear();
 		for (Map.Entry<String, DungeonClass> entry : deferredJoins.entrySet()) {
 			if (entry.getValue() != null) PartyListBackend.setClass(entry.getKey(), entry.getValue());
 		}
@@ -238,18 +252,23 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 				debug("Skipping local player %s during party scan", member.name());
 				continue;
 			}
-			if (checkedPlayers.add(key)) membersToFetch.add(member);
+			PartyMember previous = checkedPlayers.get(key);
+			if (previous == null || !sameMember(previous, member)) {
+				checkedPlayers.put(key, member);
+				membersToFetch.add(member);
+			}
 		}
 		pendingResults = membersToFetch.size();
+		scanPending.put(scanToken, pendingResults);
 		debug("Starting stats scan for %d party member(s), floor=%s, trigger=%s, list=%s", pendingResults,
 			queuedFloor == null ? "unknown" : queuedFloor.displayName(), targetName,
 			stableList ? "stable" : "fallback");
 		initialDispatching = true;
 		for (PartyMember member : membersToFetch) {
-			DungeonStatsService.fetch(member.name(), result -> onResult(queuedFloor, generation, targetName, member.name(), result));
+			DungeonStatsService.fetch(member.name(), result -> onResult(scanToken, queuedFloor, targetName, member.name(), result));
 		}
 		initialDispatching = false;
-		if (pendingResults == 0) finishInitialScan(queuedFloor, generation, targetName);
+		if (pendingResults == 0) finishInitialScan(scanToken, queuedFloor, generation, targetName);
 	}
 
 	/** Called by the container click mixin before Hypixel closes Group Builder. */
@@ -277,30 +296,55 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		}
 	}
 
-	private void onResult(DungeonFloor floor, long generation, String targetName, String requestedName, DungeonStatsService.Result result) {
+	private void onResult(long scanToken, DungeonFloor floor, String targetName,
+		String requestedName, DungeonStatsService.Result result) {
+		Integer remaining = scanPending.get(scanToken);
+		if (remaining == null) return;
 		PartySnapshot snapshot = PartyListBackend.snapshot();
-		if (!snapshot.inParty() || snapshot.generation() != generation) return;
+		PartyMember member = snapshot.inParty() ? findMember(snapshot, requestedName) : null;
 		if (!result.available()) {
 			debug("Stats unavailable for %s: %s", requestedName, result.error());
-			if (isEnabled() || AutoKickModule.INSTANCE.wantsData()) showUnavailable(requestedName, result.error());
+			if (member != null) {
+				if (isEnabled() || AutoKickModule.INSTANCE.wantsData()) showUnavailable(requestedName, result.error());
+				AutoKickModule.INSTANCE.onStatsUnavailable(floor, snapshot.generation(), requestedName, result.error());
+			} else {
+				// The request finished while a /p list refresh temporarily hid the member. Do not
+				// let that transient absence mark an unavailable profile as permanently checked.
+				checkedPlayers.remove(requestedName.toLowerCase(Locale.ROOT));
+			}
 		} else {
 			DungeonStats stats = result.stats();
 			debug("Stats loaded for %s: cata=%d, class=%s, secrets=%d, mp=%d", stats.name(),
 				stats.catacombsLevel(), stats.selectedClass() == null ? "unknown" : stats.selectedClass().displayName(),
 				stats.totalSecrets(), stats.magicalPower());
 			cycleStats.put(stats.name().toLowerCase(Locale.ROOT), stats);
-			PartyListBackend.setUuid(stats.name(), stats.uuid());
-			PartyListBackend.setClassIfUnknown(stats.name(), stats.selectedClass());
-			PartyMember member = findMember(PartyListBackend.snapshot(), stats.name());
-			if (member != null && isEnabled()) showStats(floor, member, stats);
+			if (member != null) {
+				PartyListBackend.setUuid(stats.name(), stats.uuid());
+				PartyListBackend.setClassIfUnknown(stats.name(), stats.selectedClass());
+				member = findMember(PartyListBackend.snapshot(), stats.name());
+				if (member != null) checkedPlayers.put(stats.name().toLowerCase(Locale.ROOT), member);
+				if (member != null && isEnabled()) showStats(floor, member, stats);
+				AutoKickModule.INSTANCE.onStats(floor, PartyListBackend.snapshot().generation(), stats);
+			}
 		}
-		pendingResults = Math.max(0, pendingResults - 1);
-		debug("Stats result received for %s (%d remaining)", requestedName, pendingResults);
-		if (pendingResults > 0 || initialDispatching) return;
-		finishInitialScan(floor, generation, targetName);
+
+		int next = remaining - 1;
+		if (next <= 0) {
+			scanPending.remove(scanToken);
+			if (scanToken == activeScanToken) {
+				pendingResults = 0;
+				debug("Stats result received for %s (0 remaining)", requestedName);
+				if (!initialDispatching) finishInitialScan(scanToken, floor, snapshot.generation(), targetName);
+			}
+			return;
+		}
+		scanPending.put(scanToken, next);
+		if (scanToken == activeScanToken) pendingResults = next;
+		debug("Stats result received for %s (%d remaining)", requestedName, next);
 	}
 
-	private void finishInitialScan(DungeonFloor floor, long generation, String targetName) {
+	private void finishInitialScan(long scanToken, DungeonFloor floor, long generation, String targetName) {
+		if (scanToken != activeScanToken) return;
 		if (initialScanFinished) {
 			debug("Ignored duplicate completion for party scan generation %d", generation);
 			return;
@@ -309,13 +353,22 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		DungeonStats target = targetName == null ? null : cycleStats.get(targetName.toLowerCase(Locale.ROOT));
 		debug("Stats scan finished; target=%s; auto-kick evaluation floor=%s", targetName,
 			floor == null ? "unknown" : floor.displayName());
-		if (target != null) AutoKickModule.INSTANCE.onStats(floor, target);
+		if (target != null) AutoKickModule.INSTANCE.onStats(floor, PartyListBackend.snapshot().generation(), target);
+		// A /p list refresh can briefly hide a member while its callback arrives. The result is
+		// retained above; replay every retained result against the now-stable active party so that
+		// transient list timing cannot permanently skip an enforcement decision.
+		PartySnapshot activeParty = PartyListBackend.snapshot();
+		for (DungeonStats stats : cycleStats.values()) {
+			if (findMember(activeParty, stats.name()) != null) {
+				AutoKickModule.INSTANCE.onStats(floor, activeParty.generation(), stats);
+			}
+		}
 		for (Map.Entry<String, DungeonClass> entry : deferredJoins.entrySet()) {
 			DungeonStats stats = cycleStats.get(entry.getKey());
 			if (stats != null) {
-				AutoKickModule.INSTANCE.onStats(floor, stats);
+				AutoKickModule.INSTANCE.onStats(floor, PartyListBackend.snapshot().generation(), stats);
 			} else {
-				fetchJoinedPlayer(floor, generation, entry.getKey(), entry.getValue());
+				fetchJoinedPlayer(floor, entry.getKey(), entry.getValue());
 			}
 		}
 		deferredJoins.clear();
@@ -326,43 +379,80 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		}
 	}
 
-	private void fetchJoinedPlayer(DungeonFloor floor, long generation, String name, DungeonClass joinedClass) {
+	private void fetchJoinedPlayer(DungeonFloor floor, String name, DungeonClass joinedClass) {
 		String localName = localName();
 		if (localName != null && name.equalsIgnoreCase(localName)) {
 			debug("Skipping local player %s", name);
 			return;
 		}
 		String key = name.toLowerCase(Locale.ROOT);
-		if (!checkedPlayers.add(key)) {
+		PartyMember currentMember = findMember(PartyListBackend.snapshot(), name);
+		if (currentMember == null) return;
+		PartyMember previous = checkedPlayers.get(key);
+		if (previous != null && sameMember(previous, currentMember)) {
 			debug("Skipping duplicate stats check for %s", name);
 			return;
 		}
+		checkedPlayers.put(key, currentMember);
 		DungeonStatsService.fetch(name, result -> {
 			PartySnapshot snapshot = PartyListBackend.snapshot();
-			if (!snapshot.inParty() || snapshot.generation() != generation) {
+			PartyMember member = snapshot.inParty() ? findMember(snapshot, name) : null;
+			if (member == null) {
+				if (result.available()) cycleStats.put(name.toLowerCase(Locale.ROOT), result.stats());
+				else checkedPlayers.remove(name.toLowerCase(Locale.ROOT));
 				debug("Discarded stale stats result for %s", name);
 				return;
 			}
 			if (!result.available()) {
 				debug("Stats unavailable for later join %s: %s", name, result.error());
 				showUnavailable(name, result.error());
+				AutoKickModule.INSTANCE.onStatsUnavailable(floor, snapshot.generation(), name, result.error());
 				return;
 			}
 			DungeonStats stats = result.stats();
 			PartyListBackend.setUuid(stats.name(), stats.uuid());
 			if (joinedClass != null) PartyListBackend.setClass(stats.name(), joinedClass);
 			else PartyListBackend.setClassIfUnknown(stats.name(), stats.selectedClass());
-			PartyMember member = findMember(PartyListBackend.snapshot(), stats.name());
+			member = findMember(PartyListBackend.snapshot(), stats.name());
+			if (member != null) checkedPlayers.put(stats.name().toLowerCase(Locale.ROOT), member);
 			debug("Later-join stats loaded for %s: cata=%d, mp=%d, class=%s", stats.name(),
 				stats.catacombsLevel(), stats.magicalPower(),
 				member == null || member.dungeonClass() == null ? "unknown" : member.dungeonClass().displayName());
 			if (member != null && isEnabled()) showStats(floor, member, stats);
-			AutoKickModule.INSTANCE.onStats(floor, stats);
+			AutoKickModule.INSTANCE.onStats(floor, PartyListBackend.snapshot().generation(), stats);
 		});
 	}
 
 	private boolean wantsData() {
 		return isEnabled() || AutoKickModule.INSTANCE.wantsData();
+	}
+
+	/**
+	 * A repeated /p list is only a view refresh, not a new party session. Keep the results already
+	 * shown, but pick up members that appeared while the original asynchronous scan was running.
+	 */
+	private void reconcileStableList() {
+		PartySnapshot snapshot = PartyListBackend.snapshot();
+		if (!snapshot.inParty()) return;
+		String local = localName();
+		for (PartyMember member : snapshot.members()) {
+			if (local != null && member.name().equalsIgnoreCase(local)) continue;
+			String key = member.name().toLowerCase(Locale.ROOT);
+			PartyMember previous = checkedPlayers.get(key);
+			DungeonStats stats = cycleStats.get(key);
+			if (previous == null || !sameMember(previous, member)) {
+				fetchJoinedPlayer(requestedFloor, member.name(), member.dungeonClass());
+			} else if (stats == null) {
+				// An unavailable result is retryable after a later list refresh; it must not become
+				// a permanent "checked" marker.
+				checkedPlayers.remove(key);
+				fetchJoinedPlayer(requestedFloor, member.name(), member.dungeonClass());
+			} else {
+				// Re-apply retained results to the current party view. AutoKick's handled key keeps
+				// completed actions idempotent, while a changed class/UUID gets a new key.
+				AutoKickModule.INSTANCE.onStats(requestedFloor, snapshot.generation(), stats);
+			}
+		}
 	}
 
 	private static String localName() {
@@ -373,6 +463,15 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	private static PartyMember findMember(PartySnapshot snapshot, String name) {
 		for (PartyMember member : snapshot.members()) if (member.name().equalsIgnoreCase(name)) return member;
 		return null;
+	}
+
+	/** Keeps completed results through ordinary leave/join churn, but detects a changed identity. */
+	private static boolean sameMember(PartyMember previous, PartyMember current) {
+		if (previous == null || current == null) return false;
+		if (!previous.name().equalsIgnoreCase(current.name())) return false;
+		if (previous.uuid() != null && current.uuid() != null && !Objects.equals(previous.uuid(), current.uuid())) return false;
+		return previous.dungeonClass() == null || current.dungeonClass() == null
+			|| previous.dungeonClass() == current.dungeonClass();
 	}
 
 	private void showUnavailable(String name, String error) {
@@ -605,6 +704,19 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	protected void onDisable() {
 		pendingChatCards.clear();
 		chatCardCooldown = 0;
+		fetchRequested = false;
+		cycleStarted = false;
+		ticksSinceRequest = 0;
+		cycleTargetName = null;
+		pendingResults = 0;
+		initialDispatching = false;
+		initialScanFinished = false;
+		localJoinedThroughFinder = false;
+		activeScanToken = -1;
+		scanPending.clear();
+		cycleStats.clear();
+		deferredJoins.clear();
+		checkedPlayers.clear();
 	}
 
 	private static Component separator() {

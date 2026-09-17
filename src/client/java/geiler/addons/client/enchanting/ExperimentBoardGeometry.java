@@ -1,7 +1,9 @@
 package geiler.addons.client.enchanting;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The live board slots used by Hypixel's experiment containers.
@@ -12,6 +14,8 @@ import java.util.List;
  * filtering use the same mapping.</p>
  */
 public record ExperimentBoardGeometry(int columns, int rows, List<Integer> slotIds) {
+	private static final Map<ExperimentType, EnumMap<ExperimentTier, ExperimentBoardGeometry>> CACHE = buildCache();
+
 	public ExperimentBoardGeometry {
 		if (columns < 1 || rows < 1) throw new IllegalArgumentException("Invalid board dimensions");
 		List<Integer> copy = new ArrayList<>(slotIds == null ? List.of() : slotIds);
@@ -26,6 +30,20 @@ public record ExperimentBoardGeometry(int columns, int rows, List<Integer> slotI
 	public static ExperimentBoardGeometry forExperiment(ExperimentType type, ExperimentTier tier) {
 		if (type == null) throw new IllegalArgumentException("type must not be null");
 		ExperimentTier safeTier = tier == null ? ExperimentTier.UNKNOWN : tier;
+		return CACHE.get(type).get(safeTier);
+	}
+
+	private static Map<ExperimentType, EnumMap<ExperimentTier, ExperimentBoardGeometry>> buildCache() {
+		Map<ExperimentType, EnumMap<ExperimentTier, ExperimentBoardGeometry>> cache = new EnumMap<>(ExperimentType.class);
+		for (ExperimentType type : ExperimentType.values()) {
+			EnumMap<ExperimentTier, ExperimentBoardGeometry> byTier = new EnumMap<>(ExperimentTier.class);
+			for (ExperimentTier tier : ExperimentTier.values()) byTier.put(tier, create(type, tier));
+			cache.put(type, byTier);
+		}
+		return Map.copyOf(cache);
+	}
+
+	private static ExperimentBoardGeometry create(ExperimentType type, ExperimentTier safeTier) {
 		return switch (type) {
 			case CHRONOMATRON -> switch (safeTier) {
 				case HIGH, GRAND, SUPREME -> range(9, 17);

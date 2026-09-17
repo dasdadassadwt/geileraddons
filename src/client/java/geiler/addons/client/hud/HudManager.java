@@ -33,7 +33,7 @@ public final class HudManager {
 	}
 
 	public static List<HudElement> elements() {
-		return elements;
+		return List.copyOf(elements);
 	}
 
 	public static int x(HudElement element, Font font, int screenWidth) {
@@ -70,7 +70,7 @@ public final class HudManager {
 	}
 
 	public static Map<String, float[]> positions() {
-		return positions;
+		return snapshot();
 	}
 
 	/** Applies saved positions; anything not mentioned keeps the default it registered with. */

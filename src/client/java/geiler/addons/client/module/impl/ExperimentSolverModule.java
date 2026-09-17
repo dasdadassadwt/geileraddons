@@ -20,6 +20,7 @@ import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
+import geiler.addons.client.tree.ChatText;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -938,10 +939,11 @@ public final class ExperimentSolverModule extends Module {
 				if (!ExperimentBoardGeometry.forExperiment(type, tier).containsSlot(slotId)) return;
 				if (type == ExperimentType.SUPERPAIRS) {
 					superpairCache.invalidateRender();
-					// Before the first click the opening animation can broadcast one update per field.
-					// The live-board comparison below already coalesces those updates. Preserve a
-					// callback only for the pending clicked field, where its reveal identity matters.
-					if (slotId != lastClickedSlot) return;
+					superpairCache.invalidateObservation();
+					// Superpairs is read from the authoritative menu snapshot on the next client tick.
+					// Do not associate an arbitrary callback with the last local click: a late reveal can
+					// belong to an earlier card, and the board remembers every revealed slot independently.
+					return;
 				}
 				// Capture a complete immutable frame at the callback boundary. Rebuilding an older event
 				// from the live menu later lets a burst of updates borrow future card values and corrupts
@@ -1109,9 +1111,10 @@ public final class ExperimentSolverModule extends Module {
 
 		ExperimentSnapshot snapshot(AbstractContainerScreen<?> screen, boolean ignoredPredictPending,
 			SlotUpdate update) {
-			if (type == ExperimentType.SUPERPAIRS && update != null && update.kind == SlotUpdate.Kind.BOARD
-				&& update.slotId == lastClickedSlot && !isHiddenCard(update.stack)) {
-				rememberSuperpairStack(update.slotId, update.stack);
+			if (type == ExperimentType.SUPERPAIRS && update != null && update.kind == SlotUpdate.Kind.BOARD) {
+				for (Map.Entry<Integer, ItemStack> entry : update.boardStacks.entrySet()) {
+					if (!isHiddenCard(entry.getValue())) rememberSuperpairStack(entry.getKey(), entry.getValue());
+				}
 			}
 			List<ExperimentCell> cells = new ArrayList<>(slots.size());
 			String paneColor = null;
@@ -1147,7 +1150,7 @@ public final class ExperimentSolverModule extends Module {
 
 		private String superpairValue(int slotId, ItemStack stack, boolean revealed) {
 			ItemStack stored = rememberedStacks.get(slotId);
-			if (stored == null && slotId == lastClickedSlot && revealed) {
+			if (revealed) {
 				rememberSuperpairStack(slotId, stack);
 				stored = rememberedStacks.get(slotId);
 			}
@@ -1157,10 +1160,12 @@ public final class ExperimentSolverModule extends Module {
 		}
 
 		private void captureSuperpairReveal(AbstractContainerScreen<?> screen) {
-			if (type != ExperimentType.SUPERPAIRS || lastClickedSlot < 0
-				|| lastClickedSlot >= screen.getMenu().slots.size()) return;
-			ItemStack stack = screen.getMenu().getSlot(lastClickedSlot).getItem();
-			if (!isHiddenCard(stack)) rememberSuperpairStack(lastClickedSlot, stack);
+			if (type != ExperimentType.SUPERPAIRS) return;
+			for (Slot slot : screen.getMenu().slots) {
+				if (!isExperimentBoardSlot(type, tier, slot)) continue;
+				ItemStack stack = slot.getItem();
+				if (!isHiddenCard(stack)) rememberSuperpairStack(slot.index, stack);
+			}
 		}
 
 		private void rememberSuperpairStack(int slotId, ItemStack stack) {
@@ -1268,21 +1273,7 @@ public final class ExperimentSolverModule extends Module {
 		}
 
 		private static String stripFormatting(String value) {
-			StringBuilder result = new StringBuilder(value.length());
-			boolean formatting = false;
-			for (int i = 0; i < value.length(); i++) {
-				char character = value.charAt(i);
-				if (formatting) {
-					formatting = false;
-					continue;
-				}
-				if (character == '\u00A7') {
-					formatting = true;
-					continue;
-				}
-				result.append(character);
-			}
-			return result.toString().trim();
+			return ChatText.plain(value == null ? "" : value).trim();
 		}
 
 		private static int parseNumber(String value) {

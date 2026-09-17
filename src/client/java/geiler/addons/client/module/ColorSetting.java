@@ -60,6 +60,7 @@ public final class ColorSetting implements Setting {
 	}
 
 	public int channel(Channel channel) {
+		if (channel == null) return 0;
 		return switch (channel) {
 			case RED -> red;
 			case GREEN -> green;
@@ -69,6 +70,7 @@ public final class ColorSetting implements Setting {
 	}
 
 	public void setChannel(Channel channel, int value) {
+		if (channel == null) return;
 		value = clamp(value);
 		switch (channel) {
 			case RED -> red = value;
@@ -145,6 +147,7 @@ public final class ColorSetting implements Setting {
 
 	/** @return false if the text isn't 6 or 8 hex digits, leaving the colour untouched */
 	public boolean setHex(String text) {
+		if (text == null) return false;
 		String digits = text.trim();
 		if (digits.startsWith("#")) {
 			digits = digits.substring(1);
@@ -184,10 +187,12 @@ public final class ColorSetting implements Setting {
 	}
 
 	private static float clamp01(float value) {
+		if (!Float.isFinite(value)) return 0;
 		return Math.max(0, Math.min(1, value));
 	}
 
 	private static float wrap(float hue) {
+		if (!Float.isFinite(hue)) return 0;
 		hue %= 1.0f;
 		return hue < 0 ? hue + 1.0f : hue;
 	}

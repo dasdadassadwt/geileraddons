@@ -36,6 +36,7 @@ public final class OfflineChecks {
 		checkSuperpairsCacheGate();
 		checkEveryStatsToggleCombination();
 		checkGlobalDebugGate();
+		checkSettingInputBounds();
 		checkChronomatronModel();
 		checkExperimentSolverEngine();
 		checkExperimentStateEdges();
@@ -312,6 +313,19 @@ public final class OfflineChecks {
 
 		// Standalone checks must not leak the gate into a later harness invocation.
 		DebugState.setEnabled(false);
+	}
+
+	private static void checkSettingInputBounds() {
+		NumberSetting number = new NumberSetting("test", 0, 10, 5, true);
+		number.setValue(Float.NaN);
+		assertEquals(5, number.intValue(), "NaN does not poison a number setting");
+		number.setFraction(Float.POSITIVE_INFINITY);
+		assertEquals(5, number.intValue(), "infinite slider input is ignored");
+		TextSetting text = new TextSetting("test", "value", 8);
+		text.setValue(null);
+		assertEquals("value", text.value(), "null text input is ignored");
+		ColorSetting color = new ColorSetting("test", 1, 2, 3, 4);
+		assertFalse(color.setHex(null), "null color input is rejected");
 	}
 
 	private static void checkExperimentSolverEngine() {
@@ -595,6 +609,17 @@ public final class OfflineChecks {
 			new ExperimentCell(11, null, -1, false, false, false)));
 		assertEquals(1, hiddenKnownPair.view().resolvedPairs(),
 			"Superpairs resolves a remembered pair after both cards hide");
+		SuperpairsBoard instantReward = new SuperpairsBoard();
+		instantReward.observe(List.of(new ExperimentCell(10, "BOOK", -1, true, false, false),
+			new ExperimentCell(11, "BOOK", -1, true, false, false)));
+		instantReward.observe(List.of(new ExperimentCell(10, null, -1, false, false, false),
+			new ExperimentCell(11, null, -1, false, false, false)));
+		assertTrue(instantReward.click(10) && instantReward.click(11),
+			"known Superpairs cards remain selectable after the board hides them");
+		instantReward.observe(List.of(new ExperimentCell(10, null, -1, false, false, false),
+			new ExperimentCell(11, null, -1, false, false, false)));
+		assertEquals(1, instantReward.view().resolvedPairs(),
+			"an instant-reward pair completes without requiring an intermediate visible frame");
 		SuperpairsBoard noLocalPair = new SuperpairsBoard();
 		noLocalPair.observe(List.of(new ExperimentCell(10, "BOOK", -1, true, false, false),
 			new ExperimentCell(11, "BOOK", -1, true, false, false),
@@ -609,8 +634,12 @@ public final class OfflineChecks {
 			new ExperimentCell(11, null, -1, false, false, false),
 			new ExperimentCell(12, null, -1, false, false, false)));
 		assertTrue(rapidClicks.click(10), "Superpairs accepts the first rapid click");
-		assertTrue(rapidClicks.click(11), "Superpairs accepts a second click while the first reveal is pending");
-		assertTrue(rapidClicks.click(12), "Superpairs accepts a third click while the previous pair is pending");
+		assertFalse(rapidClicks.click(11), "Superpairs blocks a second click while the first reveal is pending");
+		assertFalse(rapidClicks.click(12), "Superpairs blocks later clicks while the first reveal is pending");
+		rapidClicks.observe(List.of(new ExperimentCell(10, "BOOK", -1, true, false, false),
+			new ExperimentCell(11, null, -1, false, false, false),
+			new ExperimentCell(12, null, -1, false, false, false)));
+		assertTrue(rapidClicks.click(11), "Superpairs accepts the next click after the reveal arrives");
 
 		SuperpairsBoard mismatch = new SuperpairsBoard();
 		mismatch.observe(List.of(new ExperimentCell(10, "BOOK", -1, true, false, false),

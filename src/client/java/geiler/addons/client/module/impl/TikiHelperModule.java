@@ -17,6 +17,7 @@ import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.render.WorldToScreen;
 import geiler.addons.client.tiki.TikiSolver;
 import geiler.addons.client.tiki.TikiStacks;
+import geiler.addons.client.tree.ChatText;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Camera;
@@ -87,6 +88,8 @@ public final class TikiHelperModule extends Module {
 	private static final int HUD_LABEL_HALF_HEIGHT = 4;
 
 	private static final int DEBUG_RESCAN_INTERVAL = 20;
+	/** A debug sweep is spread across ticks so a large radius cannot freeze the client. */
+	private static final int DEBUG_SCAN_BUDGET = 4_096;
 	private static final double SOUND_SLACK = 8.0;
 	private static final int VERIFY_DELAY = 8;
 	private static final float DEBUG_LABEL_HEIGHT = 0.3f;
@@ -145,6 +148,13 @@ public final class TikiHelperModule extends Module {
 	private long tick;
 	private int ticksSinceScan;
 	private int ticksSinceDebugScan;
+	private BlockPos debugScanCenter;
+	private int debugScanRadius;
+	private int debugScanCursor;
+	private int debugScanTotal;
+	private Map<BlockPos, Skull> debugScanCurrent;
+	private Map<BlockPos, Skull> debugScanBaseline;
+	private final Set<BlockPos> debugScanChanged = new HashSet<>();
 	private PendingVerification pending;
 	private ClientLevel lastLevel;
 
@@ -271,11 +281,14 @@ public final class TikiHelperModule extends Module {
 	}
 
 	private void resetState() {
+		if (armed) log("DISARMED");
 		remembered.clear();
 		woken.clear();
 		clearSolver();
 		tracked.clear();
 		armed = false;
+		clearDebugScan();
+		TikiDebugLog.close();
 		pending = null;
 	}
 
@@ -449,8 +462,9 @@ public final class TikiHelperModule extends Module {
 		}
 		if (++ticksSinceDebugScan >= DEBUG_RESCAN_INTERVAL) {
 			ticksSinceDebugScan = 0;
-			rescanSkulls(level, player);
+			beginDebugScan(player);
 		}
+		advanceDebugScan(level);
 	}
 
 	private BlockPos nearestCoord(LocalPlayer player, int range) {
@@ -475,6 +489,8 @@ public final class TikiHelperModule extends Module {
 		if (!armed) {
 			log("DISARMED");
 			tracked.clear();
+			clearDebugScan();
+			TikiDebugLog.close();
 			return;
 		}
 		if (TikiDebugLog.path() == null) {
@@ -486,28 +502,50 @@ public final class TikiHelperModule extends Module {
 		log("ARMED near=" + format(near));
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.level != null && mc.player != null) {
-			rescanSkulls(mc.level, mc.player);
+			beginDebugScan(mc.player);
 		}
 	}
 
-	private void rescanSkulls(ClientLevel level, LocalPlayer player) {
+	private void beginDebugScan(LocalPlayer player) {
+		if (debugScanCurrent != null || player == null) return;
 		int radius = trackRadius.intValue();
-		BlockPos center = player.blockPosition();
-		Map<BlockPos, Skull> current = new HashMap<>();
+		long side = radius * 2L + 1L;
+		long total = side * side * side;
+		if (total > Integer.MAX_VALUE) return;
+		debugScanCenter = player.blockPosition().immutable();
+		debugScanRadius = radius;
+		debugScanCursor = 0;
+		debugScanTotal = (int) total;
+		debugScanCurrent = new HashMap<>();
+		debugScanBaseline = new HashMap<>(tracked);
+		debugScanChanged.clear();
+	}
 
-		for (int dx = -radius; dx <= radius; dx++) {
-			for (int dy = -radius; dy <= radius; dy++) {
-				for (int dz = -radius; dz <= radius; dz++) {
-					BlockPos pos = center.offset(dx, dy, dz);
-					if (!level.isLoaded(pos)) continue;
-					Skull skull = snapshot(level, pos);
-					if (skull != null) current.put(pos.immutable(), skull);
-				}
-			}
+	private void advanceDebugScan(ClientLevel level) {
+		if (debugScanCurrent == null || debugScanCenter == null || level == null) return;
+		int side = debugScanRadius * 2 + 1;
+		int plane = side * side;
+		int end = Math.min(debugScanTotal, debugScanCursor + DEBUG_SCAN_BUDGET);
+		for (; debugScanCursor < end; debugScanCursor++) {
+			int localX = debugScanCursor / plane;
+			int remainder = debugScanCursor % plane;
+			int localY = remainder / side;
+			int localZ = remainder % side;
+			BlockPos pos = debugScanCenter.offset(localX - debugScanRadius,
+				localY - debugScanRadius, localZ - debugScanRadius);
+			if (!level.isLoaded(pos)) continue;
+			Skull skull = snapshot(level, pos);
+			if (skull != null) debugScanCurrent.put(pos.immutable(), skull);
 		}
+		if (debugScanCursor >= debugScanTotal) finishDebugScan(level);
+	}
 
+	private void finishDebugScan(ClientLevel level) {
+		Map<BlockPos, Skull> current = debugScanCurrent;
+		Map<BlockPos, Skull> baseline = debugScanBaseline == null ? Map.of() : debugScanBaseline;
 		for (Map.Entry<BlockPos, Skull> entry : current.entrySet()) {
-			Skull previous = tracked.get(entry.getKey());
+			if (debugScanChanged.contains(entry.getKey())) continue;
+			Skull previous = baseline.get(entry.getKey());
 			if (previous == null) {
 				log("ADD    " + format(entry.getKey()) + " " + entry.getValue() + " " + stackOf(level, entry.getKey()));
 			} else if (!previous.equals(entry.getValue())) {
@@ -515,14 +553,31 @@ public final class TikiHelperModule extends Module {
 					+ " " + stackOf(level, entry.getKey()));
 			}
 		}
-		for (Map.Entry<BlockPos, Skull> entry : tracked.entrySet()) {
-			if (!current.containsKey(entry.getKey())) {
+		for (Map.Entry<BlockPos, Skull> entry : baseline.entrySet()) {
+			if (!current.containsKey(entry.getKey()) && !debugScanChanged.contains(entry.getKey())) {
 				log("REMOVE " + format(entry.getKey()) + " last=" + entry.getValue());
 			}
 		}
 
+		Map<BlockPos, Skull> merged = new HashMap<>(current);
+		for (BlockPos changed : debugScanChanged) {
+			Skull eventState = tracked.get(changed);
+			if (eventState == null) merged.remove(changed);
+			else merged.put(changed, eventState);
+		}
 		tracked.clear();
-		tracked.putAll(current);
+		tracked.putAll(merged);
+		clearDebugScan();
+	}
+
+	private void clearDebugScan() {
+		debugScanCenter = null;
+		debugScanRadius = 0;
+		debugScanCursor = 0;
+		debugScanTotal = 0;
+		debugScanCurrent = null;
+		debugScanBaseline = null;
+		debugScanChanged.clear();
 	}
 
 	// ---- events -------------------------------------------------------------------------
@@ -536,6 +591,7 @@ public final class TikiHelperModule extends Module {
 		if (!player.blockPosition().closerThan(pos, trackRadius.intValue())) return;
 
 		BlockPos key = pos.immutable();
+		if (debugScanCurrent != null) debugScanChanged.add(key);
 		Skull previous = tracked.get(key);
 		Skull now = state.getBlock() instanceof AbstractSkullBlock ? snapshot(level, key) : null;
 
@@ -614,11 +670,12 @@ public final class TikiHelperModule extends Module {
 	 */
 	public void onChatMessage(String message) {
 		if (!isActive()) return;
-		if (message.contains(AWAKENED_MESSAGE)) {
+		String normalized = ChatText.plain(message == null ? "" : message);
+		if (normalized.contains(AWAKENED_MESSAGE)) {
 			onTikiAwakened();
 		}
 		if (debugLogging.value() && armed && trackChat.value()) {
-			log("CHAT   " + message);
+			log("CHAT   " + normalized);
 		}
 	}
 

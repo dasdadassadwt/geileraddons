@@ -7,6 +7,7 @@ import geiler.addons.client.module.Module;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.render.EspRenderer;
+import geiler.addons.client.tree.ChatText;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.minecraft.ChatFormatting;
@@ -52,7 +53,7 @@ public final class I4HelperModule extends Module {
 	/** Was active and got hit, reverted to blue terracotta - done, no highlight, never re-targeted. */
 	private static final int COMPLETED = 3;
 
-	private static final Pattern COMPLETED_DEVICE = Pattern.compile("^(.*) completed a device! \\(\\d/\\d\\)$");
+	private static final Pattern COMPLETED_DEVICE = Pattern.compile("^(?:\\[[^]]*]\\s*)?([A-Za-z0-9_]{1,16}) completed a device! \\(\\d/\\d\\)$");
 	private static final Pattern[] SUPPRESSED_SUBTITLES = {
 		Pattern.compile("^.* completed a device! \\(\\d/\\d\\)$"),
 		Pattern.compile("^.* activated a terminal! \\(\\d/\\d\\)$"),
@@ -202,7 +203,7 @@ public final class I4HelperModule extends Module {
 		if (player == null) return;
 		// Defensive: Hypixel usually sends styled components, whose flattened text carries no
 		// section codes, but it does embed legacy codes in some messages - strip either way.
-		String name = ChatFormatting.stripFormatting(matcher.group(1));
+		String name = ChatText.stripForMatch(matcher.group(1));
 		if (name == null || !name.equals(player.getGameProfile().name())) return;
 
 		notifyDone();
@@ -211,8 +212,9 @@ public final class I4HelperModule extends Module {
 	/** @return true if the subtitle should be suppressed */
 	public boolean onSubtitle(String message) {
 		if (!isEnabled() || !onDevice) return false;
+		String normalized = ChatText.plain(message == null ? "" : message).trim();
 		for (Pattern pattern : SUPPRESSED_SUBTITLES) {
-			if (pattern.matcher(message).matches()) return true;
+			if (pattern.matcher(normalized).matches()) return true;
 		}
 		return false;
 	}

@@ -99,7 +99,7 @@ public final class VisualModule extends Module {
 		set(module.text, preset.text());
 		set(module.muted, preset.muted());
 		module.refreshTheme();
-		ModConfig.save();
+		ModConfig.markDirty();
 	}
 
 	private static void set(ColorSetting setting, int argb) {

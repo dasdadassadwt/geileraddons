@@ -9,7 +9,7 @@ party announcements, and optional dungeon profile lookups for Party Finder tools
 lookups are cached and the mod never sends a kick unless Auto Kick is enabled and you are party
 leader.
 
-![Minecraft](https://img.shields.io/badge/Minecraft-1.21.10-brightgreen)
+![Minecraft](https://img.shields.io/badge/Minecraft-26.1.2-brightgreen)
 ![Loader](https://img.shields.io/badge/loader-Fabric-blue)
 ![License](https://img.shields.io/badge/license-CC0--1.0-lightgrey)
 
@@ -58,6 +58,8 @@ random 1–2 seconds, send the reasons to party chat, wait another random 1–2 
 if leadership and membership are still valid. Multiple actions are serialized. **Ask Before**
 instead shows the reasons client-side with a clickable **Kick** button and schedules no command.
 Missing API data never causes an automatic kick.
+The profile retry window and retry interval are configurable under **Safety**; after the window
+expires the mod stops retrying and offers a manual **Kick** action instead.
 
 </details>
 
@@ -207,7 +209,7 @@ Everything the mod draws — the menu, the tracker panel, the notifier — reads
 
 Five colours define it: background, border, accent, text and muted text. Every hover tint, card fill and slider is worked out from those, so you can't end up with half of the GUI on the old scheme. Text sitting on the accent flips between black and white on its own, so a pale accent doesn't leave unreadable labels.
 
-Four presets to start from: **Tracker** (the flat translucent look, and the default), **Amethyst** (the original purple), **Midnight** and **Forest**.
+Seven presets to start from: **Tracker** (the flat translucent look, and the default), **Amethyst** (the original purple), **Midnight**, **Forest**, **Aurora**, **Ember**, and **Orchid**.
 
 In-world colours — waypoint states, solver directions, device highlights — stay separate. Those are signals, not decoration, and a theme has no business repainting them.
 
@@ -235,7 +237,7 @@ Your settings live in `.minecraft/config/geileraddons/config.json`. Delete it to
 
 **Island detection:** modules that only apply on one island need to know which island you're on, so the mod subscribes to the official Hypixel Mod API. The shared API handles the greeting and registration, then reports the island whenever you change server. One config-file key controls it:
 
-- `"hypixelModApi": false` turns it off. The Safari modules then stay idle and say so; Tiki Helper falls back to recognising Torrhus Canyon by its terrain, as it did before.
+- `"hypixelModApi": false` turns it off. Island-gated modules then stay idle and say so; no terrain or scoreboard guess is allowed to activate them.
 
 ## License
 

@@ -234,7 +234,7 @@ public class TikiCoordManagerScreen extends Screen {
 				if (!row.contains(event.x(), event.y())) continue;
 				if (deleteRect(row).contains(event.x(), event.y())) {
 					TikiCoords.remove(i);
-					ModConfig.save();
+					ModConfig.markDirty();
 					TikiHelperModule.INSTANCE.requestScan();
 				}
 				return true;
@@ -313,7 +313,7 @@ public class TikiCoordManagerScreen extends Screen {
 			error = "That coordinate is already in the list";
 			return;
 		}
-		ModConfig.save();
+		ModConfig.markDirty();
 		TikiHelperModule.INSTANCE.requestScan();
 		// Show the row that was just added.
 		scroll = Integer.MAX_VALUE;

@@ -72,18 +72,18 @@ public final class MobHighlightModule extends Module {
 	// ---- highlight list -----------------------------------------------------------------
 
 	public List<MobHighlight> highlights() {
-		return highlights;
+		return List.copyOf(highlights);
 	}
 
 	/** Adds an empty highlight, which the user then fills in - there is no dialog to answer. */
 	private void create() {
 		highlights.add(new MobHighlight(nextId++));
-		ModConfig.save();
+		ModConfig.markDirty();
 	}
 
 	void remove(MobHighlight highlight) {
 		highlights.remove(highlight);
-		ModConfig.save();
+		ModConfig.markDirty();
 	}
 
 	/** Replaces the list from the config; ids come back as saved so collapsed sections still match. */
