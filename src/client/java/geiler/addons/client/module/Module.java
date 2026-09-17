@@ -110,6 +110,17 @@ public abstract class Module {
 		return !settings.isEmpty();
 	}
 
+	/**
+	 * Whether a setting should currently be shown in the Click GUI.
+	 *
+	 * <p>The persistence lists intentionally remain complete even when a module hides a
+	 * presentation-only option. Modules can override this for settings whose relevance depends on
+	 * another setting; ordinary modules keep every setting visible.</p>
+	 */
+	public boolean isSettingVisible(Setting setting) {
+		return true;
+	}
+
 	public boolean isEnabled() {
 		return enabled;
 	}

@@ -17,6 +17,7 @@ import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.NumberSetting;
+import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
 import net.minecraft.client.Minecraft;
@@ -63,8 +64,6 @@ public final class ExperimentSolverModule extends Module {
 	private static final int BASE_PANEL_PADDING = 2;
 	private static final int SCREEN_MARGIN = 4;
 	private static final int INFO_HEIGHT = 46;
-	private static final int FUTURE_LIMIT = 3;
-	private static final int CHRONOMATRON_VISIBLE_STEPS = 2;
 	private static final long FIRST_CLICK_PROTECTION_NANOS = 500_000_000L;
 	private static final long SUPERPAIRS_CLICK_FEEDBACK_NANOS = 280_000_000L;
 	private static final int SUPERPAIRS_UNKNOWN_COLOR = 0xFFFFFFFF;
@@ -74,8 +73,8 @@ public final class ExperimentSolverModule extends Module {
 	private static final int SUPERPAIRS_MATCH_BORDER = 0xFFFF8F00;
 	private static final int SUPERPAIRS_KNOWN_COLOR = 0xFFE53935;
 	private static final int SUPERPAIRS_KNOWN_BORDER = 0xFFFFB4B4;
-	private static final int SUPERPAIRS_COLLECTED_COLOR = 0xFF4B5563;
-	private static final int SUPERPAIRS_COLLECTED_BORDER = 0xFFD8E1EC;
+	private static final int SUPERPAIRS_COLLECTED_COLOR = 0xFF16A34A;
+	private static final int SUPERPAIRS_COLLECTED_BORDER = 0xFFB7FFCB;
 	private static final Pattern CLICKS_REMAINING_PATTERN = Pattern.compile(
 		"(?i)(?:(\\d+)\\s*(?:clicks?|tries?|attempts?)\\s*(?:left|remaining)"
 			+ "|(?:clicks?|tries?|attempts?)\\s*(?:left|remaining)\\s*[:\\-]?\\s*(\\d+)"
@@ -85,6 +84,8 @@ public final class ExperimentSolverModule extends Module {
 	private final BooleanSetting chronomatron;
 	private final BooleanSetting ultrasequencer;
 	private final BooleanSetting superpairs;
+	private final NumberSetting chronomatronFutureClicks;
+	private final NumberSetting ultrasequencerFutureClicks;
 	private final BooleanSetting zeroPing;
 	private final BooleanSetting preventMisclicks;
 	private final BooleanSetting firstClickProtection;
@@ -108,6 +109,7 @@ public final class ExperimentSolverModule extends Module {
 	private final ColorSetting currentColor;
 	private final ColorSetting nextColor;
 	private final ColorSetting nextNextColor;
+	private final ColorSetting nextNextNextColor;
 	private final ColorSetting discoveredColor;
 	private final ColorSetting unknownColor;
 	private final ExperimentSolverEngine engine = new ExperimentSolverEngine();
@@ -127,17 +129,20 @@ public final class ExperimentSolverModule extends Module {
 	private ExperimentSolverModule(Settings settings) {
 		super("Solver", "Solves Experimentation Table games.", Category.ENCHANTING,
 			settings.chronomatron, settings.ultrasequencer, settings.superpairs,
+			settings.chronomatronFutureClicks, settings.ultrasequencerFutureClicks,
 			settings.zeroPing, settings.preventMisclicks, settings.firstClickProtection,
 			settings.accountForServerLag, settings.lagProtectionTicks, settings.serumsConsumed,
 			settings.size, settings.roundness, settings.slotGap,
 			settings.clickSounds, settings.clickSound, settings.clickSoundPitch, settings.clickSoundVolume,
 			settings.completeSounds, settings.maxClickAlert, settings.completeSound, settings.completeSoundPitch,
 			settings.completeSoundVolume, settings.panelColor, settings.textColor,
-			settings.currentColor, settings.nextColor, settings.nextNextColor, settings.discoveredColor,
-			settings.unknownColor);
+			settings.currentColor, settings.nextColor, settings.nextNextColor, settings.nextNextNextColor,
+			settings.discoveredColor, settings.unknownColor);
 		this.chronomatron = settings.chronomatron;
 		this.ultrasequencer = settings.ultrasequencer;
 		this.superpairs = settings.superpairs;
+		this.chronomatronFutureClicks = settings.chronomatronFutureClicks;
+		this.ultrasequencerFutureClicks = settings.ultrasequencerFutureClicks;
 		this.zeroPing = settings.zeroPing;
 		this.preventMisclicks = settings.preventMisclicks;
 		this.firstClickProtection = settings.firstClickProtection;
@@ -161,10 +166,12 @@ public final class ExperimentSolverModule extends Module {
 		this.currentColor = settings.currentColor;
 		this.nextColor = settings.nextColor;
 		this.nextNextColor = settings.nextNextColor;
+		this.nextNextNextColor = settings.nextNextNextColor;
 		this.discoveredColor = settings.discoveredColor;
 		this.unknownColor = settings.unknownColor;
 		group(
 			new SettingGroup("Experiments", settings.chronomatron, settings.ultrasequencer, settings.superpairs),
+			new SettingGroup("Preview", settings.chronomatronFutureClicks, settings.ultrasequencerFutureClicks),
 			new SettingGroup("Protection", settings.zeroPing, settings.preventMisclicks,
 				settings.firstClickProtection, settings.accountForServerLag, settings.lagProtectionTicks,
 				settings.serumsConsumed),
@@ -173,8 +180,8 @@ public final class ExperimentSolverModule extends Module {
 				settings.clickSoundPitch, settings.clickSoundVolume, settings.completeSounds, settings.maxClickAlert,
 				settings.completeSound, settings.completeSoundPitch, settings.completeSoundVolume),
 			new SettingGroup("Colors", settings.panelColor, settings.textColor,
-				settings.currentColor, settings.nextColor, settings.nextNextColor, settings.discoveredColor,
-				settings.unknownColor)
+				settings.currentColor, settings.nextColor, settings.nextNextColor, settings.nextNextNextColor,
+				settings.discoveredColor, settings.unknownColor)
 		);
 	}
 
@@ -182,6 +189,10 @@ public final class ExperimentSolverModule extends Module {
 		final BooleanSetting chronomatron = new BooleanSetting("Chronomatron", true);
 		final BooleanSetting ultrasequencer = new BooleanSetting("Ultrasequencer", true);
 		final BooleanSetting superpairs = new BooleanSetting("Superpairs", true);
+		final NumberSetting chronomatronFutureClicks = new NumberSetting(
+			"Chronomatron Future Clicks", 0, 3, 1, true);
+		final NumberSetting ultrasequencerFutureClicks = new NumberSetting(
+			"Ultrasequencer Future Clicks", 0, 3, 2, true);
 		final BooleanSetting zeroPing = new BooleanSetting("0 Ping", false);
 		final BooleanSetting preventMisclicks = new BooleanSetting("Prevent Misclicks", true);
 		final BooleanSetting firstClickProtection = new BooleanSetting("First Click Protection", true);
@@ -206,6 +217,8 @@ public final class ExperimentSolverModule extends Module {
 		final ColorSetting currentColor = new ColorSetting("Current Color", "Order 1", 85, 255, 85, 255);
 		final ColorSetting nextColor = new ColorSetting("Next Color", "Order 2", 42, 127, 42, 255);
 		final ColorSetting nextNextColor = new ColorSetting("Next Next Color", "Order 3", 21, 63, 21, 255);
+		final ColorSetting nextNextNextColor = new ColorSetting(
+			"Next Next Next Color", "Order 4", 10, 31, 10, 255);
 		final ColorSetting discoveredColor = new ColorSetting("Discovered Color", 108, 99, 255, 255);
 		final ColorSetting unknownColor = new ColorSetting("Unknown Color", 75, 75, 85, 255);
 	}
@@ -239,6 +252,24 @@ public final class ExperimentSolverModule extends Module {
 
 	public BooleanSetting superpairs() {
 		return superpairs;
+	}
+
+	public NumberSetting chronomatronFutureClicks() {
+		return chronomatronFutureClicks;
+	}
+
+	public NumberSetting ultrasequencerFutureClicks() {
+		return ultrasequencerFutureClicks;
+	}
+
+	@Override
+	public boolean isSettingVisible(Setting setting) {
+		int maximumFutureClicks = Math.max(chronomatronFutureClicks.intValue(),
+			ultrasequencerFutureClicks.intValue());
+		if (setting == nextColor) return maximumFutureClicks >= 1;
+		if (setting == nextNextColor) return maximumFutureClicks >= 2;
+		if (setting == nextNextNextColor) return maximumFutureClicks >= 3;
+		return true;
 	}
 
 	public BooleanSetting zeroPing() {
@@ -571,6 +602,8 @@ public final class ExperimentSolverModule extends Module {
 		}
 		if (!session.observe(screen)) return;
 		engine.configure(configuration());
+		boolean superpairsChanged = session.type == ExperimentType.SUPERPAIRS
+			&& session.takeSuperpairsObservationDirty();
 		for (Session.SlotUpdate update : session.drainSlotUpdates()) {
 			if (session.type == ExperimentType.ULTRASEQUENCER) continue;
 			ChronomatronEvent event = session.type == ExperimentType.CHRONOMATRON
@@ -581,7 +614,9 @@ public final class ExperimentSolverModule extends Module {
 			// Establish the model before mutation callbacks; capture the memory only on a tick.
 			solverView = engine.observe(new ExperimentSnapshot(title, "", List.of()));
 		} else if (session.type != ExperimentType.ULTRASEQUENCER) {
-			solverView = engine.observe(session.snapshot(screen, zeroPing.value()));
+			if (session.type != ExperimentType.SUPERPAIRS || superpairsChanged || solverView.type() == null) {
+				solverView = engine.observe(session.snapshot(screen, zeroPing.value()));
+			}
 		}
 		// Rebuild the render list after the queue has drained. Superpairs values are learned only from
 		// the last clicked slot's revealed stack, so a live frame cannot leak future card values into an
@@ -647,6 +682,7 @@ public final class ExperimentSolverModule extends Module {
 			case CURRENT -> currentColor.argb();
 			case NEXT -> nextColor.argb();
 			case NEXT_NEXT -> nextNextColor.argb();
+			case NEXT_NEXT_NEXT -> nextNextNextColor.argb();
 			case NONE -> unknownColor.argb();
 		};
 	}
@@ -733,8 +769,7 @@ public final class ExperimentSolverModule extends Module {
 		Map<Integer, BoardSlot> slotsById = new LinkedHashMap<>();
 		for (BoardSlot slot : session.slots) slotsById.put(slot.slot.index, slot);
 		Map<Integer, MutableSlotVisual> visible = new LinkedHashMap<>();
-		int visibleSteps = solverView.type() == ExperimentType.CHRONOMATRON
-			? CHRONOMATRON_VISIBLE_STEPS : FUTURE_LIMIT;
+		int visibleSteps = previewSteps(solverView.type());
 		List<SequenceStep> upcoming = solverView.upcoming(visibleSteps);
 		for (int offset = 0; offset < upcoming.size(); offset++) {
 			SequenceStep step = upcoming.get(offset);
@@ -753,6 +788,19 @@ public final class ExperimentSolverModule extends Module {
 			if (visual != null) result.add(visual.immutable());
 		}
 		return List.copyOf(result);
+	}
+
+	/** Number of sequence buttons drawn for a puzzle, including the current button. */
+	int previewSteps(ExperimentType type) {
+		return 1 + futureClicks(type);
+	}
+
+	private int futureClicks(ExperimentType type) {
+		return switch (type) {
+			case CHRONOMATRON -> chronomatronFutureClicks.intValue();
+			case ULTRASEQUENCER -> ultrasequencerFutureClicks.intValue();
+			case SUPERPAIRS -> 0;
+		};
 	}
 
 	private Layout layout(AbstractContainerScreen<?> screen, int availableWidth, int availableHeight) {
@@ -825,7 +873,8 @@ public final class ExperimentSolverModule extends Module {
 		CURRENT(0),
 		NEXT(1),
 		NEXT_NEXT(2),
-		NONE(3);
+		NEXT_NEXT_NEXT(3),
+		NONE(4);
 
 		private final int rank;
 
@@ -837,7 +886,8 @@ public final class ExperimentSolverModule extends Module {
 			return switch (offset) {
 				case 0 -> CURRENT;
 				case 1 -> NEXT;
-				default -> NEXT_NEXT;
+				case 2 -> NEXT_NEXT;
+				default -> NEXT_NEXT_NEXT;
 			};
 		}
 	}
@@ -850,6 +900,14 @@ public final class ExperimentSolverModule extends Module {
 		final Map<Integer, ItemStack> rememberedStacks = new LinkedHashMap<>();
 		final List<ItemStack> superpairTypes = new ArrayList<>();
 		final Map<Integer, String> superpairValues = new LinkedHashMap<>();
+		// Superpairs redraws are intentionally driven by invalidation. The menu is updated every tick
+		// even when its board has not changed, so rebuilding tooltip names and immutable stack copies in
+		// that hot path caused a large frame-time spike when the custom screen opened.
+		final Map<Integer, ItemStack> superpairLiveStacks = new LinkedHashMap<>();
+		ItemStack cachedStatusStack = ItemStack.EMPTY;
+		StatusInfo cachedStatusInfo = new StatusInfo("", -1);
+		boolean statusCacheInitialized;
+		final SuperpairsCacheGate superpairCache = new SuperpairsCacheGate();
 		List<BoardSlot> slots = List.of();
 		String instruction = "";
 		Phase phase = Phase.WAITING;
@@ -866,11 +924,25 @@ public final class ExperimentSolverModule extends Module {
 				if (slotId < 0 || type == null) return;
 				ItemStack updateStack = stack == null ? ItemStack.EMPTY : stack.copy();
 				if (slotId == 49) {
+					if (type == ExperimentType.SUPERPAIRS) {
+						// The next tick reads the cached status stack once. There is no useful historical
+						// solver event here, and building an item tooltip for every opening callback is
+						// needlessly expensive.
+						superpairCache.invalidateObservation();
+						return;
+					}
 					enqueueSlotUpdate(handler, SlotUpdate.Kind.STATUS, slotId, updateStack,
 						updateStack.isEmpty() ? "" : updateStack.getHoverName().getString());
 					return;
 				}
 				if (!ExperimentBoardGeometry.forExperiment(type, tier).containsSlot(slotId)) return;
+				if (type == ExperimentType.SUPERPAIRS) {
+					superpairCache.invalidateRender();
+					// Before the first click the opening animation can broadcast one update per field.
+					// The live-board comparison below already coalesces those updates. Preserve a
+					// callback only for the pending clicked field, where its reveal identity matters.
+					if (slotId != lastClickedSlot) return;
+				}
 				// Capture a complete immutable frame at the callback boundary. Rebuilding an older event
 				// from the live menu later lets a burst of updates borrow future card values and corrupts
 				// Superpairs comparisons.
@@ -911,6 +983,7 @@ public final class ExperimentSolverModule extends Module {
 
 		boolean observe(AbstractContainerScreen<?> screen) {
 			attach(screen.getMenu());
+			if (type == ExperimentType.SUPERPAIRS) return observeSuperpairs(screen);
 			List<Slot> menuSlots = new ArrayList<>();
 			for (Slot slot : screen.getMenu().slots) {
 				if (!(slot.container instanceof Inventory) && isBoardSlot(type, tier, slot)) menuSlots.add(slot);
@@ -933,7 +1006,42 @@ public final class ExperimentSolverModule extends Module {
 			return true;
 		}
 
+		private boolean observeSuperpairs(AbstractContainerScreen<?> screen) {
+			StatusInfo statusInfo = cachedStatus(screen.getMenu());
+			String previousInstruction = instruction;
+			int previousClicks = serverClicksRemaining;
+			instruction = statusInfo.text();
+			if (statusInfo.clicksRemaining() >= 0) serverClicksRemaining = statusInfo.clicksRemaining();
+			if (!previousInstruction.equals(instruction) || previousClicks != serverClicksRemaining) {
+				superpairCache.invalidateObservation();
+			}
+
+			Phase previousPhase = phase;
+			phase = phaseFor(type, instruction, phase);
+			if (previousPhase == Phase.MAX_CLICKS && phase != Phase.MAX_CLICKS) {
+				resetSuperpairMemory();
+			}
+			refreshRenderSlots(screen);
+			return true;
+		}
+
 		void refreshRenderSlots(AbstractContainerScreen<?> screen) {
+			if (type == ExperimentType.SUPERPAIRS) {
+				captureSuperpairReveal(screen);
+				if (superpairLiveBoardChanged(screen)) {
+					superpairCache.invalidateRender();
+				}
+				if (!superpairCache.consumeRenderDirty()) return;
+				List<Slot> menuSlots = new ArrayList<>();
+				for (Slot slot : screen.getMenu().slots) {
+					if (isExperimentBoardSlot(type, tier, slot)) menuSlots.add(slot);
+				}
+				menuSlots.sort(Comparator.comparingInt(slot -> slot.index));
+				slots = List.copyOf(boardSlots(menuSlots, true));
+				superpairLiveStacks.clear();
+				for (Slot slot : menuSlots) superpairLiveStacks.put(slot.index, slot.getItem().copy());
+				return;
+			}
 			captureSuperpairReveal(screen);
 			List<Slot> menuSlots = new ArrayList<>();
 			for (Slot slot : screen.getMenu().slots) {
@@ -972,13 +1080,20 @@ public final class ExperimentSolverModule extends Module {
 			if (attachedMenu != null) attachedMenu.removeSlotListener(containerListener);
 			attachedMenu = null;
 			slotUpdates.clear();
+			superpairLiveStacks.clear();
 		}
 
 		private void resetSuperpairMemory() {
 			rememberedStacks.clear();
 			superpairTypes.clear();
 			superpairValues.clear();
+			superpairLiveStacks.clear();
+			superpairCache.invalidateRender();
 			lastClickedSlot = -1;
+		}
+
+		boolean takeSuperpairsObservationDirty() {
+			return superpairCache.consumeObservationDirty();
 		}
 
 		List<SlotUpdate> drainSlotUpdates() {
@@ -1051,7 +1166,10 @@ public final class ExperimentSolverModule extends Module {
 		private void rememberSuperpairStack(int slotId, ItemStack stack) {
 			if (slotId < 0 || stack == null || isHiddenCard(stack)) return;
 			ItemStack copy = stack.copy();
-			rememberedStacks.putIfAbsent(slotId, copy);
+			if (!rememberedStacks.containsKey(slotId)) {
+				rememberedStacks.put(slotId, copy);
+				superpairCache.invalidateRender();
+			}
 			superpairValues.computeIfAbsent(slotId, ignored -> superpairKey(copy));
 		}
 
@@ -1081,6 +1199,39 @@ public final class ExperimentSolverModule extends Module {
 
 		private static String instruction(AbstractContainerMenu menu) {
 			return status(menu).text();
+		}
+
+		private StatusInfo cachedStatus(AbstractContainerMenu menu) {
+			ItemStack current = statusStack(menu);
+			if (!statusCacheInitialized || !sameStack(cachedStatusStack, current)) {
+				cachedStatusStack = current.copy();
+				cachedStatusInfo = status(menu);
+				statusCacheInitialized = true;
+			}
+			return cachedStatusInfo;
+		}
+
+		private boolean superpairLiveBoardChanged(AbstractContainerScreen<?> screen) {
+			int boardCount = 0;
+			for (Slot slot : screen.getMenu().slots) {
+				if (!isExperimentBoardSlot(type, tier, slot)) continue;
+				boardCount++;
+				ItemStack previous = superpairLiveStacks.get(slot.index);
+				if (previous == null || !sameStack(previous, slot.getItem())) return true;
+			}
+			return boardCount != superpairLiveStacks.size();
+		}
+
+		private static ItemStack statusStack(AbstractContainerMenu menu) {
+			for (Slot slot : menu.slots) {
+				if (slot.index == 49) return slot.getItem();
+			}
+			return ItemStack.EMPTY;
+		}
+
+		private static boolean sameStack(ItemStack first, ItemStack second) {
+			return first != null && second != null && first.getCount() == second.getCount()
+				&& ItemStack.matches(first, second);
 		}
 
 		private static StatusInfo status(AbstractContainerMenu menu) {
@@ -1256,6 +1407,36 @@ public final class ExperimentSolverModule extends Module {
 					: ChronomatronEvent.board(slotId, chronomatronValue(stack),
 						!stack.isEmpty() && stack.hasFoil());
 			}
+		}
+	}
+
+	/**
+	 * Separates render-cache invalidation from solver observation invalidation. An unchanged
+	 * Superpairs frame consumes neither path, which keeps the hot render/tick loop allocation-free.
+	 */
+	static final class SuperpairsCacheGate {
+		private boolean renderDirty = true;
+		private boolean observationDirty = true;
+
+		void invalidateRender() {
+			renderDirty = true;
+			observationDirty = true;
+		}
+
+		void invalidateObservation() {
+			observationDirty = true;
+		}
+
+		boolean consumeRenderDirty() {
+			if (!renderDirty) return false;
+			renderDirty = false;
+			return true;
+		}
+
+		boolean consumeObservationDirty() {
+			if (!observationDirty) return false;
+			observationDirty = false;
+			return true;
 		}
 	}
 

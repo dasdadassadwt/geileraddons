@@ -1313,12 +1313,12 @@ public class ClickGuiScreen extends Screen {
 	private int layoutGroup(Module module, SettingGroup group, int x, int cursorY, int depth,
 		List<Row> rows, ColorSetting expandedColor) {
 		int moduleWidth = moduleWidth();
-		if (!visibleGroup(group)) return cursorY;
+		if (!visibleGroup(module, group)) return cursorY;
 
 		if (group.name() != null) {
 			Rect bounds = new Rect(x, cursorY, moduleWidth, GROUP_HEADER_HEIGHT);
 			// Lined up with the switch on a toggle row, so the column reads straight down.
-			Rect toggle = group.toggle() == null || !visibleSetting(group.toggle()) ? null
+			Rect toggle = group.toggle() == null || !visibleSetting(module, group.toggle()) ? null
 				: new Rect(bounds.x + bounds.w - SWITCH_WIDTH - 14,
 					bounds.y + (bounds.h - SWITCH_HEIGHT) / 2, SWITCH_WIDTH, SWITCH_HEIGHT);
 			boolean collapsed = ClickGuiState.isCollapsed(module, group);
@@ -1329,7 +1329,7 @@ public class ClickGuiScreen extends Screen {
 		}
 
 		for (Setting setting : group.settings()) {
-			if (!visibleSetting(setting)) continue;
+			if (!visibleSetting(module, setting)) continue;
 			switch (setting) {
 				case ColorSetting colorSetting -> {
 					int rowHeight = colorRowHeight(colorSetting, expandedColor);
@@ -1375,18 +1375,19 @@ public class ClickGuiScreen extends Screen {
 		return cursorY;
 	}
 
-	private boolean visibleSetting(Setting setting) {
-		return DebugState.enabled() || !setting.isDebugOnly();
+	private boolean visibleSetting(Module module, Setting setting) {
+		return setting != null && (DebugState.enabled() || !setting.isDebugOnly())
+			&& module.isSettingVisible(setting);
 	}
 
-	private boolean visibleGroup(SettingGroup group) {
+	private boolean visibleGroup(Module module, SettingGroup group) {
 		if (!DebugState.enabled() && group.debugOnly()) return false;
-		if (group.name() != null && group.toggle() != null && visibleSetting(group.toggle())) return true;
+		if (group.name() != null && group.toggle() != null && visibleSetting(module, group.toggle())) return true;
 		for (Setting setting : group.settings()) {
-			if (visibleSetting(setting)) return true;
+			if (visibleSetting(module, setting)) return true;
 		}
 		for (SettingGroup child : group.children()) {
-			if (visibleGroup(child)) return true;
+			if (visibleGroup(module, child)) return true;
 		}
 		return false;
 	}

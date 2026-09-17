@@ -13,8 +13,10 @@ import geiler.addons.client.enchanting.ExperimentType;
 import geiler.addons.client.enchanting.SuperpairsBoard;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.module.BooleanSetting;
+import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.DebugState;
 import geiler.addons.client.module.Module;
+import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
 import net.minecraft.network.chat.Component;
@@ -30,6 +32,8 @@ public final class OfflineChecks {
 		checkIslandModes();
 		checkPersonalBestBoundaries();
 		checkAutoKickLabels();
+		checkExperimentPreviewConfiguration();
+		checkSuperpairsCacheGate();
 		checkEveryStatsToggleCombination();
 		checkGlobalDebugGate();
 		checkChronomatronModel();
@@ -85,6 +89,9 @@ public final class OfflineChecks {
 		pairEngine.observe(new ExperimentSnapshot(pairTitle, "Next button is instantly rewarded!", hidden));
 		assertEquals(1, pairEngine.view().superpairs().resolvedPairs(),
 			"Superpairs resolves only after both revealed cards hide again");
+		pairEngine.observe(new ExperimentSnapshot(pairTitle, "Next button is instantly rewarded!", hidden));
+		assertEquals(1, pairEngine.view().superpairs().resolvedPairs(),
+			"an instant-reward status update cannot undo a collected Superpairs pair");
 	}
 
 	private static void checkChronomatronModel() {
@@ -191,6 +198,71 @@ public final class OfflineChecks {
 		}
 		assertEquals("F1 Auto Kick", booleans.get(1).name(), "AutoKick stable boolean key");
 		assertEquals("F1 Minimum PB", texts.get(6).name(), "AutoKick stable PB key");
+	}
+
+	private static void checkExperimentPreviewConfiguration() {
+		ExperimentSolverModule module = ExperimentSolverModule.INSTANCE;
+		NumberSetting chronomatron = module.chronomatronFutureClicks();
+		NumberSetting ultrasequencer = module.ultrasequencerFutureClicks();
+		float oldChronomatron = chronomatron.value();
+		float oldUltrasequencer = ultrasequencer.value();
+		ColorSetting next = colorSetting(module, "Next Color");
+		ColorSetting nextNext = colorSetting(module, "Next Next Color");
+		ColorSetting nextNextNext = colorSetting(module, "Next Next Next Color");
+		try {
+			assertEquals(1, chronomatron.intValue(), "Chronomatron preview default");
+			assertEquals(2, ultrasequencer.intValue(), "Ultrasequencer preview default");
+			assertEquals(2, module.previewSteps(ExperimentType.CHRONOMATRON),
+				"Chronomatron preview includes exactly one future click by default");
+			assertEquals(3, module.previewSteps(ExperimentType.ULTRASEQUENCER),
+				"Ultrasequencer preview includes exactly two future clicks by default");
+
+			chronomatron.setValue(-1);
+			assertEquals(0, chronomatron.intValue(), "Chronomatron preview clamps its lower bound");
+			chronomatron.setValue(4);
+			assertEquals(3, chronomatron.intValue(), "Chronomatron preview clamps its upper bound");
+			ultrasequencer.setValue(-1);
+			assertEquals(0, ultrasequencer.intValue(), "Ultrasequencer preview clamps its lower bound");
+			chronomatron.setValue(0);
+			assertEquals(1, module.previewSteps(ExperimentType.ULTRASEQUENCER),
+				"zero future clicks leaves only the current button");
+			assertFalse(module.isSettingVisible(next), "Next color hides when both future previews are zero");
+			assertFalse(module.isSettingVisible(nextNext), "Next Next color hides when both future previews are zero");
+			assertFalse(module.isSettingVisible(nextNextNext),
+				"Next Next Next color hides when both future previews are zero");
+
+			chronomatron.setValue(3);
+			assertEquals(4, module.previewSteps(ExperimentType.CHRONOMATRON),
+				"three future clicks expose current plus three buttons");
+			assertTrue(module.isSettingVisible(next), "Next color shows for a future preview");
+			assertTrue(module.isSettingVisible(nextNext), "Next Next color shows for two future previews");
+			assertTrue(module.isSettingVisible(nextNextNext),
+				"Next Next Next color shows for three future previews");
+		} finally {
+			chronomatron.setValue(oldChronomatron);
+			ultrasequencer.setValue(oldUltrasequencer);
+		}
+	}
+
+	private static void checkSuperpairsCacheGate() {
+		ExperimentSolverModule.SuperpairsCacheGate gate = new ExperimentSolverModule.SuperpairsCacheGate();
+		assertTrue(gate.consumeRenderDirty(), "a new Superpairs session builds its initial render cache");
+		assertFalse(gate.consumeRenderDirty(), "an unchanged Superpairs frame does not rebuild its render cache");
+		assertTrue(gate.consumeObservationDirty(), "a new Superpairs session observes its initial board");
+		assertFalse(gate.consumeObservationDirty(), "an unchanged Superpairs frame skips board observation");
+		gate.invalidateObservation();
+		assertFalse(gate.consumeRenderDirty(), "a status-only change does not rebuild board render metadata");
+		assertTrue(gate.consumeObservationDirty(), "a status-only change observes the board once");
+		gate.invalidateRender();
+		assertTrue(gate.consumeRenderDirty(), "a board change rebuilds render metadata");
+		assertTrue(gate.consumeObservationDirty(), "a board change observes the board once");
+	}
+
+	private static ColorSetting colorSetting(Module module, String name) {
+		for (ColorSetting setting : module.colorSettings()) {
+			if (setting.name().equals(name)) return setting;
+		}
+		throw new AssertionError(module.name() + " is missing color setting " + name);
 	}
 
 	private static void checkEveryStatsToggleCombination() {
