@@ -1,6 +1,8 @@
 package geiler.addons.client.module.impl;
 
 import geiler.addons.client.dungeon.DungeonStatsChecks;
+import geiler.addons.client.entity.ClientEntitySnapshotChecks;
+import geiler.addons.client.entity.NameplatesChecks;
 import geiler.addons.client.enchanting.ExperimentCell;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
 import geiler.addons.client.enchanting.ChronomatronEvent;
@@ -13,14 +15,20 @@ import geiler.addons.client.enchanting.ExperimentTier;
 import geiler.addons.client.enchanting.ExperimentType;
 import geiler.addons.client.enchanting.SuperpairsBoard;
 import geiler.addons.client.location.Island;
+import geiler.addons.client.farming.PestChecks;
 import geiler.addons.client.module.BooleanSetting;
+import geiler.addons.client.module.ChoiceSetting;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.DebugState;
 import geiler.addons.client.module.Module;
+import geiler.addons.client.module.ModuleKeybind;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
+import geiler.addons.client.macro.MacroChecks;
 import net.minecraft.network.chat.Component;
+import net.minecraft.client.input.KeyEvent;
+import com.mojang.blaze3d.platform.InputConstants;
 
 import java.util.List;
 
@@ -32,16 +40,37 @@ public final class OfflineChecks {
 	public static void main(String[] args) {
 		checkIslandModes();
 		DungeonStatsChecks.run();
+		PestChecks.run();
+		ClientEntitySnapshotChecks.run();
+		NameplatesChecks.run();
+		HideyhoChecks.run();
+		PartyFinderLifecycleChecks.run();
+		checkMobHighlightFailClosed();
 		checkPersonalBestBoundaries();
 		checkAutoKickLabels();
 		checkExperimentPreviewConfiguration();
 		checkSuperpairsCacheGate();
 		checkEveryStatsToggleCombination();
 		checkGlobalDebugGate();
+		checkModuleKeybinds();
 		checkSettingInputBounds();
+		checkChoiceDirection();
 		checkChronomatronModel();
 		checkExperimentSolverEngine();
 		checkExperimentStateEdges();
+		MacroChecks.run();
+	}
+
+	private static void checkModuleKeybinds() {
+		ModuleKeybind bind = ModuleKeybind.from(new KeyEvent(InputConstants.KEY_G, 0, InputConstants.MOD_CONTROL));
+		assertTrue(bind.isBound(), "a key event creates a bound module keybind");
+		assertTrue(bind.matches(new KeyEvent(InputConstants.KEY_G, 0, InputConstants.MOD_CONTROL)),
+			"the matching modifier combination activates the bind");
+		assertFalse(bind.matches(new KeyEvent(InputConstants.KEY_G, 0, 0)),
+			"a missing modifier does not activate a combination bind");
+		assertFalse(new ModuleKeybind(InputConstants.getKey(new KeyEvent(InputConstants.KEY_ESCAPE, 0, 0)), 0).isBound(),
+			"Escape is reserved for clearing a bind");
+		assertTrue(ModuleKeybind.NONE.displayName().equals("None"), "unbound modules display None");
 	}
 
 	private static void checkExperimentStateEdges() {
@@ -178,6 +207,13 @@ public final class OfflineChecks {
 		assertSame(Island.OTHER, Island.fromMode("unknown_mode"), "unknown mode");
 	}
 
+	private static void checkMobHighlightFailClosed() {
+		assertFalse(MobHighlight.isKnownSkyBlockIsland(Island.NONE),
+			"unknown location keeps Mob Highlight disabled");
+		assertFalse(MobHighlight.isKnownSkyBlockIsland(Island.OTHER),
+			"non-SkyBlock location keeps Mob Highlight disabled");
+	}
+
 	private static void checkPersonalBestBoundaries() {
 		assertTrue(AutoKickRules.personalBestPasses(0, 0), "zero limit disables PB check");
 		assertTrue(AutoKickRules.personalBestPasses(60, 60), "PB equal to limit passes");
@@ -299,6 +335,8 @@ public final class OfflineChecks {
 	private static void checkGlobalDebugGate() {
 		assertFalse(DebugModule.INSTANCE.isEnabled(), "Dev Debug module defaults off");
 		assertEquals("DEV", DebugModule.INSTANCE.category().name(), "Dev Debug module category");
+		assertFalse(SlotIdsModule.INSTANCE.isEnabled(), "Slot IDs module defaults off");
+		assertEquals("DEV", SlotIdsModule.INSTANCE.category().name(), "Slot IDs module category");
 		DebugState.setEnabled(false);
 		BooleanSetting debug = BooleanSetting.debug("Debug", true);
 		assertFalse(debug.value(), "debug setting is effectively off behind the global gate");
@@ -329,11 +367,24 @@ public final class OfflineChecks {
 		assertEquals(5, number.intValue(), "NaN does not poison a number setting");
 		number.setFraction(Float.POSITIVE_INFINITY);
 		assertEquals(5, number.intValue(), "infinite slider input is ignored");
+		assertFalse(number.prefersTextInput(), "small ranges remain sliders");
+		NumberSetting large = new NumberSetting("large", 0, 200, 100, true);
+		assertTrue(large.prefersTextInput(), "large ranges use direct numeric input");
 		TextSetting text = new TextSetting("test", "value", 8);
 		text.setValue(null);
 		assertEquals("value", text.value(), "null text input is ignored");
 		ColorSetting color = new ColorSetting("test", 1, 2, 3, 4);
 		assertFalse(color.setHex(null), "null color input is rejected");
+	}
+
+	private static void checkChoiceDirection() {
+		ChoiceSetting choice = new ChoiceSetting("test", "A", "A", "B", "C");
+		choice.selectNext();
+		assertEquals("B", choice.value(), "choice next selects the following value");
+		choice.selectPrevious();
+		assertEquals("A", choice.value(), "choice previous selects the preceding value");
+		choice.selectPrevious();
+		assertEquals("C", choice.value(), "choice previous wraps at the beginning");
 	}
 
 	private static void checkExperimentSolverEngine() {

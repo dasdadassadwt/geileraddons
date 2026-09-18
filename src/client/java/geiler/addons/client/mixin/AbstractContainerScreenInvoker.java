@@ -15,4 +15,10 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 public interface AbstractContainerScreenInvoker {
 	@Invoker("slotClicked")
 	void geileraddons$invokeSlotClicked(Slot slot, int slotId, int button, ContainerInput input);
+
+	@org.spongepowered.asm.mixin.gen.Accessor("leftPos")
+	int geileraddons$getLeftPos();
+
+	@org.spongepowered.asm.mixin.gen.Accessor("topPos")
+	int geileraddons$getTopPos();
 }

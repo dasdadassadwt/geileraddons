@@ -1,5 +1,7 @@
 package geiler.addons.client.module;
 
+import geiler.addons.client.config.GeilerAddonsLog;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,6 +18,7 @@ public abstract class Module {
 	private final List<ModuleAction> actions;
 	private List<SettingGroup> groups;
 	private boolean enabled;
+	private ModuleKeybind keybind = ModuleKeybind.NONE;
 
 	/**
 	 * One flat list of settings in declaration order, sorted into typed lists here.
@@ -125,6 +128,14 @@ public abstract class Module {
 		return enabled;
 	}
 
+	public ModuleKeybind keybind() {
+		return keybind;
+	}
+
+	public void setKeybind(ModuleKeybind keybind) {
+		this.keybind = keybind == null ? ModuleKeybind.NONE : keybind;
+	}
+
 	/**
 	 * Whether the module should actually be doing anything right now.
 	 *
@@ -148,6 +159,7 @@ public abstract class Module {
 	public final void setEnabled(boolean enabled) {
 		if (this.enabled == enabled) return;
 		this.enabled = enabled;
+		GeilerAddonsLog.write(category, name, 0, enabled ? "MODULE ENABLED" : "MODULE DISABLED");
 		if (enabled) {
 			onEnable();
 		} else {

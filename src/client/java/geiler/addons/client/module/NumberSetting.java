@@ -57,6 +57,19 @@ public final class NumberSetting implements Setting {
 		return integer;
 	}
 
+	public float min() {
+		return min;
+	}
+
+	public float max() {
+		return max;
+	}
+
+	/** Large ranges are faster and more precise to edit directly than to drag across a slider. */
+	public boolean prefersTextInput() {
+		return max > 50.0f;
+	}
+
 	public void setValue(float value) {
 		if (!Float.isFinite(value)) return;
 		this.value = clamp(value);

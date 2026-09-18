@@ -2,6 +2,8 @@ package geiler.addons.client.mixin;
 
 import geiler.addons.client.module.impl.PartyFinderStatsModule;
 import geiler.addons.client.module.impl.ExperimentSolverModule;
+import geiler.addons.client.module.impl.SlotIdsModule;
+import geiler.addons.client.gui.SlotIdOverlay;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -16,6 +18,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /** Captures Group Builder selections before the confirmation click closes the menu. */
 @Mixin(AbstractContainerScreen.class)
 public abstract class AbstractContainerScreenMixin {
+	@org.spongepowered.asm.mixin.Shadow
+	protected int leftPos;
+	@org.spongepowered.asm.mixin.Shadow
+	protected int topPos;
+
 	@Inject(method = "init", at = @At("HEAD"))
 	private void geileraddons$attachExperimentListener(CallbackInfo ci) {
 		ExperimentSolverModule.INSTANCE.onScreenOpened((AbstractContainerScreen<?>) (Object) this);
@@ -44,6 +51,15 @@ public abstract class AbstractContainerScreenMixin {
 		int mouseY, float delta, CallbackInfo ci) {
 		AbstractContainerScreen<?> screen = (AbstractContainerScreen<?>) (Object) this;
 		if (ExperimentSolverModule.INSTANCE.ownsScreen(screen)) ci.cancel();
+	}
+
+	/** Draws diagnostic ids after vanilla item stacks, so the badge remains legible. */
+	@Inject(method = "extractSlots", at = @At("TAIL"))
+	private void geileraddons$renderSlotIds(GuiGraphicsExtractor graphics, int mouseX, int mouseY,
+		CallbackInfo ci) {
+		if (SlotIdsModule.INSTANCE.isEnabled()) {
+			SlotIdOverlay.render((AbstractContainerScreen<?>) (Object) this, graphics, leftPos, topPos);
+		}
 	}
 
 	/**

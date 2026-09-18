@@ -13,6 +13,8 @@ public final class DungeonStatsChecks {
 		assertFalse("{\"inventory\":[]}", "an empty inventory is not complete inventory data");
 		assertFalse("{\"inventory\":[\"temporarily unavailable\"]}",
 			"an arbitrary status string is not complete inventory data");
+		assertFalse("{\"inventory\":[{\"tag\":{\"display\":{\"Lore\":[\"Terminator\"]}}}]}",
+			"a lore mention is not an item identity");
 		assertTrue("{\"inventory\":[{\"id\":\"TERMINATOR\"}]}",
 			"an item identifier makes inventory evidence readable");
 		assertTrue("{\"inventory\":[\"minecraft:diamond\"]}",

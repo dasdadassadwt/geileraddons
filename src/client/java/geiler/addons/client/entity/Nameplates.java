@@ -43,15 +43,26 @@ public final class Nameplates {
 	/** Resolves labels to real mob bodies; player bodies require an explicit opt-in. */
 	public static Entity resolveBody(ClientLevel level, Entity matched, boolean includePlayers) {
 		if (allowedBody(matched, includePlayers)) return matched;
-
 		Vec3 at = matched.position();
 		List<LivingEntity> nearby = level.getEntities(EntityTypeTest.forClass(LivingEntity.class),
 			AABB.ofSize(at, SEARCH_RADIUS * 2, SEARCH_RADIUS * 2, SEARCH_RADIUS * 2),
 			entity -> allowedBody(entity, includePlayers));
+		return resolveBody(matched, nearby, includePlayers);
+	}
 
+	/**
+	 * Resolves against an already-collected nearby list. Keeping selection separate from the world
+	 * query makes the player-exclusion rule explicit and gives the offline harness a deterministic
+	 * seam for labels, direct fake players, and misleading nearby players.
+	 */
+	public static Entity resolveBody(Entity matched, List<? extends LivingEntity> nearby, boolean includePlayers) {
+		if (allowedBody(matched, includePlayers)) return matched;
+
+		Vec3 at = matched.position();
 		LivingEntity best = null;
 		double bestDistance = Double.MAX_VALUE;
 		for (LivingEntity candidate : nearby) {
+			if (!allowedBody(candidate, includePlayers)) continue;
 			double distance = candidate.position().distanceToSqr(at);
 			if (distance < bestDistance) {
 				bestDistance = distance;

@@ -176,7 +176,10 @@ public final class HideyhoFinderModule extends Module {
 		double bestDistance = Double.MAX_VALUE;
 		for (Entity match : matches) {
 			// The name fallback can land on the floating label rather than on the Hideyho.
-			Entity body = Nameplates.resolveBody(level, match);
+			// A texture-matched Hideyho is itself a fake player with a real hitbox. Allow that
+			// exact player through, but keep nearby-player exclusion for ordinary labels.
+			boolean directHideyho = isDirectHideyhoMatch(match);
+			Entity body = Nameplates.resolveBody(level, match, directHideyho);
 			if (body == null) continue;
 			double distance = body.position().distanceToSqr(at);
 			if (distance < bestDistance) {
@@ -185,6 +188,11 @@ public final class HideyhoFinderModule extends Module {
 			}
 		}
 		found = best;
+	}
+
+	/** A texture/name-matched player is the Hideyho body, not a floating label to redirect. */
+	static boolean isDirectHideyhoMatch(Entity entity) {
+		return entity instanceof AbstractClientPlayer && isHideyho(entity);
 	}
 
 	private static boolean isHideyho(Entity entity) {

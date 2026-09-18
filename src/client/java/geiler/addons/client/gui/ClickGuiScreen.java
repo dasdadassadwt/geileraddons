@@ -2,6 +2,7 @@ package geiler.addons.client.gui;
 
 import geiler.addons.client.config.ClickGuiState;
 import geiler.addons.client.config.ModConfig;
+import geiler.addons.client.macro.MacroTriggerContext;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ChoiceSetting;
@@ -10,6 +11,7 @@ import geiler.addons.client.module.DebugState;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.ModuleManager;
+import geiler.addons.client.module.ModuleKeybindManager;
 import geiler.addons.client.module.ModulePreview;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.Setting;
@@ -17,8 +19,11 @@ import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.module.impl.VisualModule;
 import geiler.addons.client.update.UpdateChecker;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.PlayerFaceExtractor;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.ConfirmLinkScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.client.input.CharacterEvent;
@@ -35,6 +40,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static geiler.addons.client.gui.GuiTheme.*;
@@ -47,6 +53,12 @@ public class ClickGuiScreen extends Screen {
 	private static final int MIN_PANEL_WIDTH = 240;
 	/** Left panel's share of the total width; the module panel takes the rest. */
 	private static final int CATEGORY_WIDTH_DIVISOR = 3;
+	/** Reserved inside each panel for the profile/search strip above the old content. */
+	private static final int HEADER_HEIGHT = 32;
+	private static final int HEADER_ROW_HEIGHT = 20;
+	private static final int PROFILE_FACE_SIZE = 18;
+	private static final int HEADER_INSET = 6;
+	private static final int SEARCH_MAX_LENGTH = 64;
 
 	private static final int ROW_HEIGHT = 24;
 	private static final int GROUP_HEADER_HEIGHT = 20;
@@ -82,9 +94,11 @@ public class ClickGuiScreen extends Screen {
 	private static final int CARD_MAX_DESC_LINES = 3;
 	private static final int SWITCH_WIDTH = 20;
 	private static final int SWITCH_HEIGHT = 11;
+	private static final int KEYBIND_HEIGHT = 15;
 
 	private static final int TEXT_FIELD_WIDTH = 64;
 	private static final int TEXT_FIELD_HEIGHT = 13;
+	private static final int NUMBER_FIELD_WIDTH = 64;
 	private static final int CHOICE_FIELD_WIDTH = 92;
 	private static final int CHOICE_FIELD_HEIGHT = 15;
 	/** Caret on for this long, then off for as long again. */
@@ -99,6 +113,9 @@ public class ClickGuiScreen extends Screen {
 	private PickerPart draggingPicker;
 	private NumberSetting draggingNumberSetting;
 	private TextSetting focusedTextSetting;
+	private NumberSetting focusedNumberSetting;
+	private String numberInput = "";
+	private boolean numberSelectAll;
 	/** The colour whose hex field has focus, and what has been typed into it so far. */
 	private ColorSetting focusedHexSetting;
 	private String hexInput = "";
@@ -119,6 +136,9 @@ public class ClickGuiScreen extends Screen {
 	private boolean closing;
 	private Screen pendingScreen;
 	private long lastFrameNanos = openedAtNanos;
+	private String searchQuery = "";
+	private boolean searchFocused;
+	private boolean searchSelectAll;
 
 	/** Last accepted control, used for a short tactile pulse without delaying the next action. */
 	private Object lastInteraction;
@@ -153,11 +173,30 @@ public class ClickGuiScreen extends Screen {
 		beginClose(null);
 	}
 
+	/**
+	 * Screen replacement belongs to the client tick, not render extraction. Calling setScreen from
+	 * the extractor leaves the old screen registered for the final frame on 26.1 and can make the
+	 * finished close animation appear frozen. The extractor simply stops drawing at the endpoint;
+	 * this tick performs the one state transition afterwards.
+	 */
+	@Override
+	public void tick() {
+		super.tick();
+		if (!closing) return;
+		ClickGuiMotion motion = motion();
+		if (elapsedMillis(lifecycleStartedNanos, System.nanoTime()) < motion.lifecycleMillis()) return;
+		Screen next = pendingScreen;
+		pendingScreen = null;
+		closing = false;
+		this.minecraft.setScreen(next);
+	}
+
 	@Override
 	public void removed() {
 		// Written once on the way out rather than on every scroll notch, which would mean a
 		// config write per mouse-wheel click.
 		persistView();
+		ModuleKeybindManager.cancelBinding();
 		ModConfig.save();
 		super.removed();
 	}
@@ -440,6 +479,79 @@ public class ClickGuiScreen extends Screen {
 		return (this.height - panelHeight()) / 2;
 	}
 
+	private int contentTop(int outerPanelY) {
+		return outerPanelY + HEADER_HEIGHT;
+	}
+
+	private Rect profileHeaderRect(int panelX, int panelY) {
+		return new Rect(panelX + HEADER_INSET, panelY + HEADER_INSET,
+			Math.max(1, categoryWidth() - HEADER_INSET * 2), HEADER_ROW_HEIGHT);
+	}
+
+	private Rect searchRect(int rightX, int panelY) {
+		return new Rect(rightX + HEADER_INSET, panelY + HEADER_INSET,
+			Math.max(1, moduleWidth() - HEADER_INSET * 2), HEADER_ROW_HEIGHT);
+	}
+
+	private List<Module> visibleModules(Category category) {
+		if (searchQuery.isBlank()) return ModuleManager.modules(category);
+		String needle = searchQuery.trim().toLowerCase(Locale.ROOT);
+		List<Module> matches = new ArrayList<>();
+		for (Module module : ModuleManager.modules()) {
+			String haystack = (module.name() + " " + module.description()).toLowerCase(Locale.ROOT);
+			if (haystack.contains(needle)) matches.add(module);
+		}
+		return matches;
+	}
+
+	private void setSearchQuery(String value) {
+		String normalized = value == null ? "" : value;
+		if (normalized.length() > SEARCH_MAX_LENGTH) normalized = normalized.substring(0, SEARCH_MAX_LENGTH);
+		if (normalized.equals(searchQuery)) return;
+		searchQuery = normalized;
+		gridScroll = 0;
+		gridScrollVisual = 0;
+	}
+
+	private void renderHeader(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
+		int panelX, int panelY, int rightX, long now, ClickGuiMotion motion) {
+		Rect profile = profileHeaderRect(panelX, panelY);
+		Rect search = searchRect(rightX, panelY);
+		boolean profileHovered = profile.contains(mouseX, mouseY);
+		boolean searchHovered = search.contains(mouseX, mouseY);
+		roundedRect(graphics, profile.x, profile.y, profile.w, profile.h, RADIUS_SMALL,
+			profileHovered ? CATEGORY_HOVER : GROUP_HEADER);
+		roundedRectBordered(graphics, search.x, search.y, search.w, search.h, RADIUS_SMALL,
+			searchFocused ? BUTTON_BG : GROUP_HEADER, searchFocused ? BUTTON_BG : GROUP_HEADER,
+			searchFocused ? PANEL_HIGHLIGHT : BORDER);
+
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.player != null) {
+			PlayerFaceExtractor.extractRenderState(graphics, minecraft.player.getSkin(),
+				profile.x + 2, profile.y + 1, PROFILE_FACE_SIZE);
+		}
+		String name = minecraft.player == null ? "Player" : minecraft.player.getName().getString();
+		int textX = profile.x + PROFILE_FACE_SIZE + 6;
+		int available = Math.max(1, profile.w - PROFILE_FACE_SIZE - 10);
+		String version = "v" + (UpdateChecker.currentVersion().isBlank() ? "?" : UpdateChecker.currentVersion());
+		String summary = textFit(font, name + "  " + version, available);
+		graphics.text(font, summary, textX, profile.y + 3, TEXT_PRIMARY);
+		String newer = UpdateChecker.newerVersion();
+		if (newer != null && profile.w > 120) {
+			String update = textFit(font, "Update v" + newer, Math.max(1, available - 2));
+			graphics.text(font, update, textX, profile.y + 11, TEXT_WARN);
+		}
+
+		String queryText = searchQuery.isEmpty() ? "Search modules..." : searchQuery;
+		int queryColor = searchQuery.isEmpty() ? TEXT_MUTED : TEXT_PRIMARY;
+		graphics.text(font, textFit(font, queryText, Math.max(1, search.w - 12)),
+			search.x + 6, search.y + 6, queryColor);
+		if (searchFocused && (System.currentTimeMillis() / CARET_BLINK_MILLIS) % 2 == 0) {
+			int caretX = search.x + 6 + font.width(textFit(font, searchQuery, Math.max(1, search.w - 12)));
+			graphics.fill(caretX, search.y + 4, caretX + 1, search.y + search.h - 4, TEXT_PRIMARY);
+		}
+	}
+
 	// ---- rendering ----------------------------------------------------------------------
 
 	@Override
@@ -455,13 +567,7 @@ public class ClickGuiScreen extends Screen {
 			expandedColorSetting = null;
 		}
 		clampViewScroll();
-		if (closing && elapsedMillis(lifecycleStartedNanos, now) >= motion.lifecycleMillis()) {
-			Screen next = pendingScreen;
-			pendingScreen = null;
-			closing = false;
-			this.minecraft.setScreen(next);
-			return;
-		}
+		if (closing && elapsedMillis(lifecycleStartedNanos, now) >= motion.lifecycleMillis()) return;
 
 		float lifecycle = lifecycleProgress(now, motion);
 		float visible = closing ? 1.0f - lifecycle : lifecycle;
@@ -507,6 +613,7 @@ public class ClickGuiScreen extends Screen {
 		// The rounded panels are decorative; all animated children must still be contained by their
 		// rectangular surface bounds while the pose is scaled or translated.
 		graphics.enableScissor(panelX, panelY, panelX + panelWidth, panelY + panelHeight);
+		renderHeader(graphics, font, mouseX, mouseY, panelX, panelY, rightX, now, motion);
 		renderCategories(graphics, font, mouseX, mouseY, panelX, panelY, now, motion);
 		renderView(graphics, font, mouseX, mouseY, rightX, panelY, now, motion, lifecycle);
 		graphics.disableScissor();
@@ -518,13 +625,95 @@ public class ClickGuiScreen extends Screen {
 				withOpacity(0xFF000000, fade));
 		}
 		pose.popMatrix();
+		renderHoverTooltip(graphics, font, mouseX, mouseY);
+		renderBindingNotice(graphics, font);
+	}
+
+	private void renderBindingNotice(GuiGraphicsExtractor graphics, Font font) {
+		String target;
+		if (ModuleKeybindManager.bindingModule() != null) {
+			target = ModuleKeybindManager.bindingModule().name();
+		} else if (ModuleKeybindManager.bindingMacro() != null) {
+			target = ModuleKeybindManager.bindingMacro().name();
+		} else {
+			return;
+		}
+		int boxW = Math.min(420, Math.max(220, width - 24));
+		int boxH = 30;
+		int boxX = (width - boxW) / 2;
+		int boxY = height - boxH - 12;
+		roundedRectBordered(graphics, boxX, boxY, boxW, boxH, RADIUS_SMALL,
+			BUTTON_HOVER, BUTTON_HOVER, TEXT_PRIMARY);
+		graphics.text(font, "Listening for a hotkey: " + textFit(font, target, boxW - 170),
+			boxX + 8, boxY + 5, TEXT_PRIMARY);
+		graphics.text(font, "Press and release a key; Escape clears; click the key field to cancel.",
+			boxX + 8, boxY + 16, TEXT_ON_ACCENT);
+	}
+
+	private void renderHoverTooltip(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY) {
+		if (closing || transitionFrom != null || openSettingsModule == null || !inputSettled()) return;
+		Rect viewport = settingsViewport(panelX() + categoryWidth(), panelY());
+		if (!viewport.contains(mouseX, mouseY)) return;
+		for (Row row : settingsRows(openSettingsModule, panelX() + categoryWidth(), panelY())) {
+			if (!row.bounds().contains(mouseX, mouseY)) continue;
+			String description = settingTooltip(openSettingsModule, row);
+			if (description != null && !description.isBlank()) {
+				graphics.setTooltipForNextFrame(Component.literal(description), mouseX, mouseY);
+			}
+			return;
+		}
+	}
+
+	private String settingTooltip(Module module, Row row) {
+		return switch (row) {
+			case GroupRow groupRow -> "Click to expand or collapse " + groupRow.group.name() + ".";
+			case ColorRow ignored -> "Click a colour to open its picker; drag the controls or enter a hex value.";
+			case NumberRow numberRow -> usesNumberTextInput(numberRow.setting)
+				? "Type a number between " + numberText(numberRow.setting.min()) + " and "
+					+ numberText(numberRow.setting.max()) + ". Press Enter to apply."
+				: "Drag the slider to choose a value between " + numberText(numberRow.setting.min())
+					+ " and " + numberText(numberRow.setting.max()) + ".";
+			case ToggleRow toggleRow -> toggleTooltip(module, toggleRow.setting);
+			case ChoiceRow choiceRow -> choiceTooltip(module, choiceRow.setting);
+			case TextRow textRow -> "Macros".equals(module.name())
+				&& "Rename Macro".equals(textRow.setting.displayName())
+				? "Type the macro name to show in the macro list, hotkey banner, editor, and logs. Press Enter to finish."
+				: "Click the field and type " + textRow.setting.displayName() + ". Press Enter to finish.";
+			case ActionRow actionRow -> actionRow.action.description() != null
+				? actionRow.action.description() : "Click to run " + actionRow.action.label() + ".";
+		};
+	}
+
+	private String choiceTooltip(Module module, ChoiceSetting setting) {
+		if ("Macros".equals(module.name()) && "Trigger Context".equals(setting.name())) {
+			for (MacroTriggerContext context : MacroTriggerContext.values()) {
+				if (context.label().equals(setting.value())) return context.description();
+			}
+			return "Choose where the macro hotkey is allowed to start.";
+		}
+		return "Click to choose the next value; right-click chooses the previous value.";
+	}
+
+	private String toggleTooltip(Module module, BooleanSetting setting) {
+		if ("Macros".equals(module.name()) && "Enable Macro System".equals(setting.displayName())) {
+			return "Master toggle for all macro hotkeys and running workflows. The module card must also be enabled.";
+		}
+		if ("Macros".equals(module.name()) && "Macro Enabled".equals(setting.displayName())) {
+			return "Allow this macro to start from its hotkey without deleting its workflow.";
+		}
+		return "Toggle " + setting.displayName() + ".";
+	}
+
+	private static String numberText(float value) {
+		return value == Math.round(value) ? Integer.toString(Math.round(value)) : Float.toString(value);
 	}
 
 	private void renderCategories(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
 		int panelX, int panelY, long now, ClickGuiMotion motion) {
 		// Category labels and their hover jiggle belong to this column only. The outer panel clip
 		// contains the whole menu, so establish the narrower clip before drawing this side.
-		graphics.enableScissor(panelX, panelY, panelX + categoryWidth(), panelY + panelHeight());
+		int contentTop = contentTop(panelY);
+		graphics.enableScissor(panelX, contentTop, panelX + categoryWidth(), panelY + panelHeight());
 		List<Rect> categoryRows = categoryRows(panelX, panelY);
 		Category[] categories = Category.values();
 		boolean moving = transitionFrom != null && transitionFrom.category != selectedCategory;
@@ -582,7 +771,8 @@ public class ClickGuiScreen extends Screen {
 		int rightX, int panelY, long now, ClickGuiMotion motion, float lifecycle) {
 		// This clip is deliberately established before renderViewAt translates the outgoing and
 		// incoming pages. Their own viewports may move; the module surface must not.
-		graphics.enableScissor(rightX, panelY, rightX + moduleWidth(), panelY + panelHeight());
+		int contentTop = contentTop(panelY);
+		graphics.enableScissor(rightX, contentTop, rightX + moduleWidth(), panelY + panelHeight());
 		if (transitionFrom != null) {
 			float progress = transitionProgress(now, motion);
 			int travel = moduleWidth() + 18;
@@ -608,8 +798,8 @@ public class ClickGuiScreen extends Screen {
 		var pose = graphics.pose();
 		pose.pushMatrix();
 		if (offset != 0) pose.translate(offset, 0.0f);
-		List<Module> modules = ModuleManager.modules(view.category);
-		if (view.module != null && modules.contains(view.module)) {
+		List<Module> modules = visibleModules(view.category);
+		if (view.module != null && ModuleManager.modules(view.category).contains(view.module)) {
 			double scroll = transitionFrom == null ? settingsScrollVisual : view.settingsScroll;
 			ColorSetting expanded = transitionFrom == null ? renderedExpandedColor(now, motion) : view.expandedColor;
 			renderSettingsView(graphics, font, mouseX, mouseY, rightX, panelY, view.module, scroll,
@@ -687,7 +877,9 @@ public class ClickGuiScreen extends Screen {
 		// reason line below says it in words, which is the part that was actually wanted.
 		int textX = bounds.x + CARD_INSET;
 		int textWidth = bounds.w - CARD_INSET * 2;
-		graphics.text(font, textFit(font, module.name(), textWidth - SWITCH_WIDTH - 4),
+		String cardName = searchQuery.isBlank() ? module.name()
+			: "[" + module.category().displayName() + "] " + module.name();
+		graphics.text(font, textFit(font, cardName, textWidth - SWITCH_WIDTH - 4),
 			textX, bounds.y + CARD_INSET, TEXT_PRIMARY);
 
 		int descY = bounds.y + CARD_INSET + LINE_HEIGHT + 3;
@@ -699,8 +891,18 @@ public class ClickGuiScreen extends Screen {
 		String status = module.inactiveReason();
 		if (status != null) {
 			graphics.text(font, textFit(font, status, textWidth),
-				textX, bounds.y + bounds.h - CARD_INSET - TEXT_HEIGHT, TEXT_WARN);
+				textX, bounds.y + bounds.h - CARD_INSET - KEYBIND_HEIGHT - 4 - TEXT_HEIGHT, TEXT_WARN);
 		}
+
+		Rect keybind = keybindRect(bounds);
+		boolean binding = ModuleKeybindManager.isBinding(module);
+		boolean keybindHovered = hoverable && keybind.contains(mouseX, mouseY);
+		int keybindBackground = binding || keybindHovered ? BUTTON_HOVER : BUTTON_BG;
+		roundedRectBordered(graphics, keybind.x, keybind.y, keybind.w, keybind.h, RADIUS_SMALL,
+			keybindBackground, keybindBackground, binding ? TEXT_PRIMARY : BORDER);
+		String keyText = binding ? "Listening…" : module.keybind().displayName();
+		graphics.centeredText(font, textFit(font, keyText, keybind.w - 8),
+			keybind.x + keybind.w / 2, keybind.y + (keybind.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
 
 		Rect toggle = switchRect(bounds);
 		toggleSwitch(graphics, toggle.x, toggle.y, toggle.w, toggle.h,
@@ -710,6 +912,11 @@ public class ClickGuiScreen extends Screen {
 
 	private Rect switchRect(Rect card) {
 		return new Rect(card.x + card.w - SWITCH_WIDTH - CARD_INSET, card.y + CARD_INSET - 1, SWITCH_WIDTH, SWITCH_HEIGHT);
+	}
+
+	private Rect keybindRect(Rect card) {
+		return new Rect(card.x + CARD_INSET, card.y + card.h - CARD_INSET - KEYBIND_HEIGHT,
+			card.w - CARD_INSET * 2, KEYBIND_HEIGHT);
 	}
 
 	private List<FormattedCharSequence> descriptionLines(Font font, Module module, int width) {
@@ -732,9 +939,10 @@ public class ClickGuiScreen extends Screen {
 		for (Module module : modules) {
 			descLines = Math.max(descLines, descriptionLines(this.font, module, width).size());
 		}
-		// Name, description, then a reserved status line: reserved rather than conditional so a
-		// module going inactive does not resize the whole grid under the cursor.
-		return CARD_INSET + LINE_HEIGHT + 3 + descLines * LINE_HEIGHT + 3 + TEXT_HEIGHT + CARD_INSET;
+		// Name, description, status and keybind field are reserved so the grid never resizes when
+		// a module changes context or starts listening for a key.
+		return CARD_INSET + LINE_HEIGHT + 3 + descLines * LINE_HEIGHT + 3 + TEXT_HEIGHT
+			+ 4 + KEYBIND_HEIGHT + CARD_INSET;
 	}
 
 	private int cardWidth() {
@@ -743,8 +951,8 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private Rect gridViewport(int x, int panelY) {
-		return new Rect(x, panelY + PADDING, Math.max(1, moduleWidth()),
-			Math.max(1, panelHeight() - PADDING * 2));
+		return new Rect(x, contentTop(panelY) + PADDING, Math.max(1, moduleWidth()),
+			Math.max(1, panelHeight() - HEADER_HEIGHT - PADDING * 2));
 	}
 
 	private int gridContentHeight(List<Module> modules) {
@@ -897,7 +1105,7 @@ public class ClickGuiScreen extends Screen {
 			case ColorRow colorRow -> new ColorRow(colorRow.setting, bounds,
 				translatePicker(colorRow.picker, dx, dy));
 			case NumberRow numberRow -> new NumberRow(numberRow.setting, bounds,
-				translateRect(numberRow.slider, dx, dy));
+				translateRect(numberRow.slider, dx, dy), translateRect(numberRow.field, dx, dy));
 			case ToggleRow toggleRow -> new ToggleRow(toggleRow.setting, bounds);
 			case ChoiceRow choiceRow -> new ChoiceRow(choiceRow.setting, bounds,
 				translateRect(choiceRow.field, dx, dy));
@@ -1109,8 +1317,13 @@ public class ClickGuiScreen extends Screen {
 
 	private void renderNumberRow(GuiGraphicsExtractor graphics, Font font, NumberRow numberRow,
 		long now, ClickGuiMotion motion) {
-		graphics.text(font, textFit(font, numberRow.setting.displayName(), numberRow.bounds.w - VALUE_GUTTER - 28),
+		int controlWidth = numberRow.field == null ? VALUE_GUTTER + 28 : numberRow.field.w + 36;
+		graphics.text(font, textFit(font, numberRow.setting.displayName(), numberRow.bounds.w - controlWidth),
 			numberRow.bounds.x + 16, numberRow.bounds.y + 1, TEXT_SECONDARY);
+		if (numberRow.field != null) {
+			renderNumberField(graphics, font, numberRow, now, motion);
+			return;
+		}
 		Rect slider = numberRow.slider;
 		float pulse = interactionPulse(numberRow.setting, now, motion);
 		int track = pulse > 0.0f ? lerpColor(SLIDER_TRACK, PANEL_HIGHLIGHT, pulse * 0.4f) : SLIDER_TRACK;
@@ -1121,6 +1334,28 @@ public class ClickGuiScreen extends Screen {
 			roundedRect(graphics, slider.x, slider.y, fillWidth, slider.h, slider.h / 2, fill);
 		}
 		graphics.text(font, numberRow.setting.display(), slider.x + slider.w + 8, slider.y - 2, TEXT_MUTED);
+	}
+
+	private void renderNumberField(GuiGraphicsExtractor graphics, Font font, NumberRow numberRow,
+		long now, ClickGuiMotion motion) {
+		Rect field = numberRow.field;
+		boolean focused = numberRow.setting == focusedNumberSetting;
+		float pulse = interactionPulse(numberRow.setting, now, motion);
+		int border = focused ? SLIDER_FILL
+			: pulse > 0.0f ? lerpColor(BORDER, PANEL_HIGHLIGHT, pulse) : BORDER;
+		roundedRectBordered(graphics, field.x, field.y, field.w, field.h, 3,
+			SLIDER_TRACK, SLIDER_TRACK, border);
+		String shown = focused ? numberInput : numberRow.setting.display();
+		int inner = field.w - 8;
+		while (!shown.isEmpty() && font.width(shown) > inner) {
+			shown = shown.substring(shown.offsetByCodePoints(0, 1));
+		}
+		int textY = field.y + (field.h - TEXT_HEIGHT) / 2;
+		graphics.text(font, shown, field.x + 4, textY, TEXT_PRIMARY);
+		if (focused && (System.currentTimeMillis() / CARET_BLINK_MILLIS) % 2 == 0) {
+			int caretX = field.x + 4 + font.width(shown);
+			graphics.fill(caretX, textY - 1, caretX + 1, textY + TEXT_HEIGHT + 1, TEXT_PRIMARY);
+		}
 	}
 
 	private void renderToggleRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
@@ -1218,7 +1453,7 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private Rect headerRow(int x, int y) {
-		return new Rect(x, y + PADDING, moduleWidth(), ROW_HEIGHT);
+		return new Rect(x, contentTop(y) + PADDING, moduleWidth(), ROW_HEIGHT);
 	}
 
 	/** The clipped, scrollable area below the back header that the setting rows live in. */
@@ -1257,7 +1492,7 @@ public class ClickGuiScreen extends Screen {
 			settingsScrollVisual = Math.max(0, Math.min(max, settingsScrollVisual));
 			return;
 		}
-		List<Module> modules = ModuleManager.modules(selectedCategory);
+		List<Module> modules = visibleModules(selectedCategory);
 		int max = Math.max(0, gridContentHeight(modules) - gridViewport(panelX() + categoryWidth(), panelY()).h);
 		gridScroll = Math.max(0, Math.min(max, gridScroll));
 		gridScrollVisual = Math.max(0, Math.min(max, gridScrollVisual));
@@ -1284,6 +1519,10 @@ public class ClickGuiScreen extends Screen {
 
 	private int colorRowHeight(ColorSetting setting, ColorSetting expandedColor) {
 		return ROW_HEIGHT + (setting == expandedColor ? PICKER_HEIGHT : 0);
+	}
+
+	private static boolean usesNumberTextInput(NumberSetting setting) {
+		return setting.prefersTextInput();
 	}
 
 	/** @param startY where the first row begins; already offset by the scroll position */
@@ -1339,9 +1578,17 @@ public class ClickGuiScreen extends Screen {
 					cursorY += rowHeight;
 				}
 				case NumberSetting numberSetting -> {
-					Rect slider = new Rect(x + 16, cursorY + 13,
-						Math.max(1, moduleWidth - 32 - VALUE_GUTTER), 6);
-					rows.add(new NumberRow(numberSetting, new Rect(x, cursorY, moduleWidth, ROW_HEIGHT), slider));
+					Rect bounds = new Rect(x, cursorY, moduleWidth, ROW_HEIGHT);
+					if (usesNumberTextInput(numberSetting)) {
+						int fieldWidth = Math.min(NUMBER_FIELD_WIDTH, Math.max(1, moduleWidth - 18));
+						Rect field = new Rect(x + moduleWidth - fieldWidth - 14,
+							cursorY + (ROW_HEIGHT - TEXT_FIELD_HEIGHT) / 2, fieldWidth, TEXT_FIELD_HEIGHT);
+						rows.add(new NumberRow(numberSetting, bounds, null, field));
+					} else {
+						Rect slider = new Rect(x + 16, cursorY + 13,
+							Math.max(1, moduleWidth - 32 - VALUE_GUTTER), 6);
+						rows.add(new NumberRow(numberSetting, bounds, slider, null));
+					}
 					cursorY += ROW_HEIGHT;
 				}
 				case BooleanSetting booleanSetting -> {
@@ -1434,6 +1681,18 @@ public class ClickGuiScreen extends Screen {
 		// leave a field quietly eating keystrokes after the user moved on.
 		blurTextField();
 
+		if (left && searchRect(rightX, panelY).contains(mouseX, mouseY)) {
+			searchFocused = true;
+			searchSelectAll = false;
+			return true;
+		}
+		if (left && profileHeaderRect(panelX, panelY).contains(mouseX, mouseY)) {
+			String link = UpdateChecker.newerVersion() == null
+				? UpdateChecker.repositoryPage() : UpdateChecker.releasesPage();
+			ConfirmLinkScreen.confirmLinkNow(this, link);
+			return true;
+		}
+
 		if (left && moveElementsRect(panelX, panelY).contains(mouseX, mouseY)) {
 			persistView();
 			markInteraction("Move Elements");
@@ -1446,6 +1705,7 @@ public class ClickGuiScreen extends Screen {
 		Category[] categories = Category.values();
 		for (int i = 0; i < categories.length; i++) {
 			if (left && categoryRows.get(i).contains(mouseX, mouseY)) {
+				setSearchQuery("");
 				ViewState target = new ViewState(categories[i], null, 0, 0, null);
 				if (!currentView().equals(target)) {
 					markInteraction(categories[i]);
@@ -1456,15 +1716,22 @@ public class ClickGuiScreen extends Screen {
 			}
 		}
 
-		List<Module> modules = ModuleManager.modules(selectedCategory);
+		List<Module> modules = visibleModules(selectedCategory);
 
-		if (openSettingsModule != null && modules.contains(openSettingsModule)) {
-			return settingsClicked(openSettingsModule, mouseX, mouseY, rightX, panelY, left);
+		if (openSettingsModule != null && ModuleManager.modules(selectedCategory).contains(openSettingsModule)) {
+			return settingsClicked(openSettingsModule, mouseX, mouseY, rightX, panelY, left, right);
 		}
 
 		for (CardRect card : cardRects(modules, rightX, panelY,
 			transitionFrom == null ? gridScrollVisual : currentView().gridScroll)) {
 			if (!card.bounds.contains(mouseX, mouseY)) continue;
+			if (left && keybindRect(card.bounds).contains(mouseX, mouseY)) {
+				markInteraction(card.module);
+				playClick();
+				if (ModuleKeybindManager.isBinding(card.module)) ModuleKeybindManager.cancelBinding();
+				else ModuleKeybindManager.beginBinding(card.module);
+				return true;
+			}
 			// The switch is the only thing that toggles the module; anywhere else on the card
 			// opens its settings, on either button, so there is no hidden right-click gesture.
 			if (left && switchRect(card.bounds).contains(mouseX, mouseY)) {
@@ -1478,7 +1745,10 @@ public class ClickGuiScreen extends Screen {
 			} else if (card.module.hasSettings()) {
 				markInteraction(card.module);
 				playClick();
-				requestNavigation(new ViewState(selectedCategory, card.module, gridScroll, 0, null), 1);
+				if (!searchQuery.isBlank() && card.module.category() != selectedCategory) {
+					selectedCategory = card.module.category();
+				}
+				requestNavigation(new ViewState(card.module.category(), card.module, gridScroll, 0, null), 1);
 			}
 			return true;
 		}
@@ -1486,7 +1756,8 @@ public class ClickGuiScreen extends Screen {
 		return super.mouseClicked(event, doubleClick);
 	}
 
-	private boolean settingsClicked(Module module, int mouseX, int mouseY, int x, int panelY, boolean left) {
+	private boolean settingsClicked(Module module, int mouseX, int mouseY, int x, int panelY,
+		boolean left, boolean right) {
 		Rect header = headerRow(x, panelY);
 		if (left && header.contains(mouseX, mouseY)) {
 			markInteraction(module);
@@ -1496,7 +1767,7 @@ public class ClickGuiScreen extends Screen {
 		}
 
 		Rect viewport = settingsViewport(x, panelY);
-		if (!left || !viewport.contains(mouseX, mouseY)) {
+		if ((!left && !right) || !viewport.contains(mouseX, mouseY)) {
 			// Swallow anything else inside the panel so clicks don't fall through to the world.
 			return true;
 		}
@@ -1575,7 +1846,15 @@ public class ClickGuiScreen extends Screen {
 					}
 				}
 				case NumberRow numberRow -> {
-					if (numberRow.slider.contains(mouseX, mouseY)) {
+					if (numberRow.field != null && numberRow.field.contains(mouseX, mouseY)) {
+						markInteraction(numberRow.setting);
+						playClick();
+						focusedNumberSetting = numberRow.setting;
+						numberInput = numberRow.setting.display();
+						numberSelectAll = true;
+						return true;
+					}
+					if (numberRow.slider != null && numberRow.slider.contains(mouseX, mouseY)) {
 						markInteraction(numberRow.setting);
 						playClick();
 						draggingNumberSetting = numberRow.setting;
@@ -1600,7 +1879,7 @@ public class ClickGuiScreen extends Screen {
 						markInteraction(choiceRow.setting);
 						playClick();
 						if (left) choiceRow.setting.selectNext();
-						else choiceRow.setting.selectPrevious();
+						else if (right) choiceRow.setting.selectPrevious();
 						ModConfig.markDirty();
 						return true;
 					}
@@ -1644,7 +1923,8 @@ public class ClickGuiScreen extends Screen {
 					applyPicker(colorRow.setting, colorRow.picker, mouseX, mouseY);
 					return true;
 				}
-				if (row instanceof NumberRow numberRow && numberRow.setting == draggingNumberSetting) {
+				if (row instanceof NumberRow numberRow && numberRow.setting == draggingNumberSetting
+					&& numberRow.slider != null) {
 					applyNumberSlider(numberRow.setting, numberRow.slider, mouseX);
 					return true;
 				}
@@ -1674,8 +1954,20 @@ public class ClickGuiScreen extends Screen {
 	@Override
 	public boolean charTyped(CharacterEvent event) {
 		int codepoint = event.codepoint();
+		if (searchFocused) {
+			if (Character.isISOControl(codepoint)) return true;
+			if (searchSelectAll) {
+				setSearchQuery("");
+				searchSelectAll = false;
+			}
+			if (searchQuery.length() < SEARCH_MAX_LENGTH) {
+				setSearchQuery(searchQuery + Character.toString(codepoint));
+			}
+			return true;
+		}
 		if (Character.isISOControl(codepoint)) {
-			return focusedTextSetting != null || focusedHexSetting != null || super.charTyped(event);
+			return focusedTextSetting != null || focusedNumberSetting != null
+				|| focusedHexSetting != null || super.charTyped(event);
 		}
 		if (focusedHexSetting != null) {
 			// Only hex digits get in, so the field can never hold something unparseable.
@@ -1689,11 +1981,49 @@ public class ClickGuiScreen extends Screen {
 			focusedTextSetting.setValue(focusedTextSetting.value() + Character.toString(codepoint));
 			return true;
 		}
+		if (focusedNumberSetting != null) {
+			if (numberSelectAll) {
+				numberInput = "";
+				numberSelectAll = false;
+			}
+			boolean allowed = Character.isDigit(codepoint) || codepoint == '-' || codepoint == '+'
+				|| (!focusedNumberSetting.isInteger() && (codepoint == '.' || codepoint == ','));
+			if (allowed && numberInput.length() < 16) {
+				numberInput += codepoint == ',' ? '.' : Character.toString(codepoint);
+			}
+			return true;
+		}
 		return super.charTyped(event);
 	}
 
 	@Override
 	public boolean keyPressed(KeyEvent event) {
+		if (searchFocused) {
+			if ((event.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0 && event.key() == GLFW.GLFW_KEY_A) {
+				searchSelectAll = true;
+				return true;
+			}
+			switch (event.key()) {
+				case GLFW.GLFW_KEY_BACKSPACE, GLFW.GLFW_KEY_DELETE -> {
+					if (searchSelectAll) {
+						setSearchQuery("");
+						searchSelectAll = false;
+					} else if (!searchQuery.isEmpty()) {
+						int end = searchQuery.offsetByCodePoints(searchQuery.length(), -1);
+						setSearchQuery(searchQuery.substring(0, end));
+					}
+				}
+				case GLFW.GLFW_KEY_ESCAPE -> {
+					if (!searchQuery.isEmpty()) setSearchQuery("");
+					else blurTextField();
+				}
+				case GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> blurTextField();
+				default -> {
+					return true;
+				}
+			}
+			return true;
+		}
 		if (focusedHexSetting != null) {
 			switch (event.key()) {
 				case GLFW.GLFW_KEY_BACKSPACE -> {
@@ -1705,6 +2035,32 @@ public class ClickGuiScreen extends Screen {
 				case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> blurTextField();
 				default -> {
 					return super.keyPressed(event);
+				}
+			}
+			return true;
+		}
+		if (focusedNumberSetting != null) {
+			switch (event.key()) {
+				case GLFW.GLFW_KEY_BACKSPACE, GLFW.GLFW_KEY_DELETE -> {
+					if (numberSelectAll) {
+						numberInput = "";
+						numberSelectAll = false;
+					} else if (!numberInput.isEmpty()) {
+						int end = numberInput.offsetByCodePoints(numberInput.length(), -1);
+						numberInput = numberInput.substring(0, end);
+					}
+				}
+				case GLFW.GLFW_KEY_ESCAPE -> {
+					focusedNumberSetting = null;
+					numberInput = "";
+					numberSelectAll = false;
+				}
+				case GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> blurTextField();
+				case GLFW.GLFW_KEY_A -> {
+					if ((event.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0) numberSelectAll = true;
+				}
+				default -> {
+					return true;
 				}
 			}
 			return true;
@@ -1728,11 +2084,27 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private void blurTextField() {
-		if (focusedTextSetting == null && focusedHexSetting == null) return;
+		if (focusedTextSetting == null && focusedNumberSetting == null
+			&& focusedHexSetting == null && !searchFocused) return;
+		commitNumberInput();
 		focusedTextSetting = null;
+		focusedNumberSetting = null;
+		numberInput = "";
+		numberSelectAll = false;
 		focusedHexSetting = null;
+		searchFocused = false;
+		searchSelectAll = false;
 		hexInput = "";
 		ModConfig.markDirty();
+	}
+
+	private void commitNumberInput() {
+		if (focusedNumberSetting == null || numberInput == null || numberInput.isBlank()) return;
+		try {
+			focusedNumberSetting.setValue(Float.parseFloat(numberInput.trim()));
+		} catch (NumberFormatException ignored) {
+			// Keep the last valid value when the user leaves an unfinished number such as "-".
+		}
 	}
 
 	@Override
@@ -1751,7 +2123,7 @@ public class ClickGuiScreen extends Screen {
 				return true;
 			}
 		} else {
-			List<Module> modules = ModuleManager.modules(selectedCategory);
+			List<Module> modules = visibleModules(selectedCategory);
 			Rect viewport = gridViewport(rightX, panelY());
 			if (viewport.contains(mouseX, mouseY)) {
 				int maxScroll = Math.max(0, gridContentHeight(modules) - viewport.h);
@@ -1798,7 +2170,7 @@ public class ClickGuiScreen extends Screen {
 		Category[] categories = Category.values();
 		int categoryWidth = categoryWidth();
 		for (int i = 0; i < categories.length; i++) {
-			rows.add(new Rect(panelX, panelY + PADDING + i * ROW_HEIGHT, categoryWidth, ROW_HEIGHT));
+			rows.add(new Rect(panelX, contentTop(panelY) + PADDING + i * ROW_HEIGHT, categoryWidth, ROW_HEIGHT));
 		}
 		return rows;
 	}
@@ -1921,7 +2293,7 @@ public class ClickGuiScreen extends Screen {
 	private record ColorRow(ColorSetting setting, Rect bounds, Picker picker) implements Row {
 	}
 
-	private record NumberRow(NumberSetting setting, Rect bounds, Rect slider) implements Row {
+	private record NumberRow(NumberSetting setting, Rect bounds, Rect slider, Rect field) implements Row {
 	}
 
 	private record ToggleRow(BooleanSetting setting, Rect bounds) implements Row {

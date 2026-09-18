@@ -84,6 +84,24 @@ public final class UpdateChecker {
 		return version == null ? null : "Update available: v" + version;
 	}
 
+	/** Version bundled with this client, exposed to the Click GUI without duplicating metadata lookup. */
+	public static String currentVersion() {
+		return currentVersion;
+	}
+
+	/** Newest release found by the background check, or {@code null} while current/unavailable. */
+	public static String newerVersion() {
+		return newerVersion;
+	}
+
+	public static String repositoryPage() {
+		return "https://github.com/dasdadassadwt/geileraddons";
+	}
+
+	public static String releasesPage() {
+		return RELEASES_PAGE;
+	}
+
 	private static void check() {
 		try (HttpClient client = HttpClient.newBuilder().connectTimeout(TIMEOUT).build()) {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(RELEASES_URL))

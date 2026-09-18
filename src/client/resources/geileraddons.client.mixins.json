@@ -9,7 +9,8 @@
 		"ContainerScreenMixin",
 		"ScreenMixin",
 		"ClientPacketListenerMixin",
-		"MinecraftMixin"
+		"MinecraftMixin",
+		"KeyboardHandlerMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

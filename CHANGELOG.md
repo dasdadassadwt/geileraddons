@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.0] - 2026-09-18
+
+### Added
+
+- **Experiment Solver** — Solves all Experimentation Table games.
+- **Pest Highlighter** — Garden pest ESP with boxes, rings, tracers, and names.
+- **Macros** — Editor with commands, waits, clicks, conditions, repeats, and island safety.
+- **Developer tools** — Debug logs, Slot IDs overlay, and module hotkeys.
+
+### Changed
+
+- **Click GUI improvements**
+
+### Fixed
+
+- Fixed some performance issues.
+
 ## [1.4.5] - 2026-09-15
 
 ### Added

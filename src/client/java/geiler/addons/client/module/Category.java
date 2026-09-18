@@ -4,7 +4,9 @@ public enum Category {
 	F7("Dungeons"),
 	ENCHANTING("Enchanting"),
 	HUNTING("Hunting"),
+	FARMING("Farming"),
 	FORAGING("Foraging"),
+	MISCELLANEOUS("Miscellaneous"),
 	VISUAL("Visual"),
 	DEV("Dev");
 

@@ -7,7 +7,7 @@ import org.joml.Quaternionf;
 
 import java.util.Map;
 
-/** Draws simple translucent, always-visible-through-walls shapes: boxes, UV spheres, lines and labels. */
+/** Draws simple translucent ESP shapes: boxes, rings, UV spheres, lines and labels. */
 public final class EspRenderer {
 	/** Glyph cell, in the label's own units: y runs downward, matching text layout. */
 	private static final float GLYPH_WIDTH = 1.0f;
@@ -48,6 +48,7 @@ public final class EspRenderer {
 	private static final int SPHERE_LATITUDES = 16;
 	private static final int SPHERE_LONGITUDES = 24;
 	private static final int SPHERE_ROW = SPHERE_LONGITUDES + 1;
+	private static final int RING_SEGMENTS = 48;
 	/**
 	 * A unit sphere's vertices, three floats each, row-major over latitude then longitude.
 	 *
@@ -121,10 +122,34 @@ public final class EspRenderer {
 		}
 	}
 
-	/** Single straight line; coordinates are camera-relative like the other shapes here. */
+	/** Single straight line through walls; coordinates are camera-relative like the other shapes here. */
 	public static void renderLine(PoseStack poseStack, MultiBufferSource bufferSource, double x0, double y0, double z0, double x1, double y1, double z1, int color, float width) {
-		line(bufferSource.getBuffer(GeilerAddonsRenderTypes.ESP_LINES), poseStack.last(),
+		renderLine(poseStack, bufferSource, x0, y0, z0, x1, y1, z1, color, width, false);
+	}
+
+	/** Single straight line with the same optional depth test used by ESP boxes. */
+	public static void renderLine(PoseStack poseStack, MultiBufferSource bufferSource, double x0, double y0, double z0, double x1, double y1, double z1, int color, float width, boolean depthTested) {
+		line(bufferSource.getBuffer(GeilerAddonsRenderTypes.lines(depthTested)), poseStack.last(),
 			(float) x0, (float) y0, (float) z0, (float) x1, (float) y1, (float) z1, color, width);
+	}
+
+	/** Draws a horizontal camera-relative ring using the requested line pipeline. */
+	public static void renderRing(PoseStack poseStack, MultiBufferSource bufferSource, double cx, double cy, double cz, float radius, int color, float width, boolean depthTested) {
+		if (!Float.isFinite(radius) || radius <= 0) return;
+
+		VertexConsumer lines = bufferSource.getBuffer(GeilerAddonsRenderTypes.lines(depthTested));
+		PoseStack.Pose pose = poseStack.last();
+		double step = Math.PI * 2.0 / RING_SEGMENTS;
+		float previousX = (float) (cx + radius);
+		float previousZ = (float) cz;
+		for (int segment = 1; segment <= RING_SEGMENTS; segment++) {
+			double angle = step * segment;
+			float currentX = (float) (cx + Math.cos(angle) * radius);
+			float currentZ = (float) (cz + Math.sin(angle) * radius);
+			line(lines, pose, previousX, (float) cy, previousZ, currentX, (float) cy, currentZ, color, width);
+			previousX = currentX;
+			previousZ = currentZ;
+		}
 	}
 
 	/**

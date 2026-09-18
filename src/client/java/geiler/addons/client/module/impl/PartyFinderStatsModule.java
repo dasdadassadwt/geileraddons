@@ -76,6 +76,8 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	private int chatCardCooldown;
 	private long scanSequence;
 	private long activeScanToken = -1;
+	/** Invalidates display-owned later-join callbacks when the module is disabled. */
+	private long displayLifecycleEpoch;
 	private final Map<String, DungeonStats> cycleStats = new HashMap<>();
 	/** UUID captured with each result so a late callback cannot be applied to a replacement name. */
 	private final Map<String, UUID> cycleStatUuids = new HashMap<>();
@@ -441,45 +443,82 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		checkedPlayers.put(key, currentMember);
 		PartyMember requestedMember = currentMember;
 		long requestedGeneration = PartyListBackend.snapshot().generation();
-		DungeonStatsService.fetch(name, result -> {
-			PartySnapshot snapshot = PartyListBackend.snapshot();
-			if (snapshot.generation() != requestedGeneration) {
-				debug("Discarded stale later-join result for %s after party generation changed", name);
-				return;
-			}
-			PartyMember member = snapshot.inParty() ? findMember(snapshot, name) : null;
-			if (member == null) {
+		long requestedDisplayEpoch = displayLifecycleEpoch;
+		DungeonStatsService.fetch(name, result -> onLaterJoinResult(requestedDisplayEpoch, floor, name,
+			joinedClass, requestedMember, requestedGeneration, result));
+	}
+
+	private void onLaterJoinResult(long requestedDisplayEpoch, DungeonFloor floor, String name,
+		DungeonClass joinedClass, PartyMember requestedMember, long requestedGeneration,
+		DungeonStatsService.Result result) {
+		boolean autoKickActive = AutoKickModule.INSTANCE.wantsData();
+		LaterJoinDisposition disposition = laterJoinDisposition(requestedDisplayEpoch, displayLifecycleEpoch,
+			isEnabled(), autoKickActive);
+		// If neither consumer remains active, a callback from before disablement must not recreate
+		// chat cards or repopulate the display's party caches after onDisable cleared them.
+		if (disposition == LaterJoinDisposition.IGNORE) return;
+		boolean displayCurrent = disposition == LaterJoinDisposition.DISPLAY;
+
+		PartySnapshot snapshot = PartyListBackend.snapshot();
+		if (snapshot.generation() != requestedGeneration) {
+			debug("Discarded stale later-join result for %s after party generation changed", name);
+			return;
+		}
+		PartyMember member = snapshot.inParty() ? findMember(snapshot, name) : null;
+		if (member == null) {
+			if (displayCurrent) {
 				if (result.available()) putCycleStats(result.stats(), requestedMember);
 				else checkedPlayers.remove(name.toLowerCase(Locale.ROOT));
-				debug("Discarded stale stats result for %s", name);
-				return;
 			}
-			if (!identityCompatible(requestedMember, member)) {
-				checkedPlayers.put(name.toLowerCase(Locale.ROOT), member);
-				debug("Ignored stale later-join result for replaced member %s", name);
-				return;
-			}
-			if (!result.available()) {
-				debug("Stats unavailable for later join %s: %s", name, result.error());
-				showUnavailable(name, result.error());
+			debug("Discarded stale stats result for %s", name);
+			return;
+		}
+		if (!identityCompatible(requestedMember, member)) {
+			if (displayCurrent) checkedPlayers.put(name.toLowerCase(Locale.ROOT), member);
+			debug("Ignored stale later-join result for replaced member %s", name);
+			return;
+		}
+		if (!result.available()) {
+			debug("Stats unavailable for later join %s: %s", name, result.error());
+			// Keep the existing Auto Kick fallback card behavior, but never emit anything when both
+			// consumers are inactive; the early return above enforces that boundary.
+			if (displayCurrent || autoKickActive) showUnavailable(name, result.error());
+			if (autoKickActive) {
 				AutoKickModule.INSTANCE.onStatsUnavailable(floor, snapshot.generation(), name, result.error());
-				return;
 			}
-			DungeonStats stats = result.stats();
-			PartyListBackend.setUuid(stats.name(), stats.uuid());
-			PartyListBackend.setClassIfUnknown(stats.name(), joinedClass);
-			PartyListBackend.setClassIfUnknown(stats.name(), stats.selectedClass());
-			member = findMember(PartyListBackend.snapshot(), stats.name());
-			if (member != null) {
-				checkedPlayers.put(stats.name().toLowerCase(Locale.ROOT), member);
-				putCycleStats(stats, member);
-			}
-			debug("Later-join stats loaded for %s: cata=%d, mp=%d, class=%s", stats.name(),
-				stats.catacombsLevel(), stats.magicalPower(),
-				member == null || member.dungeonClass() == null ? "unknown" : member.dungeonClass().displayName());
-			if (member != null && isEnabled()) showStats(floor, member, stats);
+			return;
+		}
+		DungeonStats stats = result.stats();
+		// Auto Kick may still need the shared party identity enrichment after the display module was
+		// disabled, but display-owned maps are only updated by a current display request.
+		PartyListBackend.setUuid(stats.name(), stats.uuid());
+		PartyListBackend.setClassIfUnknown(stats.name(), joinedClass);
+		PartyListBackend.setClassIfUnknown(stats.name(), stats.selectedClass());
+		member = findMember(PartyListBackend.snapshot(), stats.name());
+		if (displayCurrent && member != null) {
+			checkedPlayers.put(stats.name().toLowerCase(Locale.ROOT), member);
+			putCycleStats(stats, member);
+		}
+		debug("Later-join stats loaded for %s: cata=%d, mp=%d, class=%s", stats.name(),
+			stats.catacombsLevel(), stats.magicalPower(),
+			member == null || member.dungeonClass() == null ? "unknown" : member.dungeonClass().displayName());
+		if (displayCurrent && member != null) showStats(floor, member, stats);
+		if (autoKickActive) {
 			AutoKickModule.INSTANCE.onStats(floor, PartyListBackend.snapshot().generation(), stats);
-		});
+		}
+	}
+
+	/** Classifies the consumers that may still receive a later-join callback. */
+	static LaterJoinDisposition laterJoinDisposition(long requestedEpoch, long currentEpoch,
+		boolean displayEnabled, boolean autoKickEnabled) {
+		if (requestedEpoch == currentEpoch && displayEnabled) return LaterJoinDisposition.DISPLAY;
+		return autoKickEnabled ? LaterJoinDisposition.AUTO_KICK_ONLY : LaterJoinDisposition.IGNORE;
+	}
+
+	enum LaterJoinDisposition {
+		DISPLAY,
+		AUTO_KICK_ONLY,
+		IGNORE
 	}
 
 	private boolean wantsData() {
@@ -798,6 +837,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 
 	@Override
 	protected void onDisable() {
+		displayLifecycleEpoch++;
 		pendingChatCards.clear();
 		chatCardCooldown = 0;
 		fetchRequested = false;

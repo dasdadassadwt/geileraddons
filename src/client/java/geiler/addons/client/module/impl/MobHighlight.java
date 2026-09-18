@@ -114,10 +114,14 @@ public final class MobHighlight {
 	 * highlight while a join or location transition is still settling.
 	 */
 	boolean appliesOn(Island current) {
-		if (!HypixelModApi.hasLocation() || current == null
-			|| current == Island.NONE || current == Island.OTHER) return false;
+		if (!HypixelModApi.hasLocation() || !isKnownSkyBlockIsland(current)) return false;
 		BooleanSetting setting = islands.get(current);
 		return setting != null && setting.value();
+	}
+
+	/** Keeps the island boundary independently testable from the client-only location handshake. */
+	static boolean isKnownSkyBlockIsland(Island current) {
+		return current != null && current != Island.NONE && current != Island.OTHER;
 	}
 
 	/**

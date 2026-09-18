@@ -1,6 +1,7 @@
 package geiler.addons.client.module.impl;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import geiler.addons.client.entity.ClientEntitySnapshot;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.entity.Nameplates;
 import geiler.addons.client.location.HypixelModApi;
@@ -26,13 +27,16 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Boxes any mob whose name or type matches text the user typed.
@@ -46,6 +50,8 @@ public final class MobHighlightModule extends Module {
 
 	/** Beyond this the entity list stops being worth walking every scan, whatever the view distance. */
 	private static final int MAX_RANGE = 64;
+	/** Prevents a hand-edited config from turning every client tick into an unbounded matcher pass. */
+	public static final int MAX_HIGHLIGHTS = 32;
 	private static final float BOX_LINE_WIDTH = 2.0f;
 	/** Clear of the mob's own nameplate rather than fighting it for the same pixels. */
 	private static final double LABEL_HEIGHT = 0.4;
@@ -77,6 +83,7 @@ public final class MobHighlightModule extends Module {
 
 	/** Adds an empty highlight, which the user then fills in - there is no dialog to answer. */
 	private void create() {
+		if (highlights.size() >= MAX_HIGHLIGHTS) return;
 		highlights.add(new MobHighlight(nextId++));
 		ModConfig.markDirty();
 	}
@@ -89,7 +96,12 @@ public final class MobHighlightModule extends Module {
 	/** Replaces the list from the config; ids come back as saved so collapsed sections still match. */
 	public void restore(List<MobHighlight> restored) {
 		highlights.clear();
-		highlights.addAll(restored);
+		if (restored != null) {
+			for (MobHighlight highlight : restored) {
+				if (highlight == null || highlights.size() >= MAX_HIGHLIGHTS) break;
+				highlights.add(highlight);
+			}
+		}
 		nextId = 0;
 		for (MobHighlight highlight : highlights) {
 			nextId = Math.max(nextId, highlight.id() + 1);
@@ -135,8 +147,9 @@ public final class MobHighlightModule extends Module {
 		if (level == null || player == null) return;
 
 		double range = Math.min(mc.options.getEffectiveRenderDistance() * 16.0, MAX_RANGE);
-		AABB area = AABB.ofSize(player.position(), range * 2, range * 2, range * 2);
 		Island current = HypixelModApi.currentIsland();
+		List<MobHighlight> active = new ArrayList<>();
+		Map<MobHighlight, String> needles = new IdentityHashMap<>();
 		for (MobHighlight highlight : highlights) {
 			// Cleared rather than simply skipped, so switching one off or walking off its island
 			// takes its boxes down now instead of leaving them until whatever it last saw despawns.
@@ -145,30 +158,43 @@ public final class MobHighlightModule extends Module {
 				continue;
 			}
 			if (!highlight.dueForScan()) continue;
-			scan(level, player, area, highlight);
+			String needle = ChatText.plain(highlight.matchText().value()).trim().toLowerCase(Locale.ROOT);
+			if (needle.isEmpty()) {
+				highlight.clearMatches();
+				continue;
+			}
+			active.add(highlight);
+			needles.put(highlight, needle);
 		}
-	}
+		if (active.isEmpty()) return;
 
-	private static void scan(ClientLevel level, LocalPlayer player, AABB area, MobHighlight highlight) {
-		String needle = ChatText.plain(highlight.matchText().value()).trim().toLowerCase(Locale.ROOT);
-		// An empty box matches everything with contains(), which would box the whole lobby.
-		if (needle.isEmpty()) {
-			highlight.clearMatches();
-			return;
-		}
-		boolean byName = highlight.matchName().value();
-		List<Entity> matched = level.getEntities(EntityTypeTest.forClass(Entity.class), area,
-			entity -> entity != player && entity.isAlive() && matches(entity, needle, byName));
-
-		List<Entity> targets = new ArrayList<>(matched.size());
-		for (Entity entity : matched) {
-			Entity target = Nameplates.resolveBody(level, entity);
-			// Two labels on one mob would otherwise draw the box and its name twice over.
-			if (target != null && !targets.contains(target)) {
-				targets.add(target);
+		// One nearby query and one entity pass serve every due highlight. Matching strings and body
+		// resolution are cached for this pass so adding a second highlight does not repeat world work.
+		List<Entity> nearby = ClientEntitySnapshot.nearby(level, player, range);
+		List<LivingEntity> nearbyBodies = nearby.stream().filter(LivingEntity.class::isInstance)
+			.map(LivingEntity.class::cast).toList();
+		Map<MobHighlight, List<Entity>> matches = new IdentityHashMap<>();
+		for (MobHighlight highlight : active) matches.put(highlight, new ArrayList<>());
+		Map<Entity, Entity> resolvedBodies = new IdentityHashMap<>();
+		Set<Entity> unresolvedBodies = Collections.newSetFromMap(new IdentityHashMap<>());
+		for (Entity entity : nearby) {
+			if (entity == player || !entity.isAlive()) continue;
+			for (MobHighlight highlight : active) {
+				if (!matches(entity, needles.get(highlight), highlight.matchName().value())) continue;
+				if (unresolvedBodies.contains(entity)) continue;
+				Entity target = resolvedBodies.get(entity);
+				if (target == null && !resolvedBodies.containsKey(entity)) {
+					target = Nameplates.resolveBody(entity, nearbyBodies, false);
+					if (target == null) unresolvedBodies.add(entity);
+					else resolvedBodies.put(entity, target);
+				}
+				if (target != null) {
+					List<Entity> targets = matches.get(highlight);
+					if (!targets.contains(target)) targets.add(target);
+				}
 			}
 		}
-		highlight.setMatches(targets);
+		for (MobHighlight highlight : active) highlight.setMatches(matches.get(highlight));
 	}
 
 

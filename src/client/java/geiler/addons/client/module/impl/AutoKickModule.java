@@ -50,6 +50,7 @@ public final class AutoKickModule extends Module {
 	private final Set<String> manualFallbacks = new HashSet<>();
 	private final List<PendingKick> pendingKicks = new ArrayList<>();
 	private final Deque<Component> pendingNotices = new ArrayDeque<>();
+	private long markerGeneration = Long.MIN_VALUE;
 	private int noticeCooldown;
 
 	private AutoKickModule() {
@@ -92,6 +93,7 @@ public final class AutoKickModule extends Module {
 			return;
 		}
 		PartySnapshot snapshot = PartyListBackend.snapshot();
+		syncGeneration(snapshot.generation());
 		if (expectedGeneration >= 0 && snapshot.generation() != expectedGeneration) {
 			debug("Ignoring stats for %s because party generation changed while it was loading", stats.name());
 			return;
@@ -158,6 +160,7 @@ public final class AutoKickModule extends Module {
 	public void onStatsUnavailable(DungeonFloor floor, long generation, String name, String error) {
 		if (floor == null || name == null || name.isBlank() || !isEnabled()) return;
 		PartySnapshot snapshot = PartyListBackend.snapshot();
+		syncGeneration(snapshot.generation());
 		if (snapshot.generation() != generation || !snapshot.isLeader(localName())) return;
 		PartyMember member = findMember(snapshot, name);
 		if (member == null) return;
@@ -169,6 +172,7 @@ public final class AutoKickModule extends Module {
 
 	public void tick() {
 		tickNotices();
+		syncGeneration(PartyListBackend.snapshot().generation());
 		if (!isEnabled()) return;
 		tickProfileRetries();
 		if (pendingKicks.isEmpty()) return;
@@ -200,6 +204,16 @@ public final class AutoKickModule extends Module {
 		pendingKicks.clear();
 		pendingNotices.clear();
 		noticeCooldown = 0;
+		handled.clear();
+		profileRetries.clear();
+		manualFallbacks.clear();
+		markerGeneration = Long.MIN_VALUE;
+	}
+
+	/** Evaluation markers are meaningful only inside one party generation. */
+	private void syncGeneration(long generation) {
+		if (markerGeneration == generation) return;
+		markerGeneration = generation;
 		handled.clear();
 		profileRetries.clear();
 		manualFallbacks.clear();

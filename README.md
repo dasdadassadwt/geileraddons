@@ -19,6 +19,14 @@ leader.
 
 Open the menu in-game with **`/ga`**.
 
+The **Dev → Slot IDs** module contains the optional slot overlay. It labels each inventory slot
+with the menu id used by vanilla (not the backing-inventory index), which makes slot-based
+workflows and puzzle reports reproducible. **Dev → Debug** independently enables the retained,
+category/module-separated GeilerAddons logs under `logs/geileraddons/`.
+
+Possible future features are collected in [FUTURE-IDEAS.md](FUTURE-IDEAS.md). The file is a
+planning list and does not represent a commitment to a specific implementation order.
+
 ## Modules
 
 <details>
@@ -163,9 +171,58 @@ Make as many highlights as you want, each with its own colours and its own text 
 - **Two colours per highlight** — outline and fill, set separately — plus its own depth check and its own scan rate.
 - **The name you give it is drawn on the box**, in the real game font, so several highlights running at once stay tellable apart.
 - **Its own switch, on its own heading.** Turn a highlight off without deleting it or opening it up.
-- **Pick the islands it runs on.** Each highlight has its own **Islands** list, folded up inside it, covering every island the mod can recognise. **They all start off**, so you say where a highlight belongs rather than switching off the two dozen places you didn't mean. Where the island can't be named at all — single player, another server, or the moment before the handshake lands — there's nothing to match against, so the highlight simply runs. Highlights made before this existed keep running everywhere until you narrow them.
+- **Pick the islands it runs on.** Each highlight has its own **Islands** list, folded up inside it, covering every island the mod can recognise. **They all start off**, so you say where a highlight belongs rather than switching off the two dozen places you didn't mean. Where the island can't be named at all — single player, another server, or the moment before the handshake lands — the highlight stays idle until the official API supplies a recognised island. It never guesses from terrain or scoreboard text. Highlights made before this existed keep their old all-island selections until you narrow them.
 
 Highlights are built in the settings panel itself: **Create Mob Highlight** adds an empty one, and each becomes its own foldable section you fill in. No separate screen to keep in step.
+
+</details>
+
+<details>
+<summary><b>Pest Highlighter</b> — highlights every Garden pest</summary>
+
+<br>
+
+Recognises Garden pests from the textured player heads Hypixel puts on their ArmorStands, so it
+does not depend on a name tag or a hard-coded list of positions. It covers every known pest
+texture, including the Earthworm and Firefly variants.
+
+The module only runs in the Garden. Box, animated ring mode, tracer and the `Pest: <type>` name
+can be switched independently. Ring mode supports several phase-shifted rings and the tracer
+selects the camera-facing point on the nearest moving ring, so it remains attached while the
+animation runs. The box has separate outline/fill colours, alpha and outline width; rings have
+their own colour, alpha, width, radius, count and speed. Depth Check applies to all world markers,
+while the projected name remains a normal HUD label. HP is intentionally not shown because the
+head marker does not provide reliable health data.
+
+</details>
+
+<details>
+<summary><b>Macros</b> — build clear, randomized input workflows</summary>
+
+<br>
+
+Create a macro in the **Miscellaneous** category and open its workflow editor. Steps use the
+normal Minecraft screen and keyboard handlers: commands/chat, waits with independent random
+ranges, key presses/holds, slot-id clicks, item-name clicks, Escape, and wait-until conditions.
+If/Else and Repeat steps can be nested, including endless repeats. The World Switch step can allow
+one explicit destination island (for example, continue after a warp to the Garden); a switch to a
+different or unknown island stops the workflow safely. A macro can also be restricted to selected
+islands and can run in the world, containers, or any non-text screen. Each node shows its delay in
+the editor and accepts a direct `min-max` millisecond range before it runs; there is no hidden
+macro-wide default delay.
+
+Only one macro runs at a time. Starting another replaces the previous run; pressing the active
+macro's hotkey cancels it. Duplicate hotkeys are rejected with a client-side warning. A missing
+slot/item or unmet wait condition is retried for five seconds, then the run stops with a chat
+message. Click **Set hotkey** and release a key to save it; **Escape** clears it, and the editor
+shows a visible listening banner while capturing. The workflow editor has hover explanations and
+a **Help** button with examples. Per-launch debug logs are available under `logs/geileraddons/`
+when **Dev → Debug** is enabled; log sessions are retained rather than deleted automatically.
+
+The **Enable Macro System** toggle is the master switch for all macro hotkeys and running
+workflows; each macro also has its own **Macro Enabled** toggle. **Share / Paste Macros** opens a
+multi-select manager that copies selected macros as a portable clipboard package and appends
+ pasted packages as new macros without overwriting existing ones.
 
 </details>
 
@@ -224,7 +281,11 @@ In-world colours — waypoint states, solver directions, device highlights — s
 - Modules are cards. The **switch** turns one on; **clicking anywhere else** on the card opens its settings — either mouse button works.
 - Settings are grouped into sections you can fold shut. It remembers which ones you closed.
 - Colours open a proper picker: drag the square for shade, the strip under it for hue, the one below that for transparency, or type a hex code straight in.
-- Every number is a draggable slider with a live readout.
+- Small numeric ranges (maximum 50 or below) are draggable sliders with a live readout. Larger
+  ranges use a direct text input so values such as delays and scan intervals can be entered
+  precisely; press Enter to apply them.
+- In **Dev**, **Debug** controls diagnostic logs and **Slot IDs** independently shows the runtime
+  container slot indices used by macro slot-click steps.
 - **Move Elements**, at the bottom of the category list, opens a screen where you drag HUD panels into place. Positions are kept as a share of the screen, so they survive a resolution or GUI-scale change.
 - The panel scales to your screen and reopens wherever you left it.
 

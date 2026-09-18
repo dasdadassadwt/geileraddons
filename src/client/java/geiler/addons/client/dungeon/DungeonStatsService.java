@@ -62,7 +62,7 @@ public final class DungeonStatsService {
 	});
 	private static final HttpClient HTTP = HttpClient.newBuilder()
 		.connectTimeout(TIMEOUT)
-		.followRedirects(HttpClient.Redirect.NORMAL)
+		.followRedirects(HttpClient.Redirect.NEVER)
 		.build();
 	private static final Map<String, CacheEntry> CACHE = new ConcurrentHashMap<>();
 	private static final Map<String, CompletableFuture<Result>> IN_FLIGHT = new ConcurrentHashMap<>();
@@ -107,6 +107,14 @@ public final class DungeonStatsService {
 
 	public static void clearCache() {
 		CACHE.clear();
+	}
+
+	/** Cancels profile work when the client is stopping; no callback may outlive the session. */
+	public static void close() {
+		for (CompletableFuture<Result> future : IN_FLIGHT.values()) future.cancel(true);
+		IN_FLIGHT.clear();
+		CACHE.clear();
+		EXECUTOR.shutdownNow();
 	}
 
 	private static void pruneCache(long now) {
@@ -170,11 +178,19 @@ public final class DungeonStatsService {
 	}
 
 	private static JsonObject getJson(String url) throws IOException, InterruptedException {
-		HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(TIMEOUT)
+		URI uri = URI.create(url);
+		if (!allowedUri(uri)) throw new IOException("Refusing untrusted endpoint " + uri.getHost());
+		HttpRequest request = HttpRequest.newBuilder(uri).timeout(TIMEOUT)
 			.header("User-Agent", "GeilerAddons")
 			.header("Accept", "application/json")
 			.GET().build();
 		HttpResponse<InputStream> response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
+		if (!allowedUri(response.uri())) {
+			try (InputStream ignored = response.body()) {
+				// Close a response that should never have been followed or accepted.
+			}
+			throw new IOException("Refusing redirected endpoint " + response.uri().getHost());
+		}
 		GeilerAddons.LOGGER.debug("[Dungeon Stats] GET {} -> {} (final URI {})", url, response.statusCode(), response.uri());
 		if (response.statusCode() < 200 || response.statusCode() >= 300) {
 			try (InputStream ignored = response.body()) {
@@ -194,6 +210,13 @@ public final class DungeonStatsService {
 		}
 		if (!parsed.isJsonObject()) throw new IOException("Response was not an object");
 		return parsed.getAsJsonObject();
+	}
+
+	private static boolean allowedUri(URI uri) {
+		if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())) return false;
+		String host = uri.getHost();
+		return "api.minecraftservices.com".equalsIgnoreCase(host)
+			|| "hypixel.odtheking.com".equalsIgnoreCase(host);
 	}
 
 	private static String readLimited(InputStream input, int maximumBytes) throws IOException {
@@ -260,9 +283,11 @@ public final class DungeonStatsService {
 
 		EnumSet<DungeonStats.Gear> gear = EnumSet.noneOf(DungeonStats.Gear.class);
 		String allText = collectItemText(member);
-		if (allText.contains("terminator")) gear.add(DungeonStats.Gear.TERMINATOR);
-		if (allText.contains("hyperion")) gear.add(DungeonStats.Gear.HYPERION);
-		if (allText.contains("golden_dragon") || allText.contains("golden dragon")) gear.add(DungeonStats.Gear.GOLDEN_DRAGON);
+		if (containsItemIdentifier(allText, "terminator")) gear.add(DungeonStats.Gear.TERMINATOR);
+		if (containsItemIdentifier(allText, "hyperion")) gear.add(DungeonStats.Gear.HYPERION);
+		if (containsItemIdentifier(allText, "golden_dragon") || containsItemIdentifier(allText, "golden dragon")) {
+			gear.add(DungeonStats.Gear.GOLDEN_DRAGON);
+		}
 
 		Map<DungeonFloor, Long> pbs = new EnumMap<>(DungeonFloor.class);
 		readPbs(pbs, catacombs, false);
@@ -324,35 +349,58 @@ public final class DungeonStatsService {
 
 	private static String collectItemText(JsonElement element) {
 		StringBuilder out = new StringBuilder();
-		collectInventoryText(element, out, 0, new JsonBudget(MAX_JSON_NODES), false);
+		collectInventoryIdentifiers(element, out, 0, new JsonBudget(MAX_JSON_NODES), false);
 		return out.toString().toLowerCase(Locale.ROOT);
 	}
 
-	private static void collectInventoryText(JsonElement element, StringBuilder out, int depth,
+	/** Walks only item identity fields; lore and status text are deliberately ignored. */
+	private static void collectInventoryIdentifiers(JsonElement element, StringBuilder out, int depth,
 		JsonBudget budget, boolean insideInventory) {
 		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return;
 		if (element.isJsonPrimitive()) {
 			if (!insideInventory || !element.getAsJsonPrimitive().isString()) return;
 			String value = element.getAsString();
-			appendLimited(out, value);
-			if (value.length() > 32 && value.length() <= MAX_COMPRESSED_VALUE_CHARS
+			if (likelyItemIdentifier(value)) appendLimited(out, value);
+			else if (value.length() > 32 && value.length() <= MAX_COMPRESSED_VALUE_CHARS
 				&& value.matches("[A-Za-z0-9+/=]+")) searchCompressedNbt(value, out);
 			return;
 		}
 		if (element.isJsonArray()) {
 			for (JsonElement child : element.getAsJsonArray()) {
-				collectInventoryText(child, out, depth + 1, budget, insideInventory);
+				collectInventoryIdentifiers(child, out, depth + 1, budget, insideInventory);
 				if (out.length() >= MAX_ITEM_TEXT_CHARS) return;
 			}
 			return;
 		}
 		if (!element.isJsonObject()) return;
 		for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
-			boolean inventory = insideInventory || isInventoryKey(entry.getKey());
-			if (inventory) appendLimited(out, entry.getKey());
-			collectInventoryText(entry.getValue(), out, depth + 1, budget, inventory);
+			String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT);
+			JsonElement value = entry.getValue();
+			if (isInventoryKey(key)) {
+				collectInventoryIdentifiers(value, out, depth + 1, budget, true);
+			} else if (insideInventory && isItemIdentityKey(key)) {
+				collectIdentityValue(value, out, depth + 1, budget);
+			} else if (insideInventory && isItemMetadataKey(key)) {
+				collectInventoryIdentifiers(value, out, depth + 1, budget, true);
+			} else if (insideInventory && (value.isJsonObject() || value.isJsonArray())) {
+				// Nested item wrappers are common in profile payloads, but primitive lore values are not.
+				collectInventoryIdentifiers(value, out, depth + 1, budget, true);
+			}
 			if (out.length() >= MAX_ITEM_TEXT_CHARS) return;
 		}
+	}
+
+	private static void collectIdentityValue(JsonElement value, StringBuilder out, int depth,
+		JsonBudget budget) {
+		if (value == null || value.isJsonNull()) return;
+		if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
+			String text = value.getAsString();
+			if (likelyItemIdentifier(text)) appendLimited(out, text);
+			else if (text.length() > 32 && text.length() <= MAX_COMPRESSED_VALUE_CHARS
+				&& text.matches("[A-Za-z0-9+/=]+")) searchCompressedNbt(text, out);
+			return;
+		}
+		collectInventoryIdentifiers(value, out, depth, budget, true);
 	}
 
 	private static void appendLimited(StringBuilder out, String value) {
@@ -369,6 +417,17 @@ public final class DungeonStatsService {
 			|| normalized.equals("wardrobe_contents") || normalized.equals("equipment_contents")
 			|| normalized.equals("inventory") || normalized.equals("items") || normalized.equals("item_data")
 			|| normalized.endsWith("_contents");
+	}
+
+	private static boolean isItemIdentityKey(String key) {
+		return key.equals("id") || key.equals("item_id") || key.equals("itemid")
+			|| key.equals("item_name") || key.equals("itemname") || key.equals("internalname")
+			|| key.equals("internal_name") || key.equals("displayname") || key.equals("display_name");
+	}
+
+	private static boolean isItemMetadataKey(String key) {
+		return key.equals("tag") || key.equals("nbt") || key.equals("extra_attributes")
+			|| key.equals("extraattributes");
 	}
 
 	private static void searchCompressedNbt(String value, StringBuilder out) {
@@ -423,27 +482,32 @@ public final class DungeonStatsService {
 	}
 
 	private static boolean inventoryValueIsReadable(JsonElement value) {
-		return inventoryValueIsReadable(value, 0, new JsonBudget(MAX_JSON_NODES));
+		return inventoryValueIsReadable(value, 0, new JsonBudget(MAX_JSON_NODES), true);
 	}
 
-	private static boolean inventoryValueIsReadable(JsonElement value, int depth, JsonBudget budget) {
+	private static boolean inventoryValueIsReadable(JsonElement value, int depth, JsonBudget budget,
+		boolean allowPrimitive) {
 		if (value == null || value.isJsonNull()) return false;
 		if (depth > MAX_JSON_DEPTH || !budget.visit()) return false;
 		if (value.isJsonObject()) {
 			if (isItemObject(value.getAsJsonObject())) return true;
 			for (Map.Entry<String, JsonElement> entry : value.getAsJsonObject().entrySet()) {
-				if (inventoryValueIsReadable(entry.getValue(), depth + 1, budget)) return true;
+				String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT);
+				JsonElement child = entry.getValue();
+				if (isItemIdentityKey(key) && identityValueIsReadable(child, depth + 1, budget)) return true;
+				if ((isItemMetadataKey(key) || child.isJsonObject() || child.isJsonArray())
+					&& inventoryValueIsReadable(child, depth + 1, budget, false)) return true;
 			}
 			return false;
 		}
 		if (value.isJsonArray()) {
 			if (value.getAsJsonArray().isEmpty()) return false;
 			for (JsonElement child : value.getAsJsonArray()) {
-				if (inventoryValueIsReadable(child, depth + 1, budget)) return true;
+				if (inventoryValueIsReadable(child, depth + 1, budget, allowPrimitive)) return true;
 			}
 			return false;
 		}
-		if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return false;
+		if (!allowPrimitive || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return false;
 		String text = value.getAsString();
 		if (text.isBlank()) return false;
 		if (text.length() > MAX_COMPRESSED_VALUE_CHARS) return false;
@@ -465,21 +529,45 @@ public final class DungeonStatsService {
 			JsonElement value = entry.getValue();
 			if (value == null || value.isJsonNull()) continue;
 			if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
-				if (!value.getAsString().isBlank()) return true;
+				if (isItemIdentityKey(key) && likelyItemIdentifier(value.getAsString())) return true;
 			} else if (key.equals("tag") || key.equals("nbt")) {
-				return true;
+				if (inventoryValueIsReadable(value)) return true;
 			}
 		}
 		return false;
 	}
 
+	private static boolean identityValueIsReadable(JsonElement value, int depth, JsonBudget budget) {
+		if (value == null || value.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return false;
+		if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return false;
+		String text = value.getAsString();
+		if (likelyItemIdentifier(text)) return true;
+		return text.length() > 32 && text.length() <= MAX_COMPRESSED_VALUE_CHARS
+			&& text.matches("[A-Za-z0-9+/=]+") && searchCompressedNbtReadable(text, new StringBuilder());
+	}
+
 	private static boolean likelyItemIdentifier(String value) {
 		String normalized = value.trim();
 		String lower = normalized.toLowerCase(Locale.ROOT);
-		if (lower.contains("terminator") || lower.contains("hyperion")
-			|| lower.contains("golden_dragon") || lower.contains("golden dragon")) return true;
+		if (lower.equals("terminator") || lower.equals("hyperion")
+			|| lower.equals("golden_dragon") || lower.equals("golden dragon")) return true;
 		if (normalized.contains(":")) return normalized.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+");
 		return normalized.matches("[A-Z0-9]+(?:_[A-Z0-9]+)+");
+	}
+
+	private static boolean containsItemIdentifier(String text, String identifier) {
+		if (text == null || identifier == null || identifier.isBlank()) return false;
+		String lower = text.toLowerCase(Locale.ROOT);
+		String needle = identifier.toLowerCase(Locale.ROOT);
+		int from = 0;
+		while ((from = lower.indexOf(needle, from)) >= 0) {
+			int end = from + needle.length();
+			boolean left = from == 0 || !Character.isLetterOrDigit(lower.charAt(from - 1));
+			boolean right = end == lower.length() || !Character.isLetterOrDigit(lower.charAt(end));
+			if (left && right) return true;
+			from = end;
+		}
+		return false;
 	}
 
 	private static JsonObject object(JsonObject parent, String name) {
@@ -637,11 +725,11 @@ public final class DungeonStatsService {
 			int type = input.readUnsignedByte();
 			if (type == 0) return;
 			readString(input, budget);
-			readPayload(input, type, out, budget, 0);
+			readPayload(input, type, out, budget, 0, "");
 		}
 
 		private static void readPayload(DataInputStream input, int type, StringBuilder out,
-			NbtBudget budget, int depth) throws IOException {
+			NbtBudget budget, int depth, String key) throws IOException {
 			if (depth > MAX_NBT_DEPTH || !budget.visit()) throw new IOException("NBT limits exceeded");
 			switch (type) {
 				case 1 -> input.readByte();
@@ -651,19 +739,23 @@ public final class DungeonStatsService {
 				case 5 -> input.readFloat();
 				case 6 -> input.readDouble();
 				case 7 -> skipBytes(input, input.readInt());
-				case 8 -> appendLimited(out, readString(input, budget));
+				case 8 -> {
+					String value = readString(input, budget);
+					String normalizedKey = key == null ? "" : key.toLowerCase(Locale.ROOT);
+					if (isItemIdentityKey(normalizedKey) && likelyItemIdentifier(value)) appendLimited(out, value);
+				}
 				case 9 -> {
 					int childType = input.readUnsignedByte();
 					int count = input.readInt();
 					if (count < 0 || count > MAX_NBT_NODES) throw new IOException("Invalid NBT list length");
-					for (int i = 0; i < count; i++) readPayload(input, childType, out, budget, depth + 1);
+					for (int i = 0; i < count; i++) readPayload(input, childType, out, budget, depth + 1, key);
 				}
 				case 10 -> {
 					while (true) {
 						int childType = input.readUnsignedByte();
 						if (childType == 0) break;
-						appendLimited(out, readString(input, budget));
-						readPayload(input, childType, out, budget, depth + 1);
+						String childKey = readString(input, budget);
+						readPayload(input, childType, out, budget, depth + 1, childKey);
 					}
 				}
 				case 11 -> skipArray(input, input.readInt(), 4);

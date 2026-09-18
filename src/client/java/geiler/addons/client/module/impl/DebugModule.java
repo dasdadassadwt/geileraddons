@@ -3,6 +3,7 @@ package geiler.addons.client.module.impl;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.DebugState;
 import geiler.addons.client.module.Module;
+import geiler.addons.client.config.GeilerAddonsLog;
 
 /**
  * The always-available master switch for optional diagnostic controls throughout the mod.
@@ -14,16 +15,18 @@ public final class DebugModule extends Module {
 	public static final DebugModule INSTANCE = new DebugModule();
 
 	private DebugModule() {
-		super("Debug", "Enables diagnostic settings and output across the mod.", Category.DEV);
+		super("Debug", "Enables diagnostic logs and developer diagnostics across the mod.", Category.DEV);
 	}
 
 	@Override
 	protected void onEnable() {
 		DebugState.setEnabled(true);
+		GeilerAddonsLog.start();
 	}
 
 	@Override
 	protected void onDisable() {
 		DebugState.setEnabled(false);
+		GeilerAddonsLog.stop();
 	}
 }
