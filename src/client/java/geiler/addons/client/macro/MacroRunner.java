@@ -58,6 +58,12 @@ public final class MacroRunner {
 		return active != null;
 	}
 
+	/** Supplies held macro keys to vanilla input polling while a workflow owns the hold. */
+	public static boolean isSyntheticKeyDown(int keyCode) {
+		Run run = active;
+		return run != null && run.isSyntheticKeyDown(keyCode, System.nanoTime());
+	}
+
 	public static MacroDefinition activeMacro() {
 		return active == null ? null : active.macro;
 	}
@@ -107,8 +113,8 @@ public final class MacroRunner {
 			lastChat = "";
 			lastChatSequence = chatSequence;
 		}
-		if (!MacrosModule.INSTANCE.isActive() || minecraft.level == null
-			|| (minecraft.player == null && !run.waitingForWorldSwitch())) {
+		if (MacroFlowRules.contextEnded(MacrosModule.INSTANCE.isActive(), minecraft.level != null,
+			minecraft.player != null, run.waitingForWorldSwitch())) {
 			cancel("context ended");
 			return;
 		}
@@ -200,10 +206,9 @@ public final class MacroRunner {
 
 	private static boolean itemMatches(ItemStack stack, String wanted, boolean contains) {
 		if (stack == null || stack.isEmpty()) return false;
-		String actual = ChatText.stripForMatch(stack.getHoverName().getString()).toLowerCase(Locale.ROOT);
-		String needle = ChatText.stripForMatch(wanted == null ? "" : wanted).toLowerCase(Locale.ROOT);
-		if (needle.isEmpty()) return false;
-		return contains ? actual.contains(needle) : actual.equals(needle);
+		String actual = ChatText.stripForMatch(stack.getHoverName().getString());
+		String needle = ChatText.stripForMatch(wanted == null ? "" : wanted);
+		return MacroFlowRules.itemNameMatchesAny(actual, needle, contains);
 	}
 
 	private static boolean condition(MacroCondition condition, Minecraft minecraft, long minimumChatSequence) {
@@ -272,9 +277,7 @@ public final class MacroRunner {
 	}
 
 	private static int delay(int min, int max) {
-		min = Math.max(0, min);
-		max = Math.max(min, max);
-		return min == max ? min : RANDOM.nextInt(min, max + 1);
+		return MacroFlowRules.randomDelay(min, max, RANDOM);
 	}
 
 	private static final class Run {
@@ -284,7 +287,10 @@ public final class MacroRunner {
 		private long nextActionNanos;
 		private long blockedSinceNanos;
 		private String blockedReason;
-		private HeldKey heldKey;
+		private final MacroKeyHoldState heldKeyState = new MacroKeyHoldState();
+		private InputConstants.Key heldKeyInput;
+		private Screen heldKeyScreen;
+		private boolean heldKeyDeliveredToScreen;
 		/** The node whose explicit pre-node delay is currently being waited out. */
 		private MacroStep pendingDelayStep;
 		private Frame worldSwitchFrame;
@@ -299,7 +305,12 @@ public final class MacroRunner {
 		}
 
 		private void markLevelChanged() {
+			releaseHeldKey();
 			levelChanged = true;
+		}
+
+		private boolean isSyntheticKeyDown(int keyCode, long nowNanos) {
+			return heldKeyState.isDown(keyCode, nowNanos);
 		}
 
 		private boolean waitingForWorldSwitch() {
@@ -332,18 +343,25 @@ public final class MacroRunner {
 				return;
 			}
 			long now = System.nanoTime();
-			if (heldKey != null) {
-				if (now < heldKey.releaseAtNanos) return;
-				releaseHeldKey();
-				nextActionNanos = now;
-				return;
+			if (heldKeyState.isScheduled()) {
+				if (heldKeyScreen != minecraft.screen) {
+					releaseHeldKey();
+					nextActionNanos = now;
+				} else if (!heldKeyState.isDue(now)) {
+					return;
+				} else {
+					releaseHeldKey();
+					nextActionNanos = now;
+					return;
+				}
 			}
 			if (now < nextActionNanos) return;
 
 			int structural = 0;
 			while (structural++ < MAX_STRUCTURAL_STEPS) {
-				Cursor cursor = nextCursor();
+				Cursor cursor = nextCursor(minecraft);
 				if (cursor == null) {
+					if (active != this) return;
 					active = null;
 					log(macro, "COMPLETE");
 					return;
@@ -359,7 +377,8 @@ public final class MacroRunner {
 					worldSwitchFrame = cursor.frame();
 					worldSwitchTarget = worldSwitch.target();
 				}
-				if (!(step instanceof MacroStep.WorldSwitch) && !delayReady(step, now)) return;
+				if (!(step instanceof MacroStep.WorldSwitch) && !(step instanceof MacroStep.RepeatUntil)
+					&& !delayReady(step, now)) return;
 				if (step instanceof MacroStep.IfElse branch) {
 					cursor.frame().index++;
 					List<MacroStep> selected = condition(branch.condition(), minecraft, chatStartSequence)
@@ -374,6 +393,23 @@ public final class MacroRunner {
 					}
 					continue;
 				}
+				if (step instanceof MacroStep.RepeatUntil repeatUntil) {
+					MacroFlowRules.UntilDecision decision = MacroFlowRules.repeatUntil(
+						condition(repeatUntil.condition(), minecraft, chatStartSequence), !repeatUntil.steps().isEmpty());
+					if (decision == MacroFlowRules.UntilDecision.EXIT) {
+						cursor.frame().index++;
+						clearBlocked();
+						continue;
+					}
+					if (decision == MacroFlowRules.UntilDecision.EMPTY_BODY) {
+						abort("Repeat Until has no steps");
+						return;
+					}
+					if (!delayReady(step, now)) return;
+					cursor.frame().index++;
+					frames.push(new Frame(repeatUntil.steps(), 0, 1, false, repeatUntil));
+					continue;
+				}
 				if (step instanceof MacroStep.WaitUntil waitUntil) {
 					cursor.frame().index++;
 					clearBlocked();
@@ -385,6 +421,14 @@ public final class MacroRunner {
 				}
 
 				if (!execute(step, minecraft, now)) {
+					if (step instanceof MacroStep.ClickItem
+						&& finishRepeatUntilWhenItemIsMissing(minecraft)) continue;
+					if (step instanceof MacroStep.Key key) {
+						message(minecraft, "Macro '" + macro.name() + "' stopped: could not apply key '"
+							+ keyDisplayName(key.key()) + "'.");
+						abort("could not apply key " + keyDisplayName(key.key()));
+						return;
+					}
 					blocked(minecraft, "step " + step.type());
 					return;
 				}
@@ -395,10 +439,25 @@ public final class MacroRunner {
 			abort("workflow contains too many empty structural steps");
 		}
 
-		private Cursor nextCursor() {
+		private Cursor nextCursor(Minecraft minecraft) {
 			while (!frames.isEmpty()) {
 				Frame frame = frames.peek();
 				if (frame.index < frame.steps.size()) return new Cursor(frame, frame.steps.get(frame.index));
+				if (frame.repeatUntil != null) {
+					MacroFlowRules.UntilDecision decision = MacroFlowRules.repeatUntil(
+						condition(frame.repeatUntil.condition(), minecraft, chatStartSequence), !frame.steps.isEmpty());
+					if (decision == MacroFlowRules.UntilDecision.EXIT) {
+						frames.pop();
+						clearBlocked();
+						continue;
+					}
+					if (decision == MacroFlowRules.UntilDecision.EMPTY_BODY) {
+						abort("Repeat Until has no steps");
+						return null;
+					}
+					frame.index = 0;
+					continue;
+				}
 				if (frame.repeatFrame && (frame.repeatsRemaining < 0 || frame.repeatsRemaining > 1)) {
 					if (frame.repeatsRemaining > 1) frame.repeatsRemaining--;
 					frame.index = 0;
@@ -407,6 +466,22 @@ public final class MacroRunner {
 				frames.pop();
 			}
 			return null;
+		}
+
+		/** A missing Click Item is the normal final iteration when the Repeat Until stop condition is item-missing. */
+		private boolean finishRepeatUntilWhenItemIsMissing(Minecraft minecraft) {
+			for (Frame frame : frames) {
+				if (frame.repeatUntil == null) continue;
+				boolean stopConditionTrue = condition(frame.repeatUntil.condition(), minecraft, chatStartSequence);
+				if (!MacroFlowRules.missingItemEndsUntil(true, stopConditionTrue)) return false;
+				while (frames.peek() != frame) frames.pop();
+				frames.pop();
+				pendingDelayStep = null;
+				clearBlocked();
+				nextActionNanos = System.nanoTime();
+				return true;
+			}
+			return false;
 		}
 
 		private boolean execute(MacroStep step, Minecraft minecraft, long now) {
@@ -442,24 +517,50 @@ public final class MacroRunner {
 		private boolean pressKey(MacroStep.Key step, Minecraft minecraft, long now) {
 			InputConstants.Key key = parseKey(step.key());
 			if (key.equals(InputConstants.UNKNOWN)) return false;
-			KeyEvent event = new KeyEvent(key.getValue(), 0, 0);
+			KeyEvent event = new KeyEvent(key.getValue(), 0, modifierMask(key));
 			Screen screen = minecraft.screen;
 			if (screen != null) {
-				if (!screen.keyPressed(event)) return false;
 				if (step.hold()) {
-					heldKey = new HeldKey(screen, key, now + step.holdMillis() * 1_000_000L);
+					boolean delivered = screen.keyPressed(event);
+					if (!delivered && modifierMask(key) == 0) return false;
+					beginHeldKey(screen, key, delivered, now, step);
 				} else {
+					if (!screen.keyPressed(event)) return false;
 					((GuiEventListener) screen).keyReleased(event);
 				}
 			} else {
-				KeyMapping.click(key);
 				if (step.hold()) {
-					heldKey = new HeldKey(null, key, now + step.holdMillis() * 1_000_000L);
+					KeyMapping.set(key, true);
+					beginHeldKey(null, key, false, now, step);
 				} else {
+					KeyMapping.click(key);
 					KeyMapping.set(key, false);
 				}
 			}
 			return true;
+		}
+
+		private void beginHeldKey(Screen screen, InputConstants.Key key, boolean delivered,
+			long now, MacroStep.Key step) {
+			int holdMillis = delay(step.holdMinMillis(), step.holdMaxMillis());
+			heldKeyInput = key;
+			heldKeyScreen = screen;
+			heldKeyDeliveredToScreen = delivered;
+			heldKeyState.begin(key.getValue(), now + holdMillis * 1_000_000L);
+		}
+
+		private static String keyDisplayName(String value) {
+			InputConstants.Key key = parseKey(value);
+			return key.equals(InputConstants.UNKNOWN) ? String.valueOf(value) : key.getDisplayName().getString();
+		}
+
+		private static int modifierMask(InputConstants.Key key) {
+			int code = key.getValue();
+			if (code == InputConstants.KEY_LSHIFT || code == InputConstants.KEY_RSHIFT) return InputConstants.MOD_SHIFT;
+			if (code == InputConstants.KEY_LCONTROL || code == InputConstants.KEY_RCONTROL) return InputConstants.MOD_CONTROL;
+			if (code == InputConstants.KEY_LALT || code == InputConstants.KEY_RALT) return InputConstants.MOD_ALT;
+			if (code == InputConstants.KEY_LSUPER || code == InputConstants.KEY_RSUPER) return InputConstants.MOD_SUPER;
+			return 0;
 		}
 
 		private boolean clickSlot(MacroStep.ClickSlot step, Minecraft minecraft) {
@@ -515,11 +616,18 @@ public final class MacroRunner {
 		}
 
 		private void releaseHeldKey() {
-			if (heldKey == null) return;
-			KeyEvent event = new KeyEvent(heldKey.key.getValue(), 0, 0);
-			if (heldKey.screen != null) ((GuiEventListener) heldKey.screen).keyReleased(event);
-			else KeyMapping.set(heldKey.key, false);
-			heldKey = null;
+			if (!heldKeyState.isScheduled()) return;
+			InputConstants.Key key = heldKeyInput;
+			Screen screen = heldKeyScreen;
+			boolean delivered = heldKeyDeliveredToScreen;
+			heldKeyState.clear();
+			heldKeyInput = null;
+			heldKeyScreen = null;
+			heldKeyDeliveredToScreen = false;
+			if (key == null) return;
+			KeyEvent event = new KeyEvent(key.getValue(), 0, modifierMask(key));
+			if (screen != null && delivered) ((GuiEventListener) screen).keyReleased(event);
+			KeyMapping.set(key, false);
 		}
 
 		private void abort(String reason) {
@@ -534,27 +642,23 @@ public final class MacroRunner {
 		private int index;
 		private int repeatsRemaining;
 		private final boolean repeatFrame;
+		private final MacroStep.RepeatUntil repeatUntil;
 
 		private Frame(List<MacroStep> steps, int index, int repeatsRemaining, boolean repeatFrame) {
+			this(steps, index, repeatsRemaining, repeatFrame, null);
+		}
+
+		private Frame(List<MacroStep> steps, int index, int repeatsRemaining, boolean repeatFrame,
+			MacroStep.RepeatUntil repeatUntil) {
 			this.steps = steps;
 			this.index = index;
 			this.repeatsRemaining = repeatsRemaining;
 			this.repeatFrame = repeatFrame;
+			this.repeatUntil = repeatUntil;
 		}
 	}
 
 	private record Cursor(Frame frame, MacroStep step) {
 	}
 
-	private static final class HeldKey {
-		private final Screen screen;
-		private final InputConstants.Key key;
-		private final long releaseAtNanos;
-
-		private HeldKey(Screen screen, InputConstants.Key key, long releaseAtNanos) {
-			this.screen = screen;
-			this.key = key;
-			this.releaseAtNanos = releaseAtNanos;
-		}
-	}
 }

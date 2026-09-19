@@ -1,10 +1,13 @@
 package geiler.addons.client.module.impl;
 
+import com.google.gson.JsonParser;
+import com.mojang.serialization.JsonOps;
 import geiler.addons.client.dungeon.DungeonClass;
 import geiler.addons.client.dungeon.DungeonFloor;
 import geiler.addons.client.dungeon.DungeonQueueFloorTracker;
 import geiler.addons.client.dungeon.DungeonStats;
 import geiler.addons.client.dungeon.DungeonStatsService;
+import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.party.PartyListBackend;
 import geiler.addons.client.party.PartyMember;
 import geiler.addons.client.party.PartySnapshot;
@@ -23,8 +26,10 @@ import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.components.ChatComponent;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.Style;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.Slot;
 
@@ -610,10 +615,15 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	}
 
 	private void showUnavailable(String name, String error) {
-		String reason = error == null || error.isBlank() ? "unavailable" : error;
-		queueChatCard(Component.literal("[PF] ").withStyle(ChatFormatting.YELLOW)
-			.append(Component.literal(name + " stats unavailable (" + reason + ") ").withStyle(ChatFormatting.GRAY))
-			.append(pvAction(name)));
+		MutableComponent message = Component.literal("[PF] ").withStyle(ChatFormatting.YELLOW)
+			.append(Component.literal(apiUnavailableStatus(name, error) + " ")
+				.withStyle(ChatFormatting.GRAY))
+			.append(pvAction(name));
+		if (!ModConfig.hypixelModApi()) {
+			message.append("\n").append(Component.literal("[PF] Island detection API is off")
+				.withStyle(ChatFormatting.YELLOW));
+		}
+		queueChatCard(message);
 	}
 
 	private void showStats(DungeonFloor floor, PartyMember member, DungeonStats stats) {
@@ -624,14 +634,57 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		queueChatCard(joinLines(formatCard(mc.font, view, chatTextWidth(mc), true)));
 	}
 
+	/** Performs a one-off profile lookup for /ga dstats, without requiring either display module to be enabled. */
+	public void lookupStats(String name) {
+		DungeonStatsService.fetch(name, result -> {
+			if (!result.available()) {
+				showLookupUnavailable(name, result.error());
+				return;
+			}
+			Minecraft mc = Minecraft.getInstance();
+			if (mc.gui == null) return;
+			DungeonStats stats = result.stats();
+			PartySnapshot snapshot = PartyListBackend.snapshot();
+			PartyMember member = snapshot.inParty() ? findMember(snapshot, stats.name()) : null;
+			DungeonClass dungeonClass = member != null && member.dungeonClass() != null
+				? member.dungeonClass() : stats.selectedClass();
+			if (member == null) member = new PartyMember(stats.name(), stats.uuid(), dungeonClass);
+			StatsView view = StatsView.from(null, member, stats, dungeonClass);
+			queueChatCard(joinLines(formatCard(mc.font, view, chatTextWidth(mc), true, true)));
+		});
+	}
+
+	private void showLookupUnavailable(String name, String error) {
+		MutableComponent message = Component.literal("[DStats] ").withStyle(ChatFormatting.YELLOW)
+			.append(Component.literal(apiUnavailableStatus(name, error) + " ")
+				.withStyle(ChatFormatting.GRAY))
+			.append(pvAction(name));
+		if (!ModConfig.hypixelModApi()) {
+			message.append("\n").append(Component.literal("[DStats] Island detection API is off")
+				.withStyle(ChatFormatting.YELLOW));
+		}
+		queueChatCard(message);
+	}
+
+	static String apiUnavailableStatus(String name, String error) {
+		String reason = error == null || error.isBlank() ? "unavailable" : error;
+		return "Dungeon stats API unavailable: " + name + " (" + reason + ")";
+	}
+
 	@Override
 	public List<Component> previewLines(Font font, int width) {
 		return formatCard(font, StatsView.preview(), Math.max(40, width), false);
 	}
 
 	private List<Component> formatCard(Font font, StatsView view, int width, boolean includeActions) {
+		return formatCard(font, view, width, includeActions, false);
+	}
+
+	private List<Component> formatCard(Font font, StatsView view, int width, boolean includeActions,
+		boolean manualLookup) {
 		List<Component> actions = includeActions ? liveActions(view) : List.of();
-		return CardFormatter.format(font, view, displayOptions(), width, actions);
+		return CardFormatter.format(font, view, displayOptions(), width, actions, manualLookup,
+			!ModConfig.hypixelModApi());
 	}
 
 	private DisplayOptions displayOptions() {
@@ -643,7 +696,10 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 
 	private List<Component> liveActions(StatsView view) {
 		List<Component> actions = new ArrayList<>();
-		if (PartyListBackend.snapshot().isLeader(localName())) actions.add(kickAction(view.name()));
+		PartySnapshot party = PartyListBackend.snapshot();
+		if (party.isLeader(localName()) && findMember(party, view.name()) != null) {
+			actions.add(kickAction(view.name()));
+		}
 		if (!view.gearKnown() || !view.bankKnown()) actions.add(pvAction(view.name()));
 		return actions;
 	}
@@ -661,64 +717,117 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 
 		static List<Component> format(Font font, StatsView view, DisplayOptions options, int width,
 			List<Component> actions) {
+			return format(font, view, options, width, actions, false, false);
+		}
+
+		static List<Component> format(Font font, StatsView view, DisplayOptions options, int width,
+			List<Component> actions, boolean manualLookup, boolean islandApiOff) {
 		MutableComponent header = Component.literal("✦ ").withStyle(ChatFormatting.AQUA)
 			.append(Component.literal(view.name()).withStyle(style -> style
-				.withColor(ChatFormatting.WHITE).withBold(true)))
-			.append(Component.literal(" joined").withStyle(ChatFormatting.GRAY))
-			.append(Component.literal("  ").withStyle(ChatFormatting.DARK_GRAY))
-			.append(Component.literal(view.floor() == null ? "[Floor ?]" : "[" + view.floor().displayName() + "]")
-				.withStyle(view.floor() == null ? ChatFormatting.YELLOW
-					: view.floor().master() ? ChatFormatting.RED : ChatFormatting.GOLD));
+				.withColor(ChatFormatting.WHITE).withBold(true)));
+		if (!manualLookup) {
+			header.append(Component.literal(" joined").withStyle(ChatFormatting.GRAY));
+		}
+		if (view.floor() != null) {
+			header.append(Component.literal("  ").withStyle(ChatFormatting.DARK_GRAY))
+				.append(hover(Component.literal("[" + view.floor().displayName() + "]")
+					.withStyle(view.floor().master() ? ChatFormatting.RED : ChatFormatting.GOLD),
+					(view.floor().master() ? "Master mode" : "Normal mode") + " dungeon floor"));
+		}
 
 		List<Component> overviewParts = new ArrayList<>();
 		if (options.showCata()) {
-			overviewParts.add(Component.literal("Cata ").withStyle(ChatFormatting.GRAY)
-				.append(Component.literal(Integer.toString(view.catacombsLevel())).withStyle(ChatFormatting.GOLD)));
+			Component cata = Component.literal("Cata ").withStyle(ChatFormatting.GRAY)
+				.append(Component.literal(view.catacombsKnown()
+					? Integer.toString(view.catacombsLevel()) : "?").withStyle(ChatFormatting.GOLD));
+			overviewParts.add(hover(cata, catacombsTooltip(view)));
 		}
 		if (options.showClass()) {
-			Component classPart = hover(Component.literal(view.selectedClass() == null
-				? "Class ?" : view.selectedClass().displayName() + " " + view.selectedClassLevel())
-				.withStyle(classColor(view.selectedClass())), view.allClassLevels());
+			String classValue = view.selectedClass() == null ? "Class ?"
+				: view.selectedClass().displayName() + " "
+					+ (view.selectedClassKnown() ? view.selectedClassLevel() : "?");
+			Component classPart = hover(Component.literal(classValue).withStyle(classColor(view.selectedClass())),
+				Component.literal((view.selectedClass() == null
+					? "Selected dungeon class unavailable in profile\n" : "Dungeon class levels\n")
+					+ view.allClassLevels()));
 			overviewParts.add(classPart);
 		}
 		if (options.showClassAverage()) {
-			overviewParts.add(Component.literal("CA ").withStyle(ChatFormatting.GRAY)
-				.append(Component.literal(PartyFinderStatsModule.format(view.classAverage())).withStyle(ChatFormatting.AQUA)));
+			Component classAverage = Component.literal("CA ").withStyle(ChatFormatting.GRAY)
+				.append(Component.literal(view.classAverageKnown()
+					? PartyFinderStatsModule.format(view.classAverage()) : "?").withStyle(ChatFormatting.AQUA));
+			overviewParts.add(hover(classAverage, view.classAverageKnown()
+				? "Class average: " + PartyFinderStatsModule.format(view.classAverage())
+					+ "\n" + view.allClassLevels()
+				: "Class level data unavailable in profile"));
 		}
 		if (options.showMagicalPower()) {
-			overviewParts.add(Component.literal("MP ").withStyle(ChatFormatting.GRAY)
-				.append(Component.literal(String.format(Locale.ROOT, "%,d", view.magicalPower()))
-					.withStyle(ChatFormatting.LIGHT_PURPLE)));
+			Component magicalPower = Component.literal("MP ").withStyle(ChatFormatting.GRAY)
+				.append(Component.literal(view.magicalPowerKnown()
+					? String.format(Locale.ROOT, "%,d", view.magicalPower()) : "?")
+					.withStyle(ChatFormatting.LIGHT_PURPLE));
+			overviewParts.add(hover(magicalPower, view.magicalPowerKnown()
+				? "Magical Power: " + String.format(Locale.ROOT, "%,d", view.magicalPower())
+					+ "\nProfile value"
+				: "Magical Power data unavailable in profile"));
 		}
 		if (options.showSecretAverage()) {
-			Component secretPart = hover(Component.literal(PartyFinderStatsModule.format(view.secretAverage())).withStyle(ChatFormatting.AQUA),
-				"Total secrets: " + view.totalSecrets() + "\nRuns: " + view.totalRuns());
-			overviewParts.add(Component.literal("SA ").withStyle(ChatFormatting.GRAY).append(secretPart));
+			Component secretPart = Component.literal("SA ").withStyle(ChatFormatting.GRAY)
+				.append(Component.literal(view.secretsKnown() && view.runsKnown()
+					? PartyFinderStatsModule.format(view.secretAverage()) : "?").withStyle(ChatFormatting.AQUA));
+			String secrets = view.secretsKnown()
+				? String.format(Locale.ROOT, "%,d", view.totalSecrets()) : "unavailable in profile";
+			String runs = view.runsKnown()
+				? String.format(Locale.ROOT, "%,d", view.totalRuns()) : "unavailable in profile";
+			overviewParts.add(hover(secretPart, "Total secrets: " + secrets + "\nRuns: " + runs));
 		}
 		if (options.showPersonalBest()) {
-			Component pbPart = hover(Component.literal(view.personalBest()).withStyle(
-				view.personalBest().equals("-") ? ChatFormatting.YELLOW : ChatFormatting.GREEN), view.allPbs());
-			overviewParts.add(Component.literal("PB ").withStyle(ChatFormatting.GRAY).append(pbPart));
+			if (!manualLookup) {
+				Component pbPart = Component.literal("PB ").withStyle(ChatFormatting.GRAY)
+					.append(Component.literal(view.personalBest()).withStyle(
+						view.personalBest().equals("-") ? ChatFormatting.YELLOW : ChatFormatting.GREEN));
+				String pbHover = !view.personalBestsKnown()
+					? "Personal best data unavailable in profile"
+					: (view.floor() == null ? "Queued-floor personal best: " : view.floor().displayName() + " personal best: ")
+						+ view.personalBest()
+						+ (view.personalBest().equals("-")
+							? view.floor() == null ? "\nNo queued dungeon floor was captured"
+								: "\nNo personal best recorded for this floor"
+							: "");
+				overviewParts.add(hover(pbPart, pbHover));
+			}
+			overviewParts.add(hover(Component.literal("Normal PBs").withStyle(ChatFormatting.GREEN),
+				Component.literal(view.personalBestsKnown()
+					? "Normal mode personal bests\n" + view.normalPbs()
+					: "Normal mode personal best data unavailable in profile")));
+			overviewParts.add(hover(Component.literal("Master PBs").withStyle(ChatFormatting.RED),
+				Component.literal(view.personalBestsKnown()
+					? "Master mode personal bests\n" + view.masterPbs()
+					: "Master mode personal best data unavailable in profile")));
 		}
 
 		List<Component> gearParts = new ArrayList<>();
 		if (options.showTerminator()) {
-			gearParts.add(Component.literal("Term ").withStyle(ChatFormatting.GRAY)
-				.append(mark(view.terminatorKnown(), view.terminator())));
+			gearParts.add(gearPart("Term ", view.terminatorKnown(), view.terminator(),
+				itemTooltip("Terminator", DungeonStats.Gear.TERMINATOR, view.terminatorKnown(),
+					view.terminator(), view.itemDetails())));
 		}
 		if (options.showHyperion()) {
-			gearParts.add(Component.literal("Hype ").withStyle(ChatFormatting.GRAY)
-				.append(mark(view.hyperionKnown(), view.hyperion())));
+			gearParts.add(gearPart("Hype ", view.hyperionKnown(), view.hyperion(),
+				itemTooltip("Hyperion", DungeonStats.Gear.HYPERION, view.hyperionKnown(),
+					view.hyperion(), view.itemDetails())));
 		}
 		if (options.showGoldenDragon()) {
-			gearParts.add(Component.literal("GDrag ").withStyle(ChatFormatting.GRAY)
-				.append(mark(view.goldenDragonKnown(), view.goldenDragon())));
+			gearParts.add(gearPart("GDrag ", view.goldenDragonKnown(), view.goldenDragon(),
+				goldenDragonTooltip(view)));
 		}
 		if (options.showBank()) {
 			Component bankPart = view.bankKnown()
 				? Component.literal(formatBank(view.bank())).withStyle(ChatFormatting.GOLD)
-				: hover(Component.literal("?").withStyle(ChatFormatting.YELLOW), "Bank API data unavailable");
-			gearParts.add(Component.literal("Bank ").withStyle(ChatFormatting.GRAY).append(bankPart));
+				: Component.literal("?").withStyle(ChatFormatting.YELLOW);
+			Component bankLine = Component.literal("Bank ").withStyle(ChatFormatting.GRAY).append(bankPart);
+			gearParts.add(hover(bankLine, view.bankKnown()
+				? "Bank balance: " + formatBank(view.bank()) : "Bank API data unavailable"));
 		}
 		gearParts.addAll(actions);
 
@@ -726,20 +835,165 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		segments.add(header);
 		if (!overviewParts.isEmpty()) segments.add(joinParts(overviewParts));
 		if (!gearParts.isEmpty()) segments.add(joinParts(gearParts));
+		if (islandApiOff) segments.add(Component.literal("Island detection API is off")
+			.withStyle(ChatFormatting.YELLOW));
 		if (options.compact()) {
-			MutableComponent compactLine = Component.literal("[✦ PF] ").withStyle(style -> style
+			MutableComponent compactLine = Component.literal(manualLookup ? "[✦ DStats] " : "[✦ PF] ").withStyle(style -> style
 				.withColor(ChatFormatting.AQUA).withBold(true));
 			return List.of(compactLine.append(joinParts(segments)));
 		}
 
 		List<Component> lines = new ArrayList<>();
-		lines.add(cardTop(font, width));
+		lines.add(cardTop(font, width, manualLookup ? " ✦ DUNGEON STATS ✦ " : " ✦ PARTY FINDER ✦ "));
 		for (Component segment : segments) {
 			lines.add(Component.literal("┃ ").withStyle(ChatFormatting.DARK_AQUA).append(segment));
 		}
 		lines.add(cardBottom(font, width));
 		return lines;
 		}
+	}
+
+	private static Component gearPart(String label, boolean known, boolean present, Component tooltip) {
+		Component indicator = Component.literal(!known ? "?" : present ? "✓" : "X")
+			.withStyle(known && present ? ChatFormatting.GREEN
+				: known ? ChatFormatting.RED : ChatFormatting.YELLOW);
+		return hover(Component.literal(label).withStyle(ChatFormatting.GRAY).copy().append(indicator), tooltip);
+	}
+
+	private static Component itemTooltip(String label, DungeonStats.Gear gear, boolean known,
+		boolean present, List<DungeonStats.ItemDetails> allDetails) {
+		List<DungeonStats.ItemDetails> details = allDetails.stream()
+			.filter(item -> item.gear() == gear).toList();
+		if (!known && details.isEmpty()) return Component.literal("Inventory API data unavailable");
+		if (!present && details.isEmpty()) {
+			return Component.literal("No " + label + " found in the available profile inventories");
+		}
+		if (details.isEmpty()) {
+			return Component.literal(label + " detected, but item tooltip details were not included in the profile response");
+		}
+
+		MutableComponent tooltip = Component.empty();
+		for (int i = 0; i < details.size(); i++) {
+			DungeonStats.ItemDetails item = details.get(i);
+			if (i > 0) tooltip.append("\n\n");
+			tooltip.append(Component.literal(label + (details.size() > 1 ? " " + (i + 1) : ""))
+				.withStyle(ChatFormatting.GOLD));
+			tooltip.append("\n").append(profileTooltipText(item.displayName()));
+			if (!item.identifier().isBlank()) {
+				tooltip.append("\n").append(Component.literal("Item ID: " + item.identifier())
+					.withStyle(ChatFormatting.DARK_GRAY));
+			}
+			if (!item.source().isBlank()) {
+				tooltip.append("\n").append(Component.literal("From: " + item.source())
+					.withStyle(ChatFormatting.DARK_GRAY));
+			}
+			for (String line : item.lore()) tooltip.append("\n").append(profileTooltipText(line));
+		}
+		return tooltip;
+	}
+
+	private static Component goldenDragonTooltip(StatsView view) {
+		List<DungeonStats.GoldenDragonPet> pets = view.goldenDragonPets();
+		List<DungeonStats.ItemDetails> items = view.itemDetails().stream()
+			.filter(item -> item.gear() == DungeonStats.Gear.GOLDEN_DRAGON).toList();
+		if (!view.goldenDragonKnown() && pets.isEmpty() && items.isEmpty()) {
+			return Component.literal("Pet API data unavailable");
+		}
+		if (!view.goldenDragon() && pets.isEmpty() && items.isEmpty()) {
+			return Component.literal("No Golden Dragon found in the available profile data");
+		}
+		MutableComponent tooltip = Component.empty();
+		for (int i = 0; i < pets.size(); i++) {
+			DungeonStats.GoldenDragonPet pet = pets.get(i);
+			if (tooltip.getString().length() > 0) tooltip.append("\n\n");
+			String title = "Golden Dragon" + (pets.size() > 1 ? " " + (i + 1) : "")
+				+ (pet.rarity().isBlank() ? "" : " · " + pet.rarity());
+			tooltip.append(Component.literal(title).withStyle(ChatFormatting.GOLD));
+			appendTooltipField(tooltip, "Level", pet.level());
+			appendTooltipField(tooltip, "Experience", pet.experience());
+			appendTooltipField(tooltip, "Held item", pet.heldItem());
+			appendTooltipField(tooltip, "Skin", pet.skin());
+			if (pet.active() != null) appendTooltipField(tooltip, "Active", pet.active() ? "Yes" : "No");
+		}
+		if (!items.isEmpty()) {
+			if (tooltip.getString().length() > 0) tooltip.append("\n\n");
+			tooltip.append(itemTooltip("Golden Dragon item", DungeonStats.Gear.GOLDEN_DRAGON,
+				true, true, items));
+		}
+		if (tooltip.getString().isBlank()) {
+			return Component.literal("Golden Dragon found; detailed pet data was not included in the profile response");
+		}
+		return tooltip;
+	}
+
+	private static void appendTooltipField(MutableComponent tooltip, String label, String value) {
+		if (value == null || value.isBlank()) return;
+		tooltip.append("\n").append(Component.literal(label + ": ").withStyle(ChatFormatting.GRAY))
+			.append(profileTooltipText(value));
+	}
+
+	private static Component catacombsTooltip(StatsView view) {
+		if (!view.catacombsKnown()) return Component.literal("Catacombs XP data unavailable in profile");
+		DungeonStatsService.CataProgress progress = DungeonStatsService.catacombsProgress(view.catacombsExperience());
+		MutableComponent tooltip = Component.literal("Catacombs Level " + progress.level())
+			.withStyle(ChatFormatting.GOLD)
+			.append("\nTotal Catacombs XP: ")
+			.append(Component.literal(String.format(Locale.ROOT, "%,d", progress.totalExperience()))
+				.withStyle(ChatFormatting.WHITE));
+		if (progress.capped()) {
+			tooltip.append("\nOverflow XP: ")
+				.append(Component.literal(String.format(Locale.ROOT, "%,d", progress.overflowExperience()))
+					.withStyle(ChatFormatting.AQUA));
+		} else {
+			long remaining = Math.max(0, progress.experienceForLevel() - progress.experienceIntoLevel());
+			double percentage = progress.experienceForLevel() == 0 ? 0
+				: 100.0 * progress.experienceIntoLevel() / progress.experienceForLevel();
+			tooltip.append("\nXP in current level: ")
+				.append(Component.literal(String.format(Locale.ROOT, "%,d / %,d",
+					progress.experienceIntoLevel(), progress.experienceForLevel())).withStyle(ChatFormatting.WHITE));
+			tooltip.append("\nXP to next level: ")
+				.append(Component.literal(String.format(Locale.ROOT, "%,d", remaining)).withStyle(ChatFormatting.AQUA));
+			tooltip.append("\nProgress: ")
+				.append(Component.literal(String.format(Locale.ROOT, "%.1f%%", percentage)).withStyle(ChatFormatting.GREEN));
+		}
+		return tooltip;
+	}
+
+	private static Component profileTooltipText(String text) {
+		if (text == null || text.isEmpty()) return Component.empty();
+		String trimmed = text.trim();
+		if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+			try {
+				Component component = ComponentSerialization.CODEC
+					.parse(JsonOps.INSTANCE, JsonParser.parseString(trimmed)).result().orElse(null);
+				if (component != null) return component;
+			} catch (RuntimeException ignored) {
+				// Fall back to the profile string if an optional custom component is malformed.
+			}
+		}
+		MutableComponent output = Component.empty();
+		StringBuilder segment = new StringBuilder();
+		Style style = Style.EMPTY;
+		for (int i = 0; i < text.length(); i++) {
+			char character = text.charAt(i);
+			if (character != '\u00a7' || i + 1 >= text.length()) {
+				segment.append(character);
+				continue;
+			}
+			ChatFormatting formatting = ChatFormatting.getByCode(text.charAt(i + 1));
+			if (formatting == null) {
+				segment.append(character);
+				continue;
+			}
+			if (!segment.isEmpty()) {
+				output.append(Component.literal(segment.toString()).withStyle(style));
+				segment.setLength(0);
+			}
+			style = formatting == ChatFormatting.RESET ? Style.EMPTY : style.applyLegacyFormat(formatting);
+			i++;
+		}
+		if (!segment.isEmpty()) output.append(Component.literal(segment.toString()).withStyle(style));
+		return output.getString().isEmpty() && text.isEmpty() ? Component.empty() : output;
 	}
 
 	private static Component joinParts(List<Component> parts) {
@@ -760,11 +1014,11 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		return joined;
 	}
 
-	private static Component cardTop(Font font, int width) {
-		Component title = Component.literal(" ✦ PARTY FINDER ✦ ").withStyle(style -> style
+	private static Component cardTop(Font font, int width, String label) {
+		Component title = Component.literal(label).withStyle(style -> style
 			.withColor(ChatFormatting.AQUA).withBold(true));
-		int available = Math.max(0, width - font.width("╭╮") - font.width(title));
-		int dashCount = available / Math.max(1, font.width("━"));
+		int available = Math.max(0, width - textWidth(font, "╭╮") - textWidth(font, title.getString()));
+		int dashCount = available / Math.max(1, textWidth(font, "━"));
 		int left = dashCount / 2;
 		int right = dashCount - left;
 		return Component.literal("╭" + "━".repeat(left)).withStyle(ChatFormatting.DARK_AQUA)
@@ -773,10 +1027,14 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	}
 
 	private static Component cardBottom(Font font, int width) {
-		int available = Math.max(0, width - font.width("╰╯"));
-		int dashCount = available / Math.max(1, font.width("━"));
+		int available = Math.max(0, width - textWidth(font, "╰╯"));
+		int dashCount = available / Math.max(1, textWidth(font, "━"));
 		return Component.literal("╰" + "━".repeat(dashCount) + "╯")
 			.withStyle(ChatFormatting.DARK_AQUA);
+	}
+
+	private static int textWidth(Font font, String text) {
+		return font == null ? text.length() : font.width(text);
 	}
 
 	private static int chatTextWidth(Minecraft mc) {
@@ -788,7 +1046,26 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		int catacombsLevel, double classAverage, long totalSecrets, long totalRuns, double secretAverage,
 		int magicalPower, long bank, boolean bankKnown, boolean gearKnown, boolean terminatorKnown,
 		boolean hyperionKnown, boolean goldenDragonKnown, boolean terminator, boolean hyperion,
-		boolean goldenDragon, String personalBest, String allClassLevels, String allPbs) {
+		boolean goldenDragon, String personalBest, String allClassLevels, String normalPbs, String masterPbs,
+		boolean catacombsKnown, long catacombsExperience, boolean selectedClassKnown,
+		boolean classAverageKnown, boolean magicalPowerKnown, boolean secretsKnown, boolean runsKnown,
+		boolean personalBestsKnown, List<DungeonStats.ItemDetails> itemDetails,
+		List<DungeonStats.GoldenDragonPet> goldenDragonPets) {
+		StatsView {
+			itemDetails = itemDetails == null ? List.of() : List.copyOf(itemDetails);
+			goldenDragonPets = goldenDragonPets == null ? List.of() : List.copyOf(goldenDragonPets);
+		}
+
+		StatsView withCatacombsExperience(long experience) {
+			DungeonStatsService.CataProgress progress = DungeonStatsService.catacombsProgress(experience);
+			return new StatsView(name, floor, selectedClass, selectedClassLevel, progress.level(),
+				classAverage, totalSecrets, totalRuns, secretAverage, magicalPower, bank, bankKnown,
+				gearKnown, terminatorKnown, hyperionKnown, goldenDragonKnown, terminator, hyperion,
+				goldenDragon, personalBest, allClassLevels, normalPbs, masterPbs, catacombsKnown,
+				progress.totalExperience(), selectedClassKnown, classAverageKnown, magicalPowerKnown,
+				secretsKnown, runsKnown, personalBestsKnown, itemDetails, goldenDragonPets);
+		}
+
 		static StatsView from(DungeonFloor floor, PartyMember member, DungeonStats stats, DungeonClass selectedClass) {
 			String personalBest = floor == null ? "-" : DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor));
 			return new StatsView(stats.name(), floor, selectedClass,
@@ -800,14 +1077,28 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 				stats.hasGearData(DungeonStats.Gear.GOLDEN_DRAGON),
 				stats.has(DungeonStats.Gear.TERMINATOR), stats.has(DungeonStats.Gear.HYPERION),
 				stats.has(DungeonStats.Gear.GOLDEN_DRAGON), personalBest, stats.allClassLevels(),
-				PartyFinderStatsModule.allPbs(stats));
+				PartyFinderStatsModule.allPbs(stats, false), PartyFinderStatsModule.allPbs(stats, true),
+				stats.catacombsExperienceKnown(), stats.catacombsExperience(),
+				selectedClass != null && stats.hasClassLevel(selectedClass),
+				stats.has(DungeonStats.DataField.CLASS_AVERAGE), stats.has(DungeonStats.DataField.MAGICAL_POWER),
+				stats.has(DungeonStats.DataField.SECRETS), stats.has(DungeonStats.DataField.RUNS),
+				stats.has(DungeonStats.DataField.PERSONAL_BESTS),
+				stats.allItemDetails(), stats.goldenDragonPets());
 		}
 
 		static StatsView preview() {
 			return new StatsView("ExamplePlayer", DungeonFloor.F7, DungeonClass.MAGE, 45, 42, 46.25,
-				12_480, 1_120, 11.14, 720, 125_000_000L, true, true, true, true, true, true, false, true,
+				12_480, 1_120, 11.14, 720, 125_000_000L, true, true, true, true, true, true, true, true,
 				"6:42", "Tank 38\nHealer 29\nMage 45\nBerserk 41\nArcher 40",
-				"F1: 2:10\nF2: 2:32\nF3: 3:01\nF4: 3:44\nF5: 4:18\nF6: 5:31\nF7: 6:42");
+				"F1: 2:10\nF2: 2:32\nF3: 3:01\nF4: 3:44\nF5: 4:18\nF6: 5:31\nF7: 6:42",
+				"M1: 2:30\nM2: 3:02\nM3: 4:01\nM4: 5:10\nM5: 6:22\nM6: 8:14\nM7: 10:42",
+				true, 100_000_000L, true, true, true, true, true, true,
+				List.of(new DungeonStats.ItemDetails(DungeonStats.Gear.TERMINATOR, "TERMINATOR",
+					"§6Terminator", "Inventory", List.of("§7Shortbow: Instantly shoots!") ),
+					new DungeonStats.ItemDetails(DungeonStats.Gear.HYPERION, "HYPERION",
+					"§dHyperion", "Ender Chest", List.of("§7Wither Impact") )),
+				List.of(new DungeonStats.GoldenDragonPet("LEGENDARY", "200", "1,000,000,000",
+					"PET_ITEM_TIER_BOOST", "", true)));
 		}
 	}
 
@@ -896,13 +1187,19 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	}
 
 	private static Component hover(Component component, String text) {
-		return component.copy().withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(Component.literal(text))));
+		return hover(component, Component.literal(text));
 	}
 
-	private static String allPbs(DungeonStats stats) {
+	private static Component hover(Component component, Component text) {
+		return component.copy().withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(text)));
+	}
+
+	private static String allPbs(DungeonStats stats, boolean master) {
 		List<String> lines = new ArrayList<>();
 		for (DungeonFloor floor : geiler.addons.client.dungeon.DungeonFloor.values()) {
-			lines.add(floor.displayName() + ": " + DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor)));
+			if (floor.master() == master) {
+				lines.add(floor.displayName() + ": " + DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor)));
+			}
 		}
 		return String.join("\n", lines);
 	}

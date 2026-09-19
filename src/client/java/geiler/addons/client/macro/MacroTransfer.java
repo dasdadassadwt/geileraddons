@@ -114,7 +114,8 @@ public final class MacroTransfer {
 		if (step instanceof MacroStep.Key value) {
 			result.addProperty("key", value.key());
 			result.addProperty("hold", value.hold());
-			result.addProperty("holdMillis", value.holdMillis());
+			result.addProperty("holdMinMillis", value.holdMinMillis());
+			result.addProperty("holdMaxMillis", value.holdMaxMillis());
 		}
 		if (step instanceof MacroStep.ClickSlot value) {
 			result.addProperty("slotId", value.slotId());
@@ -140,6 +141,10 @@ public final class MacroTransfer {
 			result.addProperty("forever", value.forever());
 			result.addProperty("count", value.count());
 			result.add("steps", writeSteps(value.steps(), depth + 1));
+		}
+		if (step instanceof MacroStep.RepeatUntil value) {
+			result.add("condition", writeCondition(value.condition(), depth + 1));
+			result.add("untilSteps", writeSteps(value.steps(), depth + 1));
 		}
 		return result;
 	}
@@ -244,8 +249,13 @@ public final class MacroTransfer {
 			case "command" -> new MacroStep.Command(limited(string(object, "command", ""), MAX_TEXT_LENGTH));
 			case "chat" -> new MacroStep.Chat(limited(string(object, "message", ""), MAX_TEXT_LENGTH));
 			case "wait" -> new MacroStep.Wait(integer(object, "minMillis", 0), integer(object, "maxMillis", 0));
-			case "key" -> new MacroStep.Key(string(object, "key", "key.keyboard.space"),
-				booleanValue(object, "hold", false), integer(object, "holdMillis", 250));
+			case "key" -> {
+				int legacy = integer(object, "holdMillis", 250);
+				int minimum = integer(object, "holdMinMillis", legacy);
+				int maximum = integer(object, "holdMaxMillis", minimum);
+				yield new MacroStep.Key(string(object, "key", "key.keyboard.space"),
+					booleanValue(object, "hold", false), minimum, maximum);
+			}
 			case "click_slot" -> new MacroStep.ClickSlot(integer(object, "slotId", 0),
 				integer(object, "button", 0), booleanValue(object, "shift", false));
 			case "click_item" -> new MacroStep.ClickItem(limited(string(object, "name", ""), MAX_TEXT_LENGTH),
@@ -257,6 +267,7 @@ public final class MacroTransfer {
 			case "wait_until" -> new MacroStep.WaitUntil(readCondition(object.get("condition"), depth + 1));
 			case "if" -> readIf(object, depth + 1);
 			case "repeat" -> readRepeat(object, depth + 1);
+			case "repeat_until" -> readRepeatUntil(object, depth + 1);
 			default -> null;
 		};
 		if (result != null) result.setDelay(integer(object, "delayMin", 0), integer(object, "delayMax", 0));
@@ -273,6 +284,14 @@ public final class MacroTransfer {
 	private static MacroStep.Repeat readRepeat(JsonObject object, int depth) {
 		MacroStep.Repeat result = new MacroStep.Repeat(booleanValue(object, "forever", false), integer(object, "count", 1));
 		addSteps(result.steps(), array(object, "steps"), depth);
+		return result;
+	}
+
+	private static MacroStep.RepeatUntil readRepeatUntil(JsonObject object, int depth) {
+		MacroStep.RepeatUntil result = new MacroStep.RepeatUntil(readCondition(object.get("condition"), depth));
+		JsonArray steps = array(object, "untilSteps");
+		if (steps == null) steps = array(object, "steps");
+		addSteps(result.steps(), steps, depth);
 		return result;
 	}
 

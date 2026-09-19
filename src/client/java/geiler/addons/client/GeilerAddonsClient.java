@@ -4,6 +4,7 @@ import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.config.GeilerAddonsLog;
 import geiler.addons.client.dungeon.DungeonStatsService;
+import geiler.addons.client.command.GeilerAddonsCommand;
 import geiler.addons.client.hud.HudManager;
 import geiler.addons.client.location.HypixelModApi;
 import geiler.addons.client.location.SafariBiome;
@@ -42,6 +43,7 @@ public class GeilerAddonsClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
+		GeilerAddonsCommand.register();
 		// Register first so ModConfig can restore the global gate before loading module state.
 		ModuleManager.register(DebugModule.INSTANCE);
 		ModuleManager.register(SlotIdsModule.INSTANCE);

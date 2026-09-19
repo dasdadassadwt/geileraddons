@@ -10,7 +10,8 @@
 		"ScreenMixin",
 		"ClientPacketListenerMixin",
 		"MinecraftMixin",
-		"KeyboardHandlerMixin"
+		"KeyboardHandlerMixin",
+		"InputConstantsMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

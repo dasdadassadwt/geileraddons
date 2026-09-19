@@ -1,5 +1,9 @@
 package geiler.addons.client.macro;
 
+import com.google.gson.JsonParser;
+import com.google.gson.JsonObject;
+import com.mojang.blaze3d.platform.InputConstants;
+import geiler.addons.client.config.MacroStepConfigCodec;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.ModuleKeybind;
@@ -9,6 +13,7 @@ import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.module.impl.MacrosModule;
 
 import java.util.List;
+import java.util.Random;
 
 /** Pure workflow checks that do not need a running client or server. */
 public final class MacroChecks {
@@ -36,6 +41,68 @@ public final class MacroChecks {
 		assertTrue(repeat.forever(), "repeat supports an endless loop");
 		assertEquals(1, repeat.count(), "finite repeat count clamps to one");
 		assertEquals(2, macro.steps().size(), "workflow keeps ordered top-level steps");
+
+		assertSame(MacroFlowRules.UntilDecision.EXIT, MacroFlowRules.repeatUntil(true, true),
+			"Repeat Until checks its condition before entering the body");
+		assertSame(MacroFlowRules.UntilDecision.RUN_BODY, MacroFlowRules.repeatUntil(false, true),
+			"Repeat Until runs the body while its stop condition is false");
+		assertSame(MacroFlowRules.UntilDecision.EMPTY_BODY, MacroFlowRules.repeatUntil(false, false),
+			"an empty Repeat Until body aborts rather than spinning");
+		assertTrue(MacroFlowRules.missingItemEndsUntil(true, true),
+			"a missing Click Item can finish the final Repeat Until iteration");
+		assertFalse(MacroFlowRules.missingItemEndsUntil(true, false),
+			"a missing item does not skip the body while the stop condition is false");
+		assertFalse(MacroFlowRules.contextEnded(true, true, false, true),
+			"world-switch wait does not cancel just because the old player context ended");
+		assertTrue(MacroFlowRules.contextEnded(false, true, true, false),
+			"disabling the macro system cancels a running workflow");
+		assertTrue(MacroFlowRules.contextEnded(true, false, false, true),
+			"losing the level cancels even a workflow waiting for a world switch");
+		assertTrue(MacroFlowRules.itemNameMatches("Confirm Entry", "confirm", true),
+			"partial item matching ignores case after formatting normalization");
+		assertFalse(MacroFlowRules.itemNameMatches("Confirm Entry", "Confirm", false),
+			"exact item matching rejects a partial name");
+		assertTrue(MacroFlowRules.itemNameMatchesAny("Confirm Entry", "Claim, Confirm", true),
+			"comma-separated partial names are alternatives");
+		assertTrue(MacroFlowRules.itemNameMatchesAny("Claim", " Confirm , Claim ", false),
+			"comma-separated exact names are trimmed alternatives");
+		assertFalse(MacroFlowRules.itemNameMatchesAny("Claim", "Confirm, Collect", true),
+			"item matching requires at least one matching alternative");
+		Random delayRandom = new Random(17);
+		for (int i = 0; i < 100; i++) {
+			int delay = MacroFlowRules.randomDelay(30, 50, delayRandom);
+			assertTrue(delay >= 30 && delay <= 50, "randomized node delay stays inside its inclusive range");
+		}
+		for (int i = 0; i < 100; i++) {
+			int holdMillis = MacroFlowRules.randomDelay(125, 375, delayRandom);
+			assertTrue(holdMillis >= 125 && holdMillis <= 375,
+				"randomized hold duration stays inside its inclusive range");
+		}
+		MacroStep.Key holdRange = new MacroStep.Key("key.keyboard.left.shift", true, 125, 375);
+		assertEquals(125, holdRange.holdMinMillis(), "key node retains the random hold minimum");
+		assertEquals(375, holdRange.holdMaxMillis(), "key node retains the random hold maximum");
+		assertFalse(InputConstants.getKey(holdRange.key()).equals(InputConstants.UNKNOWN),
+			"the captured left Shift identifier resolves to a usable game key");
+		MacroKeyHoldState syntheticHold = new MacroKeyHoldState();
+		syntheticHold.begin(InputConstants.KEY_LSHIFT, 1_000);
+		assertTrue(syntheticHold.isDown(InputConstants.KEY_LSHIFT, 999),
+			"synthetic Shift remains down through vanilla input polling during its hold");
+		assertFalse(syntheticHold.isDown(InputConstants.KEY_RSHIFT, 999),
+			"left Shift holds do not report right Shift as pressed");
+		assertTrue(syntheticHold.isDue(1_000), "synthetic held keys become due at their configured deadline");
+		assertFalse(syntheticHold.isDown(InputConstants.KEY_LSHIFT, 1_000),
+			"synthetic key state expires exactly at the hold deadline");
+		syntheticHold.clear();
+		assertFalse(syntheticHold.isDown(InputConstants.KEY_LSHIFT, 999),
+			"cancellation clears synthetic key state immediately");
+		for (int modifier : new int[] {InputConstants.KEY_LSHIFT, InputConstants.KEY_RSHIFT,
+			InputConstants.KEY_LCONTROL, InputConstants.KEY_RCONTROL, InputConstants.KEY_LALT,
+			InputConstants.KEY_RALT, InputConstants.KEY_LSUPER, InputConstants.KEY_RSUPER}) {
+			syntheticHold.begin(modifier, 2_000);
+			assertTrue(syntheticHold.isDown(modifier, 1_999),
+				"synthetic modifier key remains visible while held: " + modifier);
+			syntheticHold.clear();
+		}
 
 		MacroStep.WorldSwitch switchStep = new MacroStep.WorldSwitch(Island.GARDEN);
 		assertSame(Island.GARDEN, switchStep.target(), "world switch keeps its selected destination");
@@ -66,6 +133,70 @@ public final class MacroChecks {
 		assertEquals(350, copy.steps().getFirst().delayMax(), "import keeps node delay maximum");
 		assertFalse(MacroTransfer.decode("not a macro package", 0).success(),
 			"invalid clipboard data is rejected");
+
+		MacroDefinition nested = new MacroDefinition(9);
+		MacroCondition stopWhenMissing = new MacroCondition.Item("Confirm, Claim", false, true, true);
+		MacroStep.RepeatUntil repeatUntil = new MacroStep.RepeatUntil(stopWhenMissing);
+		repeatUntil.setDelay(80, 120);
+		MacroStep.ClickItem clickMatching = new MacroStep.ClickItem("Confirm, Claim", true, "container", 0, 0, false);
+		clickMatching.setDelay(250, 400);
+		repeatUntil.steps().add(clickMatching);
+		repeatUntil.steps().add(new MacroStep.Wait(40, 60));
+		MacroStep.IfElse nestedBranch = new MacroStep.IfElse(new MacroCondition.All(List.of(
+			new MacroCondition.Screen("Auction", true, true),
+			new MacroCondition.Not(new MacroCondition.World(false)))));
+		nestedBranch.thenSteps().add(repeatUntil);
+		nestedBranch.elseSteps().add(new MacroStep.Key("key.keyboard.left.shift", true, 125, 375));
+		nested.steps().add(nestedBranch);
+		MacroTransfer.ImportResult nestedImport = MacroTransfer.decode(MacroTransfer.encode(List.of(nested)), 101);
+		assertTrue(nestedImport.success(), "clipboard preserves nested Repeat Until workflows");
+		MacroStep.IfElse restoredBranch = (MacroStep.IfElse) nestedImport.macros().getFirst().steps().getFirst();
+		MacroStep.RepeatUntil restoredUntil = (MacroStep.RepeatUntil) restoredBranch.thenSteps().getFirst();
+		assertEquals(stopWhenMissing, restoredUntil.condition(), "clipboard preserves Repeat Until item condition");
+		assertEquals(2, restoredUntil.steps().size(), "clipboard preserves Repeat Until children");
+		assertEquals("Confirm, Claim", ((MacroStep.ClickItem) restoredUntil.steps().getFirst()).name(),
+			"clipboard preserves comma-separated click alternatives");
+		assertEquals(250, restoredUntil.steps().getFirst().delayMin(), "clipboard preserves child node delays");
+		assertEquals(400, restoredUntil.steps().getFirst().delayMax(), "clipboard preserves child delay ranges");
+		assertEquals(1, restoredBranch.elseSteps().size(), "clipboard preserves the other If/Else branch");
+		MacroStep.Key restoredKey = (MacroStep.Key) restoredBranch.elseSteps().getFirst();
+		assertEquals("key.keyboard.left.shift", restoredKey.key(), "clipboard preserves the captured modifier key name");
+		assertEquals(125, restoredKey.holdMinMillis(), "clipboard preserves randomized hold minimum");
+		assertEquals(375, restoredKey.holdMaxMillis(), "clipboard preserves randomized hold maximum");
+		var configTree = MacroStepConfigCodec.encode(nested.steps());
+		var configRoundTrip = MacroStepConfigCodec.decode(JsonParser.parseString(configTree.toString()).getAsJsonArray());
+		MacroStep.IfElse configBranch = (MacroStep.IfElse) configRoundTrip.getFirst();
+		MacroStep.RepeatUntil configUntil = (MacroStep.RepeatUntil) configBranch.thenSteps().getFirst();
+		assertEquals(stopWhenMissing, configUntil.condition(), "config round trip preserves Repeat Until condition");
+		assertEquals(2, configUntil.steps().size(), "config round trip preserves nested loop body");
+		assertEquals(80, configUntil.delayMin(), "config round trip preserves loop delay minimum");
+		assertEquals(120, configUntil.delayMax(), "config round trip preserves loop delay maximum");
+		assertEquals(nestedBranch.condition(), configBranch.condition(), "config round trip preserves composed AND/NOT conditions");
+		MacroStep.Key configKey = (MacroStep.Key) configBranch.elseSteps().getFirst();
+		assertEquals(125, configKey.holdMinMillis(), "config round trip preserves randomized hold minimum");
+		assertEquals(375, configKey.holdMaxMillis(), "config round trip preserves randomized hold maximum");
+		assertEquals("Confirm, Claim", ((MacroStep.ClickItem) configUntil.steps().getFirst()).name(),
+			"config round trip preserves comma-separated click alternatives");
+		assertEquals("Confirm, Claim", ((MacroCondition.Item) configUntil.condition()).name(),
+			"config round trip preserves comma-separated condition alternatives");
+
+		List<MacroStep> legacyKeyConfig = MacroStepConfigCodec.decode(JsonParser.parseString(
+			"[{\"type\":\"key\",\"key\":\"key.keyboard.space\",\"hold\":true,\"holdMillis\":321}]").getAsJsonArray());
+		MacroStep.Key legacyConfigKey = (MacroStep.Key) legacyKeyConfig.getFirst();
+		assertEquals(321, legacyConfigKey.holdMinMillis(), "legacy config hold duration becomes the range minimum");
+		assertEquals(321, legacyConfigKey.holdMaxMillis(), "legacy config hold duration remains fixed");
+		MacroDefinition legacyMacro = new MacroDefinition(12);
+		legacyMacro.steps().add(new MacroStep.Key("key.keyboard.space", true, 650));
+		JsonObject legacyClipboard = JsonParser.parseString(MacroTransfer.encode(List.of(legacyMacro))).getAsJsonObject();
+		JsonObject legacyStep = legacyClipboard.getAsJsonArray("macros").get(0).getAsJsonObject()
+			.getAsJsonArray("steps").get(0).getAsJsonObject();
+		legacyStep.remove("holdMinMillis");
+		legacyStep.remove("holdMaxMillis");
+		legacyStep.addProperty("holdMillis", 650);
+		MacroStep.Key legacyClipboardKey = (MacroStep.Key) MacroTransfer.decode(legacyClipboard.toString(), 102)
+			.macros().getFirst().steps().getFirst();
+		assertEquals(650, legacyClipboardKey.holdMinMillis(), "legacy clipboard hold duration becomes the range minimum");
+		assertEquals(650, legacyClipboardKey.holdMaxMillis(), "legacy clipboard hold duration remains fixed");
 
 		MacroDefinition selectable = new MacroDefinition(8);
 		selectable.setIslands(List.of(Island.GARDEN));

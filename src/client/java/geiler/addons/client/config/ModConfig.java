@@ -2,13 +2,12 @@ package geiler.addons.client.config;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonParseException;
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.hud.HudManager;
 import geiler.addons.client.location.Island;
-import geiler.addons.client.macro.MacroCondition;
 import geiler.addons.client.macro.MacroDefinition;
-import geiler.addons.client.macro.MacroStep;
 import geiler.addons.client.macro.MacroTriggerContext;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
@@ -133,50 +132,7 @@ public final class ModConfig {
 		List<String> islands;
 		Integer defaultDelayMin;
 		Integer defaultDelayMax;
-		List<StepData> steps;
-	}
-
-	private static final class StepData {
-		String type;
-		Integer delayMin;
-		Integer delayMax;
-		String command;
-		String message;
-		Integer minMillis;
-		Integer maxMillis;
-		String key;
-		Boolean hold;
-		Integer holdMillis;
-		Integer slotId;
-		Integer button;
-		Boolean shift;
-		String name;
-		Boolean contains;
-		String scope;
-		Integer occurrence;
-		String island;
-		ConditionData condition;
-		List<StepData> thenSteps;
-		List<StepData> elseSteps;
-		Boolean forever;
-		Integer count;
-		List<StepData> steps;
-	}
-
-	private static final class ConditionData {
-		String type;
-		Boolean expected;
-		String title;
-		Boolean mustBeOpen;
-		Boolean contains;
-		Integer slotId;
-		Boolean mustExist;
-		String name;
-		Boolean includePlayerInventory;
-		String text;
-		Boolean mustBeInWorld;
-		List<ConditionData> children;
-		ConditionData child;
+		JsonArray steps;
 	}
 
 	/**
@@ -561,12 +517,7 @@ public final class ModConfig {
 			macro.setIslands(parseIslands(saved.islands));
 			// Legacy macro-level defaults are intentionally ignored. Delays now belong to individual
 			// workflow nodes, so an older file cannot silently reintroduce a hidden delay.
-			if (saved.steps != null) {
-				for (StepData step : saved.steps) {
-					MacroStep parsed = parseStep(step, 0);
-					if (parsed != null) macro.steps().add(parsed);
-				}
-			}
+			macro.steps().addAll(MacroStepConfigCodec.decode(saved.steps));
 			// Keep an intentionally empty macro visible so the user can finish it in the editor;
 			// pressing its key simply reports that there are no steps yet.
 			restored.add(macro);
@@ -589,86 +540,6 @@ public final class ModConfig {
 		return islands;
 	}
 
-	private static MacroStep parseStep(StepData data, int depth) {
-		if (data == null || data.type == null || depth > 8) return null;
-		MacroStep step;
-		try {
-			step = switch (data.type) {
-				case "command" -> new MacroStep.Command(data.command);
-				case "chat" -> new MacroStep.Chat(data.message);
-				case "wait" -> new MacroStep.Wait(data.minMillis == null ? 0 : data.minMillis,
-					data.maxMillis == null ? (data.minMillis == null ? 0 : data.minMillis) : data.maxMillis);
-				case "key" -> new MacroStep.Key(data.key, Boolean.TRUE.equals(data.hold),
-					data.holdMillis == null ? 250 : data.holdMillis);
-				case "click_slot" -> new MacroStep.ClickSlot(data.slotId == null ? 0 : data.slotId,
-					data.button == null ? 0 : data.button, Boolean.TRUE.equals(data.shift));
-				case "click_item" -> new MacroStep.ClickItem(data.name, Boolean.TRUE.equals(data.contains),
-					data.scope, data.occurrence == null ? 0 : data.occurrence,
-					data.button == null ? 0 : data.button, Boolean.TRUE.equals(data.shift));
-				case "close_screen" -> new MacroStep.CloseScreen();
-				case "world_switch" -> new MacroStep.WorldSwitch(parseSelectableIsland(data.island));
-				case "wait_until" -> new MacroStep.WaitUntil(parseCondition(data.condition, depth + 1));
-				case "if" -> {
-					MacroStep.IfElse branch = new MacroStep.IfElse(parseCondition(data.condition, depth + 1));
-					addSteps(branch.thenSteps(), data.thenSteps, depth + 1);
-					addSteps(branch.elseSteps(), data.elseSteps, depth + 1);
-					yield branch;
-				}
-				case "repeat" -> {
-					MacroStep.Repeat repeat = new MacroStep.Repeat(Boolean.TRUE.equals(data.forever),
-						data.count == null ? 1 : data.count);
-					addSteps(repeat.steps(), data.steps, depth + 1);
-					yield repeat;
-				}
-				default -> null;
-			};
-		} catch (RuntimeException invalid) {
-			return null;
-		}
-		if (step == null) return null;
-		if (data.delayMin != null && data.delayMax != null) step.setDelay(data.delayMin, data.delayMax);
-		return step;
-	}
-
-	private static void addSteps(List<MacroStep> target, List<StepData> source, int depth) {
-		if (source == null || depth > 8) return;
-		int limit = Math.min(source.size(), 512);
-		for (int i = 0; i < limit; i++) {
-			MacroStep step = parseStep(source.get(i), depth);
-			if (step != null) target.add(step);
-		}
-	}
-
-	private static MacroCondition parseCondition(ConditionData data, int depth) {
-		if (data == null || depth > 8 || data.type == null) return new MacroCondition.Always(true);
-		try {
-			return switch (data.type) {
-				case "always" -> new MacroCondition.Always(!Boolean.FALSE.equals(data.expected));
-				case "screen" -> new MacroCondition.Screen(data.title, !Boolean.FALSE.equals(data.mustBeOpen),
-					Boolean.TRUE.equals(data.contains));
-				case "slot" -> new MacroCondition.Slot(data.slotId == null ? 0 : data.slotId,
-					!Boolean.FALSE.equals(data.mustExist));
-				case "item" -> new MacroCondition.Item(data.name, !Boolean.FALSE.equals(data.mustExist),
-					Boolean.TRUE.equals(data.contains), Boolean.TRUE.equals(data.includePlayerInventory));
-				case "chat" -> new MacroCondition.Chat(data.text, Boolean.TRUE.equals(data.contains));
-				case "world" -> new MacroCondition.World(!Boolean.FALSE.equals(data.mustBeInWorld));
-				case "all" -> new MacroCondition.All(parseConditions(data.children, depth + 1));
-				case "any" -> new MacroCondition.Any(parseConditions(data.children, depth + 1));
-				case "not" -> new MacroCondition.Not(parseCondition(data.child, depth + 1));
-				default -> new MacroCondition.Always(true);
-			};
-		} catch (RuntimeException invalid) {
-			return new MacroCondition.Always(true);
-		}
-	}
-
-	private static List<MacroCondition> parseConditions(List<ConditionData> source, int depth) {
-		List<MacroCondition> result = new ArrayList<>();
-		if (source == null || depth > 8) return result;
-		for (ConditionData child : source) result.add(parseCondition(child, depth));
-		return result;
-	}
-
 	private static List<MacroData> snapshotMacros() {
 		List<MacroData> result = new ArrayList<>();
 		for (MacroDefinition macro : MacrosModule.INSTANCE.macros()) {
@@ -682,79 +553,9 @@ public final class ModConfig {
 			data.islandRestricted = macro.islandRestricted();
 			data.islands = new ArrayList<>();
 			for (Island island : macro.islands()) data.islands.add(island.name());
-			data.steps = snapshotSteps(macro.steps(), 0);
+			data.steps = MacroStepConfigCodec.encode(macro.steps());
 			result.add(data);
 		}
-		return result;
-	}
-
-	private static List<StepData> snapshotSteps(List<MacroStep> steps, int depth) {
-		List<StepData> result = new ArrayList<>();
-		if (steps == null || depth > 8) return result;
-		for (MacroStep step : steps) {
-			if (step == null) continue;
-			StepData data = new StepData();
-			data.type = step.type();
-			data.delayMin = step.delayMin();
-			data.delayMax = step.delayMax();
-			if (step instanceof MacroStep.Command command) data.command = command.command();
-			if (step instanceof MacroStep.Chat chat) data.message = chat.message();
-			if (step instanceof MacroStep.Wait wait) { data.minMillis = wait.minMillis(); data.maxMillis = wait.maxMillis(); }
-			if (step instanceof MacroStep.Key key) { data.key = key.key(); data.hold = key.hold(); data.holdMillis = key.holdMillis(); }
-			if (step instanceof MacroStep.ClickSlot click) { data.slotId = click.slotId(); data.button = click.button(); data.shift = click.shift(); }
-			if (step instanceof MacroStep.ClickItem click) {
-				data.name = click.name(); data.contains = click.contains(); data.scope = click.scope();
-				data.occurrence = click.occurrence(); data.button = click.button(); data.shift = click.shift();
-			}
-			if (step instanceof MacroStep.WorldSwitch worldSwitch) data.island = worldSwitch.target().name();
-			if (step instanceof MacroStep.WaitUntil wait) data.condition = snapshotCondition(wait.condition(), depth + 1);
-			if (step instanceof MacroStep.IfElse branch) {
-				data.condition = snapshotCondition(branch.condition(), depth + 1);
-				data.thenSteps = snapshotSteps(branch.thenSteps(), depth + 1);
-				data.elseSteps = snapshotSteps(branch.elseSteps(), depth + 1);
-			}
-			if (step instanceof MacroStep.Repeat repeat) {
-				data.forever = repeat.forever(); data.count = repeat.count();
-				data.steps = snapshotSteps(repeat.steps(), depth + 1);
-			}
-			result.add(data);
-		}
-		return result;
-	}
-
-	private static Island parseSelectableIsland(String value) {
-		if (value == null) return Island.HUB;
-		try {
-			Island island = Island.valueOf(value.trim().toUpperCase(java.util.Locale.ROOT));
-			return island.selectable() ? island : Island.HUB;
-		} catch (IllegalArgumentException ignored) {
-			for (Island island : Island.values()) {
-				if (island.selectable() && island.label().equalsIgnoreCase(value.trim())) return island;
-			}
-			return Island.HUB;
-		}
-	}
-
-	private static ConditionData snapshotCondition(MacroCondition condition, int depth) {
-		ConditionData data = new ConditionData();
-		if (condition == null || depth > 8) { data.type = "always"; data.expected = true; return data; }
-		if (condition instanceof MacroCondition.Always value) { data.type = "always"; data.expected = value.expected(); }
-		else if (condition instanceof MacroCondition.Screen value) { data.type = "screen"; data.title = value.title(); data.mustBeOpen = value.mustBeOpen(); data.contains = value.contains(); }
-		else if (condition instanceof MacroCondition.Slot value) { data.type = "slot"; data.slotId = value.slotId(); data.mustExist = value.mustExist(); }
-		else if (condition instanceof MacroCondition.Item value) { data.type = "item"; data.name = value.name(); data.mustExist = value.mustExist(); data.contains = value.contains(); data.includePlayerInventory = value.includePlayerInventory(); }
-		else if (condition instanceof MacroCondition.Chat value) { data.type = "chat"; data.text = value.text(); data.contains = value.contains(); }
-		else if (condition instanceof MacroCondition.World value) { data.type = "world"; data.mustBeInWorld = value.mustBeInWorld(); }
-		else if (condition instanceof MacroCondition.All value) { data.type = "all"; data.children = snapshotConditions(value.children(), depth + 1); }
-		else if (condition instanceof MacroCondition.Any value) { data.type = "any"; data.children = snapshotConditions(value.children(), depth + 1); }
-		else if (condition instanceof MacroCondition.Not value) { data.type = "not"; data.child = snapshotCondition(value.child(), depth + 1); }
-		else { data.type = "always"; data.expected = true; }
-		return data;
-	}
-
-	private static List<ConditionData> snapshotConditions(List<MacroCondition> conditions, int depth) {
-		List<ConditionData> result = new ArrayList<>();
-		if (conditions == null || depth > 8) return result;
-		for (MacroCondition condition : conditions) result.add(snapshotCondition(condition, depth));
 		return result;
 	}
 

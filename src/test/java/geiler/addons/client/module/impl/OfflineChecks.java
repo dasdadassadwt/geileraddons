@@ -1,6 +1,7 @@
 package geiler.addons.client.module.impl;
 
 import geiler.addons.client.dungeon.DungeonStatsChecks;
+import geiler.addons.client.dungeon.DungeonStatsCommand;
 import geiler.addons.client.entity.ClientEntitySnapshotChecks;
 import geiler.addons.client.entity.NameplatesChecks;
 import geiler.addons.client.enchanting.ExperimentCell;
@@ -22,11 +23,13 @@ import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.DebugState;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleKeybind;
+import geiler.addons.client.module.ModuleKeybindManager;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.macro.MacroChecks;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.client.input.KeyEvent;
 import com.mojang.blaze3d.platform.InputConstants;
 
@@ -39,6 +42,8 @@ public final class OfflineChecks {
 
 	public static void main(String[] args) {
 		checkIslandModes();
+		checkDungeonStatsCommand();
+		checkMacroKeyCapturePolicy();
 		DungeonStatsChecks.run();
 		PestChecks.run();
 		ClientEntitySnapshotChecks.run();
@@ -51,6 +56,7 @@ public final class OfflineChecks {
 		checkExperimentPreviewConfiguration();
 		checkSuperpairsCacheGate();
 		checkEveryStatsToggleCombination();
+		checkDungeonStatsHovers();
 		checkGlobalDebugGate();
 		checkModuleKeybinds();
 		checkSettingInputBounds();
@@ -207,6 +213,34 @@ public final class OfflineChecks {
 		assertSame(Island.OTHER, Island.fromMode("unknown_mode"), "unknown mode");
 	}
 
+	private static void checkDungeonStatsCommand() {
+		DungeonStatsCommand.ParseResult quoted = DungeonStatsCommand.parse("ga dstats \"Notch\"");
+		assertTrue(quoted.valid(), "dstats accepts a quoted player name");
+		assertEquals("Notch", quoted.name(), "dstats preserves the requested player name");
+		DungeonStatsCommand.ParseResult unquoted = DungeonStatsCommand.parse("/ga dstats Notch");
+		assertTrue(unquoted.valid(), "dstats accepts an unquoted player name");
+		assertEquals("Notch", unquoted.name(), "dstats strips the command slash");
+		assertTrue(DungeonStatsCommand.parse("ga dstats").recognized(), "dstats recognizes a missing name for usage feedback");
+		assertFalse(DungeonStatsCommand.parse("ga other").recognized(), "unrelated ga commands remain unhandled");
+		assertFalse(DungeonStatsCommand.parse("ga dstats Notch extra").valid(), "dstats rejects multiple names");
+		assertFalse(DungeonStatsCommand.parse("ga dstats \"bad name\"").valid(), "dstats rejects invalid player-name characters");
+	}
+
+	private static void checkMacroKeyCapturePolicy() {
+		assertTrue(ModuleKeybindManager.canBindMacroStepKey(InputConstants.KEY_LSHIFT),
+			"macro Key nodes accept left Shift as a standalone key");
+		assertTrue(ModuleKeybindManager.canBindMacroStepKey(InputConstants.KEY_RSHIFT),
+			"macro Key nodes accept right Shift as a standalone key");
+		assertTrue(ModuleKeybindManager.canBindMacroStepKey(InputConstants.KEY_LCONTROL),
+			"macro Key nodes accept Control as a standalone key");
+		assertTrue(ModuleKeybindManager.canBindMacroStepKey(InputConstants.KEY_LALT),
+			"macro Key nodes accept Alt as a standalone key");
+		assertTrue(ModuleKeybindManager.canBindMacroStepKey(InputConstants.KEY_LSUPER),
+			"macro Key nodes accept Super as a standalone key");
+		assertFalse(ModuleKeybindManager.canBindMacroStepKey(InputConstants.KEY_ESCAPE),
+			"Escape remains reserved to clear a key capture");
+	}
+
 	private static void checkMobHighlightFailClosed() {
 		assertFalse(MobHighlight.isKnownSkyBlockIsland(Island.NONE),
 			"unknown location keeps Mob Highlight disabled");
@@ -215,6 +249,12 @@ public final class OfflineChecks {
 	}
 
 	private static void checkPersonalBestBoundaries() {
+		assertEquals(402, AutoKickRules.parsePersonalBestLimitSeconds("6:42"), "PB m:ss input parses to seconds");
+		assertEquals(362, AutoKickRules.parsePersonalBestLimitSeconds("6:2"), "PB accepts an unpadded seconds part");
+		assertEquals(402, AutoKickRules.parsePersonalBestLimitSeconds("402"), "legacy PB seconds remain supported");
+		assertEquals(0, AutoKickRules.parsePersonalBestLimitSeconds("0"), "zero PB limit disables the check");
+		assertEquals(0, AutoKickRules.parsePersonalBestLimitSeconds("6:60"), "invalid PB seconds are rejected");
+		assertEquals(0, AutoKickRules.parsePersonalBestLimitSeconds("6:42:1"), "multiple PB separators are rejected");
 		assertTrue(AutoKickRules.personalBestPasses(0, 0), "zero limit disables PB check");
 		assertTrue(AutoKickRules.personalBestPasses(60, 60), "PB equal to limit passes");
 		assertTrue(AutoKickRules.personalBestPasses(59, 60), "faster PB passes");
@@ -235,7 +275,7 @@ public final class OfflineChecks {
 	private static void checkAutoKickLabels() {
 		List<String> expectedBooleanLabels = List.of("Auto Kick", "Ask Before", "Dupe", "Terminator", "Hyperion", "GDrag");
 		List<String> expectedTextLabels = List.of("Min Cata Level", "Min Class Level", "Min Class Avg", "Min Secrets",
-			"Min Secret Avg", "Min MP", "Minimum PB", "Min Bank");
+			"Min Secret Avg", "Min MP", "PB limit (m:ss or sec; 0 off)", "Min Bank");
 		List<BooleanSetting> booleans = AutoKickModule.INSTANCE.booleanSettings();
 		List<TextSetting> texts = AutoKickModule.INSTANCE.textSettings();
 		// The first BooleanSetting is module diagnostics; the next six are the first floor policy.
@@ -316,7 +356,7 @@ public final class OfflineChecks {
 
 	private static void checkEveryStatsToggleCombination() {
 		String[] markers = {"Cata 42", "Mage 45", "CA 46.25", "MP 720", "SA 11.14", "PB 6:42",
-			"Term ✓", "Hype X", "GDrag ✓", "Bank 125,000,000"};
+			"Term ✓", "Hype ✓", "GDrag ✓", "Bank 125,000,000"};
 		for (int mask = 0; mask < 1 << markers.length; mask++) {
 			boolean[] enabled = new boolean[markers.length];
 			for (int bit = 0; bit < enabled.length; bit++) enabled[bit] = (mask & (1 << bit)) != 0;
@@ -334,6 +374,108 @@ public final class OfflineChecks {
 			}
 			if (output.contains("│  │")) throw new AssertionError("empty stat separator in: " + output);
 		}
+		PartyFinderStatsModule.DisplayOptions statusOptions = new PartyFinderStatsModule.DisplayOptions(true,
+			true, true, true, true, true, true, true, true, true, true);
+		String manualStatus = PartyFinderStatsModule.CardFormatter.format(null,
+			PartyFinderStatsModule.StatsView.preview(), statusOptions, 160, List.of(), true, true)
+			.getFirst().getString();
+		assertTrue(manualStatus.contains("[✦ DStats]"), "manual stats use their own compact heading");
+		assertTrue(manualStatus.contains("Island detection API is off"), "stats name the disabled island API");
+		assertTrue(manualStatus.contains("Normal PBs") && manualStatus.contains("Master PBs"),
+			"manual stats show separate Normal and Master PB summaries");
+		assertTrue(PartyFinderStatsModule.StatsView.preview().normalPbs().contains("F7")
+			&& !PartyFinderStatsModule.StatsView.preview().normalPbs().contains("M1"),
+			"Normal PB summary includes only normal floors");
+		assertTrue(PartyFinderStatsModule.StatsView.preview().masterPbs().contains("M7")
+			&& !PartyFinderStatsModule.StatsView.preview().masterPbs().contains("F7"),
+			"Master PB summary includes only Master floors");
+		assertFalse(manualStatus.contains("joined"), "manual stats do not use the Party Finder joined heading");
+		assertEquals("Dungeon stats API unavailable: Player (network timeout)",
+			PartyFinderStatsModule.apiUnavailableStatus("Player", "network timeout"),
+			"profile lookup failure has a named API status");
+		assertEquals("Dungeon stats API unavailable: Player (unavailable)",
+			PartyFinderStatsModule.apiUnavailableStatus("Player", ""),
+			"empty profile lookup errors remain visibly unavailable");
+	}
+
+	private static void checkDungeonStatsHovers() {
+		String[] expectedDetails = {
+			"Total Catacombs XP", "XP in current level", "Tank 38", "Class average",
+			"Magical Power", "Total secrets", "Runs:", "F7 personal best",
+			"Normal mode personal bests", "Master mode personal bests",
+			"Shortbow: Instantly shoots!", "Wither Impact", "LEGENDARY",
+			"Item ID: TERMINATOR", "PET_ITEM_TIER_BOOST", "Bank balance"
+		};
+		PartyFinderStatsModule.StatsView preview = PartyFinderStatsModule.StatsView.preview();
+		for (boolean compact : new boolean[] {true, false}) {
+			PartyFinderStatsModule.DisplayOptions options = new PartyFinderStatsModule.DisplayOptions(compact,
+				true, true, true, true, true, true, true, true, true, true);
+			List<Component> partyFinder = PartyFinderStatsModule.CardFormatter.format(null, preview,
+				options, 160, List.of());
+			String partyHovers = statsHoverText(partyFinder);
+			for (String expected : expectedDetails) {
+				assertTrue(partyHovers.contains(expected),
+					(compact ? "compact" : "full") + " Party Finder card has hover detail: " + expected);
+			}
+			List<Component> manualLookup = PartyFinderStatsModule.CardFormatter.format(null, preview,
+				options, 160, List.of(), true, false);
+			String manualHovers = statsHoverText(manualLookup);
+			for (String expected : expectedDetails) {
+				if (expected.equals("F7 personal best")) continue;
+				assertTrue(manualHovers.contains(expected),
+					(compact ? "compact" : "full") + " /ga dstats card has hover detail: " + expected);
+			}
+			assertTrue(manualHovers.contains("F7: 6:42"),
+				(compact ? "compact" : "full") + " /ga dstats card exposes the queued floor in its PB hover");
+		}
+		PartyFinderStatsModule.DisplayOptions cataOnly = new PartyFinderStatsModule.DisplayOptions(true,
+			true, false, false, false, false, false, false, false, false, false);
+		String overflowHover = statsHoverText(PartyFinderStatsModule.CardFormatter.format(null,
+			preview.withCatacombsExperience(569_821_985L), cataOnly, 160, List.of()));
+		assertTrue(overflowHover.contains("Overflow XP: 12,345"),
+			"Cata hover shows XP beyond level 50");
+		PartyFinderStatsModule.StatsView unavailable = new PartyFinderStatsModule.StatsView(
+			"Unavailable", null, null, 0, 0, 0, 0, 0, 0, 0, 0,
+			false, false, false, false, false, false, false, false,
+			"-", "", "", "", false, 0, false, false, false, false, false, false,
+			List.of(), List.of());
+		PartyFinderStatsModule.DisplayOptions allFields = new PartyFinderStatsModule.DisplayOptions(true,
+			true, true, true, true, true, true, true, true, true, true);
+		String unavailableHovers = statsHoverText(PartyFinderStatsModule.CardFormatter.format(null,
+			unavailable, allFields, 160, List.of()));
+		assertTrue(unavailableHovers.contains("Catacombs XP data unavailable"),
+			"missing Catacombs XP has a clear hover state");
+		assertTrue(unavailableHovers.contains("Inventory API data unavailable"),
+			"missing weapon inventory has a clear hover state");
+		assertTrue(unavailableHovers.contains("Pet API data unavailable"),
+			"missing pet data has a clear hover state");
+		assertTrue(unavailableHovers.contains("Magical Power data unavailable in profile"),
+			"missing magical power has a clear hover state");
+		assertTrue(unavailableHovers.contains("Total secrets: unavailable in profile")
+			&& unavailableHovers.contains("Runs: unavailable in profile"),
+			"missing secret and run values are identified in the average hover");
+		assertTrue(unavailableHovers.contains("Bank API data unavailable"),
+			"missing bank data has a clear hover state");
+		assertTrue(unavailableHovers.contains("Selected dungeon class unavailable in profile"),
+			"missing selected class has a clear hover state");
+		assertTrue(unavailableHovers.contains("Personal best data unavailable in profile"),
+			"missing personal best data has a clear hover state");
+		assertTrue(unavailableHovers.contains("Normal mode personal best data unavailable in profile")
+			&& unavailableHovers.contains("Master mode personal best data unavailable in profile"),
+			"normal and master personal best sections report missing profile data separately");
+	}
+
+	private static String statsHoverText(List<Component> components) {
+		StringBuilder output = new StringBuilder();
+		for (Component component : components) collectStatsHoverText(component, output);
+		return output.toString();
+	}
+
+	private static void collectStatsHoverText(Component component, StringBuilder output) {
+		if (component.getStyle().getHoverEvent() instanceof HoverEvent.ShowText showText) {
+			output.append(showText.value().getString()).append('\n');
+		}
+		for (Component child : component.getSiblings()) collectStatsHoverText(child, output);
 	}
 
 	private static void checkGlobalDebugGate() {

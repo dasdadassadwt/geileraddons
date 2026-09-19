@@ -41,13 +41,19 @@ The queued floor is captured from the selected values in Hypixel's Group Builder
 bordered card fitted to the current chat width with configurable Catacombs level, joined class
 level, class average, magical power, secret average, floor PB, gear, and actions. The Click GUI
 shows an inline sample card, and its ten stat toggles update both the preview and future cards
-immediately. Hover over SA for total secrets, a class for all class levels, or PB for all normal
-and Master PBs. `Kick` appears only for
+immediately. Hover over SA for total secrets and a class for all class levels. **Normal PBs** and
+**Master PBs** have separate floor lists and separate hovers; the Party Finder card also shows the
+queued-floor PB. `Kick` appears only for
 the party leader. Joining someone else's listing adds one final **Leave Party** action after all
 profiles finish.
 
 If a profile cannot be fetched, the line says so and provides a green **PV** button that runs
-`/pv <player>`. **Compact** collapses the card to one line.
+`/pv <player>`. **Compact** collapses the card to one line. When profile lookup is unavailable, the
+card says so instead of showing a row of unknown values. If the Hypixel Mod API switch is off, the
+card adds an **Island detection API is off** status line. You can also fetch one player's card with
+`/ga dstats "name"` (quotes are optional for a single player name); it uses the same display toggles.
+Gear checks read Odin's wrapped compressed inventory payload; a missing or invalid inventory still
+leaves only those gear fields marked unavailable.
 
 </details>
 
@@ -60,6 +66,9 @@ Configure F1–F7 and M1–M7 separately. Each folded floor heading carries its 
 floor has an **Ask Before** toggle, and numeric requirements are entered as text. Requirements
 include Cata, selected-class level, class average, secrets, secret average, MP, PB, bank,
 Term/Hype/GDrag, and duplicate-class checks.
+
+The PB limit accepts `m:ss` (for example, `6:42`) or legacy seconds; a player's PB must be that
+time or faster. Enter `0` to disable the PB check.
 
 Auto Kick only enforces requirements while you are party leader. Automatic kicks first wait a
 random 1–2 seconds, send the reasons to party chat, wait another random 1–2 seconds, and then kick
@@ -201,22 +210,38 @@ head marker does not provide reliable health data.
 
 <br>
 
-Create a macro in the **Miscellaneous** category and open its workflow editor. Steps use the
-normal Minecraft screen and keyboard handlers: commands/chat, waits with independent random
-ranges, key presses/holds, slot-id clicks, item-name clicks, Escape, and wait-until conditions.
-If/Else and Repeat steps can be nested, including endless repeats. The World Switch step can allow
-one explicit destination island (for example, continue after a warp to the Garden); a switch to a
-different or unknown island stops the workflow safely. A macro can also be restricted to selected
-islands and can run in the world, containers, or any non-text screen. Each node shows its delay in
-the editor and accepts a direct `min-max` millisecond range before it runs; there is no hidden
+Create a macro in the **Miscellaneous** category and open its workflow editor. The editor groups
+nodes into **Actions**, **Flow**, **Timing & Conditions**, and **World**. On wide screens it shows
+the node palette, a nested workflow tree, and a properties pane together; narrower screens switch
+between those panes. If/Else trees show their **Then** and **Else** branches, and Repeat nodes show
+their body. Select a branch or body before adding steps there.
+
+Actions include commands/chat, captured key presses or holds, slot-id clicks, item-name clicks, and
+Escape. Key nodes use a capture button and readable key name rather than an ID. Click Item supports
+comma-separated names as alternatives, exact or partial matching, search scope, match number, mouse
+button, and shift-click. A Hold key samples a randomized duration between its minimum and maximum,
+separate from the node's pre-delay. Shift, Control, Alt, and Super can be captured as the key itself.
+Wait uses an independent randomized range. **Repeat** can run a body a set number of times or forever;
+**Repeat Until** checks its stop condition before each iteration and runs its body while the
+condition is false. For example, Repeat Until with an **Item → Missing** condition and a comma-
+separated partial-name list can click any matching item until none remain, with a delay on the Click
+Item node. Conditions can use item present/missing, exact/partial matching, screen, slot, chat, and
+world state, combined with AND, OR, and NOT. Wait Until resumes when its condition becomes true.
+
+World Switch destinations are selected from a dropdown of named islands. Island names cannot be
+typed manually. A switch to a different or unknown island stops the workflow safely. A macro can
+also be restricted to selected islands and can run in the world, containers, or any non-text screen.
+Each node has a labeled minimum and maximum pre-node delay in milliseconds; there is no hidden
 macro-wide default delay.
 
 Only one macro runs at a time. Starting another replaces the previous run; pressing the active
 macro's hotkey cancels it. Duplicate hotkeys are rejected with a client-side warning. A missing
 slot/item or unmet wait condition is retried for five seconds, then the run stops with a chat
 message. Click **Set hotkey** and release a key to save it; **Escape** clears it, and the editor
-shows a visible listening banner while capturing. The workflow editor has hover explanations and
-a **Help** button with examples. Per-launch debug logs are available under `logs/geileraddons/`
+shows a visible listening banner while capturing. The **Help** button gives step-by-step recipes for
+loop behavior, condition composition, modifier-key capture, randomized holds, and the dropdown-only
+island rule. The `/ga` command is registered locally, so Brigadier can suggest it and its
+`dstats` subcommand while typing. Per-launch debug logs are available under `logs/geileraddons/`
 when **Dev → Debug** is enabled; log sessions are retained rather than deleted automatically.
 
 The **Enable Macro System** toggle is the master switch for all macro hotkeys and running

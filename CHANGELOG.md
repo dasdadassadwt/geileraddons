@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.5.1] - 2026-09-19
+
+### Fixed
+
+- Fixed Party Finder Stats breaking.
+- Fixed the Experiment Table solver reporting the maximum click count too early.
+
+### Added
+
+- Added more nodes and possibilities to macros.
+
+### Changed
+
+- Reworked the macro editor's appearance.
+
 ## [1.5.0] - 2026-09-18
 
 ### Added

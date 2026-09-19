@@ -68,14 +68,27 @@ public sealed interface MacroStep permits MacroStep.Base {
 	final class Key extends Base {
 		private String key;
 		private boolean hold;
-		private int holdMillis;
-		public Key(String key, boolean hold, int holdMillis) { this.key = key == null ? "" : key; this.hold = hold; this.holdMillis = clamp(holdMillis, 1, 60_000); }
+		private int holdMinMillis;
+		private int holdMaxMillis;
+		public Key(String key, boolean hold, int holdMillis) { this(key, hold, holdMillis, holdMillis); }
+		public Key(String key, boolean hold, int holdMinMillis, int holdMaxMillis) {
+			this.key = key == null ? "" : key;
+			this.hold = hold;
+			setHoldRange(holdMinMillis, holdMaxMillis);
+		}
 		public String key() { return key; }
 		public boolean hold() { return hold; }
-		public int holdMillis() { return holdMillis; }
+		public int holdMinMillis() { return holdMinMillis; }
+		public int holdMaxMillis() { return holdMaxMillis; }
+		/** Legacy accessor retained for callers that treated hold time as a fixed duration. */
+		public int holdMillis() { return holdMinMillis; }
 		public void setKey(String value) { key = value == null ? "" : value; }
 		public void setHold(boolean value) { hold = value; }
-		public void setHoldMillis(int value) { holdMillis = clamp(value, 1, 60_000); }
+		public void setHoldMillis(int value) { setHoldRange(value, value); }
+		public void setHoldRange(int min, int max) {
+			holdMinMillis = clamp(min, 1, 60_000);
+			holdMaxMillis = clamp(Math.max(holdMinMillis, max), holdMinMillis, 60_000);
+		}
 		@Override public String type() { return "key"; }
 	}
 
@@ -177,6 +190,22 @@ public sealed interface MacroStep permits MacroStep.Base {
 		public void setForever(boolean value) { forever = value; }
 		public void setCount(int value) { count = Math.max(1, value); }
 		@Override public String type() { return "repeat"; }
+	}
+
+	final class RepeatUntil extends Base {
+		private MacroCondition condition;
+		private final List<MacroStep> steps = new ArrayList<>();
+
+		public RepeatUntil(MacroCondition condition) {
+			this.condition = condition == null ? new MacroCondition.Always(true) : condition;
+		}
+
+		public MacroCondition condition() { return condition; }
+		public void setCondition(MacroCondition value) {
+			condition = value == null ? new MacroCondition.Always(true) : value;
+		}
+		public List<MacroStep> steps() { return steps; }
+		@Override public String type() { return "repeat_until"; }
 	}
 
 	private static int clamp(int value, int min, int max) {

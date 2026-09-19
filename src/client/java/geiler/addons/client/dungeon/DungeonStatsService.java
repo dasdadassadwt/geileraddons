@@ -20,8 +20,11 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -52,6 +55,20 @@ public final class DungeonStatsService {
 	private static final int MAX_NBT_DEPTH = 32;
 	private static final int MAX_NBT_NODES = 20_000;
 	private static final int MAX_NBT_STRING_CHARS = 8 * 1024;
+	private static final int MAX_GEAR_TOOLTIP_ITEMS = 64;
+	private static final int MAX_GEAR_TOOLTIP_LINES = 64;
+	private static final int MAX_GEAR_TOOLTIP_LINE_CHARS = 2_048;
+	private static final int MAX_GEAR_TOOLTIP_CHARS = 64 * 1024;
+	private static final int MAX_GOLDEN_DRAGON_PETS = 32;
+	private static final long[] DUNGEON_XP_LEVELS = {
+		0, 50, 125, 235, 395, 625, 955, 1425, 2095, 3045, 4385,
+		6275, 8940, 12700, 17960, 25340, 35640, 50040, 70040, 97640,
+		135640, 188140, 259640, 356640, 488640, 668640, 911640, 1239640,
+		1684640, 2284640, 3084640, 4149640, 5559640, 7459640, 9959640,
+		13259640, 17559640, 23159640, 30359640, 39559640, 51559640,
+		66559640, 85559640, 109559640, 139559640, 177559640, 225559640,
+		285559640, 360559640, 453559640, 569809640
+	};
 	/** Keys that identify an actual item entry inside one of the supported inventory containers. */
 	private static final Set<String> ITEM_ID_KEYS = Set.of(
 		"id", "item_id", "itemid", "item_name", "itemname", "internalname", "internal_name",
@@ -322,8 +339,10 @@ public final class DungeonStatsService {
 		JsonObject catacombs = object(types, "catacombs");
 		JsonObject master = object(types, "master_catacombs");
 		EnumSet<DungeonStats.DataField> available = EnumSet.noneOf(DungeonStats.DataField.class);
-		int cata = level(number(catacombs, "experience"), 50);
-		if (hasNumber(catacombs, "experience")) available.add(DungeonStats.DataField.CATACOMBS_LEVEL);
+		boolean cataExperienceKnown = hasNumber(catacombs, "experience");
+		long cataExperience = Math.max(0, number(catacombs, "experience"));
+		int cata = level(cataExperience, 50);
+		if (cataExperienceKnown) available.add(DungeonStats.DataField.CATACOMBS_LEVEL);
 
 		Map<DungeonClass, Integer> classLevels = new EnumMap<>(DungeonClass.class);
 		JsonObject classes = object(dungeons, "player_classes");
@@ -357,6 +376,8 @@ public final class DungeonStatsService {
 
 		EnumSet<DungeonStats.Gear> gear = EnumSet.noneOf(DungeonStats.Gear.class);
 		String allText = collectItemText(member);
+		List<DungeonStats.ItemDetails> itemDetails = collectGearDetails(member);
+		for (DungeonStats.ItemDetails item : itemDetails) gear.add(item.gear());
 		if (containsItemIdentifier(allText, "terminator")) gear.add(DungeonStats.Gear.TERMINATOR);
 		if (containsItemIdentifier(allText, "hyperion")) gear.add(DungeonStats.Gear.HYPERION);
 		if (containsItemIdentifier(allText, "golden_dragon") || containsItemIdentifier(allText, "golden dragon")) {
@@ -365,6 +386,9 @@ public final class DungeonStatsService {
 		if (containsPetIdentifier(member, "golden_dragon")) gear.add(DungeonStats.Gear.GOLDEN_DRAGON);
 
 		Map<DungeonFloor, Long> pbs = new EnumMap<>(DungeonFloor.class);
+		if (hasPersonalBestData(catacombs) || hasPersonalBestData(master)) {
+			available.add(DungeonStats.DataField.PERSONAL_BESTS);
+		}
 		readPbs(pbs, catacombs, false);
 		readPbs(pbs, master, true);
 		// The text collector is only a name extractor. Gate its result with validated item-shaped
@@ -372,6 +396,7 @@ public final class DungeonStatsService {
 		// gear check and turn an incomplete profile into a false kick.
 		boolean inventoryKnown = hasInventoryData(member);
 		boolean petKnown = hasPetData(member);
+		List<DungeonStats.GoldenDragonPet> goldenDragonPets = collectGoldenDragonDetails(member);
 		EnumSet<DungeonStats.Gear> knownGear = EnumSet.noneOf(DungeonStats.Gear.class);
 		if (inventoryKnown) {
 			knownGear.add(DungeonStats.Gear.TERMINATOR);
@@ -382,13 +407,460 @@ public final class DungeonStatsService {
 		DungeonClass selectedClass = DungeonClass.parse(firstString(dungeons, "selected_dungeon_class", "selectedClass"));
 		if (selectedClass != null) available.add(DungeonStats.DataField.SELECTED_CLASS);
 		return new DungeonStats(name, uuid, cata, selectedClass, classLevels, classAverage, secrets, runs,
-			magicalPower, bank, bankKnown, knownGear, gear, pbs, available);
+			magicalPower, bank, bankKnown, knownGear, gear, pbs, available, cataExperience,
+			cataExperienceKnown, itemDetails, goldenDragonPets);
 	}
 
 	/** Package boundary for offline fixtures; production requests enter through {@link #fetch}. */
 	static DungeonStats parseForChecks(String name, UUID uuid, JsonObject root, JsonObject member,
 		Long endpointSecrets) {
 		return parseStats(name, uuid, root, member, endpointSecrets);
+	}
+
+	private static List<DungeonStats.ItemDetails> collectGearDetails(JsonObject member) {
+		List<DungeonStats.ItemDetails> output = new ArrayList<>();
+		collectInventoryContainers(member, 0, new JsonBudget(MAX_JSON_NODES),
+			new TooltipBudget(), output);
+		return List.copyOf(output);
+	}
+
+	private static void collectInventoryContainers(JsonElement element, int depth, JsonBudget jsonBudget,
+		TooltipBudget tooltipBudget, List<DungeonStats.ItemDetails> output) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !jsonBudget.visit()) return;
+		if (element.isJsonArray()) {
+			for (JsonElement child : element.getAsJsonArray()) {
+				collectInventoryContainers(child, depth + 1, jsonBudget, tooltipBudget, output);
+			}
+			return;
+		}
+		if (!element.isJsonObject()) return;
+		for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+			JsonElement value = entry.getValue();
+			if (isInventoryKey(entry.getKey())) {
+				collectInventoryDetails(value, inventoryLabel(entry.getKey()), depth + 1,
+					new JsonBudget(MAX_JSON_NODES), tooltipBudget, output);
+			} else {
+				collectInventoryContainers(value, depth + 1, jsonBudget, tooltipBudget, output);
+			}
+			if (tooltipBudget.exhausted()) return;
+		}
+	}
+
+	private static void collectInventoryDetails(JsonElement element, String source, int depth,
+		JsonBudget jsonBudget, TooltipBudget tooltipBudget, List<DungeonStats.ItemDetails> output) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !jsonBudget.visit()
+			|| tooltipBudget.exhausted()) return;
+		if (element.isJsonPrimitive()) {
+			if (!element.getAsJsonPrimitive().isString()) return;
+			String value = element.getAsString();
+			if (looksLikeCompressedNbt(value)) {
+				readGearDetailsFromNbt(value, source, tooltipBudget, output);
+			} else {
+				DungeonStats.Gear gear = gearForIdentifier(value);
+				if (gear != null && tooltipBudget.takeItem()) {
+					output.add(new DungeonStats.ItemDetails(gear, value, gearDisplayName(gear), source, List.of()));
+				}
+			}
+			return;
+		}
+		if (element.isJsonArray()) {
+			for (JsonElement child : element.getAsJsonArray()) {
+				collectInventoryDetails(child, source, depth + 1, jsonBudget, tooltipBudget, output);
+				if (tooltipBudget.exhausted()) return;
+			}
+			return;
+		}
+		if (!element.isJsonObject()) return;
+
+		JsonObject object = element.getAsJsonObject();
+		if (hasGearIdentityInItemObject(object)) {
+			DungeonStats.ItemDetails item = itemDetailsFromObject(jsonValue(object, 0,
+				new JsonBudget(MAX_JSON_NODES)), source, tooltipBudget);
+			if (item != null) {
+				output.add(item);
+				return;
+			}
+		}
+		for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+			JsonElement value = entry.getValue();
+			String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT);
+			if (key.equals("data") && value.isJsonPrimitive()
+				&& value.getAsJsonPrimitive().isString() && looksLikeCompressedNbt(value.getAsString())) {
+				readGearDetailsFromNbt(value.getAsString(), source, tooltipBudget, output);
+			} else if (isInventoryKey(key)) {
+				collectInventoryDetails(value, inventoryLabel(key), depth + 1,
+					jsonBudget, tooltipBudget, output);
+			} else {
+				collectInventoryDetails(value, source, depth + 1, jsonBudget, tooltipBudget, output);
+			}
+			if (tooltipBudget.exhausted()) return;
+		}
+	}
+
+	/** Avoid converting every ordinary inventory item into a second object graph. */
+	private static boolean hasGearIdentityInItemObject(JsonObject object) {
+		for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+			String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT);
+			JsonElement value = entry.getValue();
+			if (isItemIdentityKey(key) && value != null && value.isJsonPrimitive()
+				&& value.getAsJsonPrimitive().isString()
+				&& gearForIdentifier(value.getAsString()) != null) return true;
+			if (isItemMetadataKey(key) || key.equals("components")) {
+				if (containsGearIdentity(value, 0, new JsonBudget(2_000))) return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean containsGearIdentity(JsonElement element, int depth, JsonBudget budget) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return false;
+		if (element.isJsonArray()) {
+			for (JsonElement child : element.getAsJsonArray()) {
+				if (containsGearIdentity(child, depth + 1, budget)) return true;
+			}
+			return false;
+		}
+		if (!element.isJsonObject()) return false;
+		for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+			String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT);
+			JsonElement value = entry.getValue();
+			if (isItemIdentityKey(key) && value != null && value.isJsonPrimitive()
+				&& value.getAsJsonPrimitive().isString()
+				&& gearForIdentifier(value.getAsString()) != null) return true;
+			if (containsGearIdentity(value, depth + 1, budget)) return true;
+		}
+		return false;
+	}
+
+	private static Object jsonValue(JsonElement element, int depth, JsonBudget budget) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return null;
+		if (element.isJsonPrimitive()) {
+			if (element.getAsJsonPrimitive().isString()) return element.getAsString();
+			if (element.getAsJsonPrimitive().isBoolean()) return element.getAsBoolean();
+			try { return element.getAsNumber(); } catch (RuntimeException ignored) { return null; }
+		}
+		if (element.isJsonArray()) {
+			List<Object> values = new ArrayList<>();
+			for (JsonElement child : element.getAsJsonArray()) {
+				values.add(jsonValue(child, depth + 1, budget));
+			}
+			return values;
+		}
+		if (element.isJsonObject()) {
+			Map<String, Object> values = new LinkedHashMap<>();
+			for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+				values.put(entry.getKey(), jsonValue(entry.getValue(), depth + 1, budget));
+			}
+			return values;
+		}
+		return null;
+	}
+
+	private static boolean looksLikeCompressedNbt(String value) {
+		return value != null && value.length() > 32 && value.length() <= MAX_COMPRESSED_VALUE_CHARS
+			&& value.matches("[A-Za-z0-9+/=]+");
+	}
+
+	private static void readGearDetailsFromNbt(String value, String source,
+		TooltipBudget tooltipBudget, List<DungeonStats.ItemDetails> output) {
+		try {
+			byte[] bytes = Base64.getDecoder().decode(value);
+			if (bytes.length == 0 || bytes.length > MAX_NBT_BYTES) return;
+			try (GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(bytes));
+				DataInputStream input = new DataInputStream(new LimitedInputStream(gzip, MAX_NBT_BYTES))) {
+				Object root = NbtTreeReader.read(input);
+				collectGearItems(root, source, tooltipBudget, output, 0);
+			}
+		} catch (Exception ignored) {
+			// Invalid optional inventory details do not discard other profile statistics.
+		}
+	}
+
+	private static void collectGearItems(Object value, String source, TooltipBudget tooltipBudget,
+		List<DungeonStats.ItemDetails> output, int depth) {
+		if (value == null || depth > MAX_NBT_DEPTH || tooltipBudget.exhausted()) return;
+		if (value instanceof Map<?, ?> map) {
+			if (isNbtItemObject(map)) {
+				DungeonStats.ItemDetails item = itemDetailsFromObject(map, source, tooltipBudget);
+				if (item != null) {
+					output.add(item);
+					return;
+				}
+			}
+			for (Object child : map.values()) {
+				collectGearItems(child, source, tooltipBudget, output, depth + 1);
+				if (tooltipBudget.exhausted()) return;
+			}
+		} else if (value instanceof List<?> list) {
+			for (Object child : list) {
+				collectGearItems(child, source, tooltipBudget, output, depth + 1);
+				if (tooltipBudget.exhausted()) return;
+			}
+		}
+	}
+
+	private static boolean isNbtItemObject(Map<?, ?> map) {
+		for (Map.Entry<?, ?> entry : map.entrySet()) {
+			String key = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
+			if (isItemIdentityKey(key) && gearForIdentifier(profileText(entry.getValue())) != null) return true;
+			if (isItemMetadataKey(key) || key.equals("components")) {
+				if (findGearIdentity(entry.getValue(), 0) != null) return true;
+			}
+		}
+		return false;
+	}
+
+	private static DungeonStats.ItemDetails itemDetailsFromObject(Object value, String source,
+		TooltipBudget tooltipBudget) {
+		if (!(value instanceof Map<?, ?> map)) return null;
+		DungeonStats.Gear gear = findGearIdentity(map, 0);
+		if (gear == null) return null;
+		String identifier = findGearIdentifier(map, 0);
+		String displayName = findDisplayName(map);
+		if (displayName.isBlank()) displayName = gearDisplayName(gear);
+		if (!tooltipBudget.takeItem()) return null;
+		displayName = tooltipBudget.take(displayName);
+		identifier = tooltipBudget.take(identifier);
+		List<String> lore = collectLore(map, tooltipBudget);
+		return new DungeonStats.ItemDetails(gear, identifier, displayName, source, lore);
+	}
+
+	private static DungeonStats.Gear findGearIdentity(Object value, int depth) {
+		if (value == null || depth > MAX_NBT_DEPTH) return null;
+		if (value instanceof Map<?, ?> map) {
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
+				if (isItemIdentityKey(key)) {
+					DungeonStats.Gear gear = gearForIdentifier(profileText(entry.getValue()));
+					if (gear != null) return gear;
+				}
+				if (!key.equals("lore") && !key.equals("minecraft:lore")) {
+					DungeonStats.Gear nested = findGearIdentity(entry.getValue(), depth + 1);
+					if (nested != null) return nested;
+				}
+			}
+		} else if (value instanceof List<?> list) {
+			for (Object child : list) {
+				DungeonStats.Gear nested = findGearIdentity(child, depth + 1);
+				if (nested != null) return nested;
+			}
+		}
+		return null;
+	}
+
+	private static String findGearIdentifier(Object value, int depth) {
+		if (value == null || depth > MAX_NBT_DEPTH) return "";
+		if (value instanceof Map<?, ?> map) {
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
+				if (isItemIdentityKey(key) && gearForIdentifier(profileText(entry.getValue())) != null) {
+					return profileText(entry.getValue());
+				}
+				if (!key.equals("lore") && !key.equals("minecraft:lore")) {
+					String nested = findGearIdentifier(entry.getValue(), depth + 1);
+					if (!nested.isBlank()) return nested;
+				}
+			}
+		} else if (value instanceof List<?> list) {
+			for (Object child : list) {
+				String nested = findGearIdentifier(child, depth + 1);
+				if (!nested.isBlank()) return nested;
+			}
+		}
+		return "";
+	}
+
+	private static String findDisplayName(Object value) {
+		Object tag = mapValue(value, "tag", "nbt");
+		Object display = mapValue(tag, "display");
+		String result = profileText(mapValue(display, "Name", "name"));
+		if (!result.isBlank()) return result;
+		Object components = mapValue(value, "components");
+		result = profileText(mapValue(components, "minecraft:custom_name", "custom_name", "name"));
+		if (!result.isBlank()) return result;
+		return findNamedText(value, Set.of("display_name", "displayname", "custom_name", "name"), 0);
+	}
+
+	private static String findNamedText(Object value, Set<String> keys, int depth) {
+		if (value == null || depth > MAX_NBT_DEPTH) return "";
+		if (value instanceof Map<?, ?> map) {
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
+				if (keys.contains(key)) {
+					String found = profileText(entry.getValue());
+					if (!found.isBlank()) return found;
+				}
+			}
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
+				if (!key.equals("lore") && !key.equals("minecraft:lore")) {
+					String found = findNamedText(entry.getValue(), keys, depth + 1);
+					if (!found.isBlank()) return found;
+				}
+			}
+		} else if (value instanceof List<?> list) {
+			for (Object child : list) {
+				String found = findNamedText(child, keys, depth + 1);
+				if (!found.isBlank()) return found;
+			}
+		}
+		return "";
+	}
+
+	private static List<String> collectLore(Object value, TooltipBudget tooltipBudget) {
+		List<String> lines = new ArrayList<>();
+		collectLore(value, tooltipBudget, lines, 0);
+		return List.copyOf(lines);
+	}
+
+	private static void collectLore(Object value, TooltipBudget tooltipBudget, List<String> lines, int depth) {
+		if (value == null || depth > MAX_NBT_DEPTH || lines.size() >= MAX_GEAR_TOOLTIP_LINES
+			|| tooltipBudget.exhausted()) return;
+		if (value instanceof Map<?, ?> map) {
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
+				if (key.equals("lore") || key.equals("minecraft:lore")) {
+					Object loreValue = entry.getValue();
+					if (loreValue instanceof List<?> list) {
+						for (Object line : list) {
+							if (lines.size() >= MAX_GEAR_TOOLTIP_LINES || tooltipBudget.exhausted()) break;
+							String text = profileText(line);
+							if (!text.isBlank()) lines.add(tooltipBudget.take(text));
+						}
+					} else {
+						String text = profileText(loreValue);
+						if (!text.isBlank()) lines.add(tooltipBudget.take(text));
+					}
+				} else {
+					collectLore(entry.getValue(), tooltipBudget, lines, depth + 1);
+				}
+				if (lines.size() >= MAX_GEAR_TOOLTIP_LINES || tooltipBudget.exhausted()) return;
+			}
+		} else if (value instanceof List<?> list) {
+			for (Object child : list) {
+				collectLore(child, tooltipBudget, lines, depth + 1);
+				if (lines.size() >= MAX_GEAR_TOOLTIP_LINES || tooltipBudget.exhausted()) return;
+			}
+		}
+	}
+
+	private static Object mapValue(Object value, String... keys) {
+		if (!(value instanceof Map<?, ?> map)) return null;
+		for (String wanted : keys) {
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				if (wanted.equalsIgnoreCase(String.valueOf(entry.getKey()))) return entry.getValue();
+			}
+		}
+		return null;
+	}
+
+	private static String profileText(Object value) {
+		if (value == null) return "";
+		if (value instanceof String text) return text;
+		if (value instanceof Number || value instanceof Boolean) return String.valueOf(value);
+		if (value instanceof Map<?, ?> || value instanceof List<?>) return new com.google.gson.Gson().toJson(value);
+		return "";
+	}
+
+	private static DungeonStats.Gear gearForIdentifier(String value) {
+		if (value == null) return null;
+		String normalized = value.trim().toLowerCase(Locale.ROOT)
+			.replace("minecraft:", "").replace(' ', '_');
+		return switch (normalized) {
+			case "terminator" -> DungeonStats.Gear.TERMINATOR;
+			case "hyperion" -> DungeonStats.Gear.HYPERION;
+			case "golden_dragon" -> DungeonStats.Gear.GOLDEN_DRAGON;
+			default -> null;
+		};
+	}
+
+	private static String gearDisplayName(DungeonStats.Gear gear) {
+		return switch (gear) {
+			case TERMINATOR -> "Terminator";
+			case HYPERION -> "Hyperion";
+			case GOLDEN_DRAGON -> "Golden Dragon";
+		};
+	}
+
+	private static String inventoryLabel(String key) {
+		return switch (key == null ? "" : key.toLowerCase(Locale.ROOT)) {
+			case "inv_contents", "inventory", "items", "item_data" -> "Inventory";
+			case "ender_chest_contents" -> "Ender Chest";
+			case "armor_contents" -> "Armor";
+			case "talisman_bag" -> "Accessory Bag";
+			case "wardrobe_contents" -> "Wardrobe";
+			case "equipment_contents" -> "Equipment";
+			default -> key == null ? "Inventory" : key.replace('_', ' ');
+		};
+	}
+
+	private static List<DungeonStats.GoldenDragonPet> collectGoldenDragonDetails(JsonObject member) {
+		JsonObject petsData = object(member, "pets_data");
+		JsonElement pets = petsData == null ? (member == null ? null : member.get("pets")) : petsData.get("pets");
+		List<DungeonStats.GoldenDragonPet> output = new ArrayList<>();
+		collectGoldenDragonDetails(pets, output, 0, new JsonBudget(MAX_JSON_NODES), new TooltipBudget());
+		return List.copyOf(output);
+	}
+
+	private static void collectGoldenDragonDetails(JsonElement element,
+		List<DungeonStats.GoldenDragonPet> output, int depth, JsonBudget budget, TooltipBudget detailBudget) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()
+			|| output.size() >= MAX_GOLDEN_DRAGON_PETS || detailBudget.exhausted()) return;
+		if (element.isJsonArray()) {
+			for (JsonElement child : element.getAsJsonArray()) {
+				collectGoldenDragonDetails(child, output, depth + 1, budget, detailBudget);
+				if (output.size() >= MAX_GOLDEN_DRAGON_PETS || detailBudget.exhausted()) return;
+			}
+			return;
+		}
+		if (!element.isJsonObject()) return;
+		JsonObject object = element.getAsJsonObject();
+		if (isGoldenDragonPet(object)) {
+			if (!detailBudget.takeItem()) return;
+			output.add(new DungeonStats.GoldenDragonPet(
+				detailBudget.take(firstPrimitiveText(object, "tier", "rarity")),
+				detailBudget.take(firstPrimitiveText(object, "level", "lvl")),
+				detailBudget.take(firstPrimitiveText(object, "exp", "experience", "xp")),
+				detailBudget.take(firstPrimitiveText(object, "heldItem", "held_item", "helditem")),
+				detailBudget.take(firstPrimitiveText(object, "skin")), primitiveBoolean(object, "active")));
+			return;
+		}
+		for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+			collectGoldenDragonDetails(entry.getValue(), output, depth + 1, budget, detailBudget);
+			if (output.size() >= MAX_GOLDEN_DRAGON_PETS || detailBudget.exhausted()) return;
+		}
+	}
+
+	private static boolean isGoldenDragonPet(JsonObject object) {
+		if (object == null) return false;
+		for (String key : new String[] {"type", "pet_type", "id", "internal_name"}) {
+			String value = firstPrimitiveText(object, key);
+			if (normalizeIdentifier(value).equals("golden_dragon")) return true;
+		}
+		return false;
+	}
+
+	private static String firstPrimitiveText(JsonObject object, String... keys) {
+		if (object == null) return "";
+		for (String key : keys) {
+			for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+				if (key.equalsIgnoreCase(entry.getKey()) && entry.getValue().isJsonPrimitive()
+					&& !entry.getValue().getAsJsonPrimitive().isBoolean()) {
+					return entry.getValue().getAsString();
+				}
+			}
+		}
+		return "";
+	}
+
+	private static Boolean primitiveBoolean(JsonObject object, String key) {
+		if (object == null) return null;
+		for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+			if (!key.equalsIgnoreCase(entry.getKey()) || !entry.getValue().isJsonPrimitive()
+				|| !entry.getValue().getAsJsonPrimitive().isBoolean()) continue;
+			return entry.getValue().getAsBoolean();
+		}
+		return null;
 	}
 
 	private static void readPbs(Map<DungeonFloor, Long> output, JsonObject type, boolean master) {
@@ -404,6 +876,10 @@ public final class DungeonStatsService {
 		}
 	}
 
+	private static boolean hasPersonalBestData(JsonObject type) {
+		return object(type, "fastest_time_s_plus") != null || object(type, "fastestTimeSPlus") != null;
+	}
+
 	private static long totalRuns(JsonObject normal, JsonObject master) {
 		return completions(normal) + completions(master);
 	}
@@ -417,19 +893,27 @@ public final class DungeonStatsService {
 		return total;
 	}
 
+	public record CataProgress(int level, long totalExperience, long experienceIntoLevel,
+		long experienceForLevel, long overflowExperience, boolean capped) {
+	}
+
+	/** Breaks down the API's raw Catacombs XP without discarding level-50 overflow. */
+	public static CataProgress catacombsProgress(long totalExperience) {
+		long xp = Math.max(0, totalExperience);
+		int cataLevel = level(xp, 50);
+		if (cataLevel >= 50) {
+			return new CataProgress(50, xp, 0, 0,
+				Math.max(0, xp - DUNGEON_XP_LEVELS[50]), true);
+		}
+		long start = DUNGEON_XP_LEVELS[cataLevel];
+		long needed = DUNGEON_XP_LEVELS[cataLevel + 1] - start;
+		return new CataProgress(cataLevel, xp, xp - start, needed, 0, false);
+	}
+
 	private static int level(long xp, int cap) {
-		long[] cumulative = {
-			0, 50, 125, 235, 395, 625, 955, 1425, 2095, 3045, 4385,
-			6275, 8940, 12700, 17960, 25340, 35640, 50040, 70040, 97640,
-			135640, 188140, 259640, 356640, 488640, 668640, 911640, 1239640,
-			1684640, 2284640, 3084640, 4149640, 5559640, 7459640, 9959640,
-			13259640, 17559640, 23159640, 30359640, 39559640, 51559640,
-			66559640, 85559640, 109559640, 139559640, 177559640, 225559640,
-			285559640, 360559640, 453559640, 569809640
-		};
 		int result = 0;
-		for (int i = 0; i < cumulative.length && i <= cap; i++) {
-			if (xp >= cumulative[i]) result = i;
+		for (int i = 0; i < DUNGEON_XP_LEVELS.length && i <= cap; i++) {
+			if (xp >= DUNGEON_XP_LEVELS[i]) result = i;
 			else break;
 		}
 		return result;
@@ -467,6 +951,9 @@ public final class DungeonStatsService {
 			if (isInventoryKey(key)) {
 				collectInventoryIdentifiers(value, out, depth + 1, budget, true);
 			} else if (insideInventory && isItemIdentityKey(key)) {
+				collectIdentityValue(value, out, depth + 1, budget);
+			} else if (insideInventory && key.equals("data")) {
+				// Odin wraps Hypixel inventory fields as {type, data}; data is the compressed NBT string.
 				collectIdentityValue(value, out, depth + 1, budget);
 			} else if (insideInventory && isItemMetadataKey(key)) {
 				collectInventoryIdentifiers(value, out, depth + 1, budget, true);
@@ -583,6 +1070,7 @@ public final class DungeonStatsService {
 				String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT);
 				JsonElement child = entry.getValue();
 				if (isItemIdentityKey(key) && identityValueIsReadable(child, depth + 1, budget)) return true;
+				if (key.equals("data") && identityValueIsReadable(child, depth + 1, budget)) return true;
 				if ((isItemMetadataKey(key) || child.isJsonObject() || child.isJsonArray())
 					&& inventoryValueIsReadable(child, depth + 1, budget, false)) return true;
 			}
@@ -846,6 +1334,100 @@ public final class DungeonStatsService {
 	public static String formatTime(long seconds) {
 		if (seconds <= 0) return "-";
 		return (seconds / 60) + ":" + String.format(Locale.ROOT, "%02d", seconds % 60);
+	}
+
+	private static final class TooltipBudget {
+		private int remainingItems = MAX_GEAR_TOOLTIP_ITEMS;
+		private int remainingChars = MAX_GEAR_TOOLTIP_CHARS;
+
+		private boolean takeItem() {
+			if (remainingItems <= 0 || remainingChars <= 0) return false;
+			remainingItems--;
+			return true;
+		}
+
+		private String take(String value) {
+			if (value == null || value.isEmpty() || remainingChars <= 0) return "";
+			int allowed = Math.min(Math.min(value.length(), MAX_GEAR_TOOLTIP_LINE_CHARS), remainingChars);
+			remainingChars -= allowed;
+			if (value.length() <= allowed) return value;
+			if (allowed <= 1) return value.substring(0, allowed);
+			return value.substring(0, allowed - 1) + "…";
+		}
+
+		private boolean exhausted() {
+			return remainingItems <= 0 || remainingChars <= 0;
+		}
+	}
+
+	/** Parses bounded NBT values into detached Java data so tooltip formatting stays client-thread-only. */
+	private static final class NbtTreeReader {
+		static Object read(DataInputStream input) throws IOException {
+			NbtBudget budget = new NbtBudget();
+			int type = input.readUnsignedByte();
+			if (type == 0) return null;
+			readString(input, budget);
+			return readPayload(input, type, budget, 0);
+		}
+
+		private static Object readPayload(DataInputStream input, int type, NbtBudget budget,
+			int depth) throws IOException {
+			if (depth > MAX_NBT_DEPTH || !budget.visit()) throw new IOException("NBT limits exceeded");
+			return switch (type) {
+				case 1 -> input.readByte();
+				case 2 -> input.readShort();
+				case 3 -> input.readInt();
+				case 4 -> input.readLong();
+				case 5 -> input.readFloat();
+				case 6 -> input.readDouble();
+				case 7 -> {
+					NbtTextReader.skipArray(input, input.readInt(), 1);
+					yield null;
+				}
+				case 8 -> readString(input, budget);
+				case 9 -> {
+					int childType = input.readUnsignedByte();
+					int count = input.readInt();
+					if (count < 0 || count > MAX_NBT_NODES || (childType == 0 && count != 0)) {
+						throw new IOException("Invalid NBT list length");
+					}
+					List<Object> list = new ArrayList<>(count);
+					for (int i = 0; i < count; i++) {
+						list.add(readPayload(input, childType, budget, depth + 1));
+					}
+					yield list;
+				}
+				case 10 -> {
+					Map<String, Object> compound = new LinkedHashMap<>();
+					while (true) {
+						int childType = input.readUnsignedByte();
+						if (childType == 0) break;
+						String key = readString(input, budget);
+						compound.put(key, readPayload(input, childType, budget, depth + 1));
+					}
+					yield compound;
+				}
+				case 11 -> {
+					NbtTextReader.skipArray(input, input.readInt(), 4);
+					yield null;
+				}
+				case 12 -> {
+					NbtTextReader.skipArray(input, input.readInt(), 8);
+					yield null;
+				}
+				default -> throw new IOException("Unknown NBT tag " + type);
+			};
+		}
+
+		private static String readString(DataInputStream input, NbtBudget budget) throws IOException {
+			int length = input.readUnsignedShort();
+			if (length > MAX_NBT_STRING_CHARS || !budget.consumeBytes(length)) {
+				throw new IOException("NBT string limit exceeded");
+			}
+			byte[] bytes = new byte[length];
+			input.readFully(bytes);
+			return new String(bytes, StandardCharsets.UTF_8);
+		}
 	}
 
 	/** Minimal NBT text walker used only to find item ids in compressed inventory fields. */

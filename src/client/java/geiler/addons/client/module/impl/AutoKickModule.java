@@ -478,7 +478,7 @@ public final class AutoKickModule extends Module {
 			minSecrets = new TextSetting(prefix + "Secrets", "Min Secrets", "0", 12);
 			minSecretAverage = new TextSetting(prefix + "Secret Avg", "Min Secret Avg", "0", 8);
 			minMagicalPower = new TextSetting(prefix + "MP", "Min MP", "0", 8);
-			personalBestLimit = new TextSetting(prefix + "Minimum PB", "Minimum PB", "0", 8);
+			personalBestLimit = new TextSetting(prefix + "Minimum PB", "PB limit (m:ss or sec; 0 off)", "0", 16);
 			minBank = new TextSetting(prefix + "Bank", "Min Bank", "0", 14);
 			terminator = new BooleanSetting(prefix + "Terminator", "Terminator", false);
 			hyperion = new BooleanSetting(prefix + "Hyperion", "Hyperion", false);
@@ -504,7 +504,7 @@ public final class AutoKickModule extends Module {
 			long requiredSecrets = positive(minSecrets.longValue(0));
 			double requiredSecretAverage = positive(minSecretAverage.doubleValue(0));
 			int requiredMagicalPower = positive(minMagicalPower.intValue(0));
-			int requiredPersonalBest = positive(personalBestLimit.intValue(0));
+			int requiredPersonalBest = AutoKickRules.parsePersonalBestLimitSeconds(personalBestLimit.value());
 			if (requiredCata > 0 && !stats.has(DungeonStats.DataField.CATACOMBS_LEVEL)) result.unknowns.add("Cata");
 			else if (requiredCata > 0 && stats.catacombsLevel() < requiredCata) result.failures.add("Cata " + stats.catacombsLevel() + "/" + requiredCata);
 			DungeonClass dungeonClass = member.dungeonClass() != null ? member.dungeonClass() : stats.selectedClass();
@@ -555,7 +555,7 @@ public final class AutoKickModule extends Module {
 			long secrets = positive(minSecrets.longValue(0));
 			double secretAverage = positive(minSecretAverage.doubleValue(0));
 			int magicalPower = positive(minMagicalPower.intValue(0));
-			int personalBest = positive(personalBestLimit.intValue(0));
+			int personalBest = AutoKickRules.parsePersonalBestLimitSeconds(personalBestLimit.value());
 			long bank = positive(minBank.longValue(0));
 			if (cata > 0) checks.add("Cata >= " + cata);
 			if (joinedClass > 0) checks.add("class >= " + joinedClass);

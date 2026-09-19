@@ -1,10 +1,8 @@
 package geiler.addons.client.mixin;
 
-import geiler.addons.client.gui.ClickGuiScreen;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.SafariFloorDropsModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
@@ -25,24 +23,6 @@ import java.util.function.BiConsumer;
 
 @Mixin(ClientPacketListener.class)
 public abstract class ClientPacketListenerMixin {
-
-	/**
-	 * Handled directly on the raw chat command string rather than via a registered Brigadier
-	 * command: a bare literal command with no arguments throws "Incorrect argument for command"
-	 * if the typed text has any trailing whitespace (e.g. tab-completion appends a space before
-	 * Enter is pressed) - this sidesteps that by matching the trimmed string ourselves.
-	 *
-	 * <p>Opening is deferred a tick because the chat screen unconditionally closes itself
-	 * (setScreen(null)) right after handling Enter, which would immediately wipe out a screen
-	 * opened synchronously here.
-	 */
-	@Inject(method = "sendCommand", at = @At("HEAD"), cancellable = true)
-	private void geileraddons$onSendCommand(String command, CallbackInfo ci) {
-		if (command.trim().equalsIgnoreCase("ga")) {
-			Minecraft.getInstance().execute(() -> Minecraft.getInstance().setScreen(new ClickGuiScreen()));
-			ci.cancel();
-		}
-	}
 
 	@Inject(method = "handleBlockUpdate", at = @At("TAIL"))
 	private void geileraddons$onBlockUpdate(ClientboundBlockUpdatePacket packet, CallbackInfo ci) {
