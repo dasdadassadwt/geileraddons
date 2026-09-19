@@ -704,15 +704,15 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		List<Component> gearParts = new ArrayList<>();
 		if (options.showTerminator()) {
 			gearParts.add(Component.literal("Term ").withStyle(ChatFormatting.GRAY)
-				.append(mark(view.gearKnown(), view.terminator())));
+				.append(mark(view.terminatorKnown(), view.terminator())));
 		}
 		if (options.showHyperion()) {
 			gearParts.add(Component.literal("Hype ").withStyle(ChatFormatting.GRAY)
-				.append(mark(view.gearKnown(), view.hyperion())));
+				.append(mark(view.hyperionKnown(), view.hyperion())));
 		}
 		if (options.showGoldenDragon()) {
 			gearParts.add(Component.literal("GDrag ").withStyle(ChatFormatting.GRAY)
-				.append(mark(view.gearKnown(), view.goldenDragon())));
+				.append(mark(view.goldenDragonKnown(), view.goldenDragon())));
 		}
 		if (options.showBank()) {
 			Component bankPart = view.bankKnown()
@@ -786,14 +786,18 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 
 	record StatsView(String name, DungeonFloor floor, DungeonClass selectedClass, int selectedClassLevel,
 		int catacombsLevel, double classAverage, long totalSecrets, long totalRuns, double secretAverage,
-		int magicalPower, long bank, boolean bankKnown, boolean gearKnown, boolean terminator,
-		boolean hyperion, boolean goldenDragon, String personalBest, String allClassLevels, String allPbs) {
+		int magicalPower, long bank, boolean bankKnown, boolean gearKnown, boolean terminatorKnown,
+		boolean hyperionKnown, boolean goldenDragonKnown, boolean terminator, boolean hyperion,
+		boolean goldenDragon, String personalBest, String allClassLevels, String allPbs) {
 		static StatsView from(DungeonFloor floor, PartyMember member, DungeonStats stats, DungeonClass selectedClass) {
 			String personalBest = floor == null ? "-" : DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor));
 			return new StatsView(stats.name(), floor, selectedClass,
 				selectedClass == null ? 0 : stats.classLevel(selectedClass), stats.catacombsLevel(),
 				stats.classAverage(), stats.totalSecrets(), stats.totalRuns(), stats.secretAverage(),
 				stats.magicalPower(), stats.bank(), stats.bankKnown(), stats.gearKnown(),
+				stats.hasGearData(DungeonStats.Gear.TERMINATOR),
+				stats.hasGearData(DungeonStats.Gear.HYPERION),
+				stats.hasGearData(DungeonStats.Gear.GOLDEN_DRAGON),
 				stats.has(DungeonStats.Gear.TERMINATOR), stats.has(DungeonStats.Gear.HYPERION),
 				stats.has(DungeonStats.Gear.GOLDEN_DRAGON), personalBest, stats.allClassLevels(),
 				PartyFinderStatsModule.allPbs(stats));
@@ -801,7 +805,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 
 		static StatsView preview() {
 			return new StatsView("ExamplePlayer", DungeonFloor.F7, DungeonClass.MAGE, 45, 42, 46.25,
-				12_480, 1_120, 11.14, 720, 125_000_000L, true, true, true, false, true,
+				12_480, 1_120, 11.14, 720, 125_000_000L, true, true, true, true, true, true, false, true,
 				"6:42", "Tank 38\nHealer 29\nMage 45\nBerserk 41\nArcher 40",
 				"F1: 2:10\nF2: 2:32\nF3: 3:01\nF4: 3:44\nF5: 4:18\nF6: 5:31\nF7: 6:42");
 		}

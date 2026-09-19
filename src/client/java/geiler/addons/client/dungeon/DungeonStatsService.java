@@ -36,13 +36,14 @@ import java.util.zip.GZIPInputStream;
 
 /** Asynchronous, cached adapter for the profile endpoints used by Odin. */
 public final class DungeonStatsService {
-	private static final String API_BASE = "https://hypixel.odtheking.com/";
+	/** Current Odin API base; the service currently redirects profile traffic to its legacy host. */
+	private static final String API_BASE = "https://api.odtheking.com/hypixel/";
 	private static final String UUID_BASE = "https://api.minecraftservices.com/minecraft/profile/lookup/name/";
 	private static final long CACHE_TTL_MILLIS = 5 * 60 * 1000L;
 	private static final int MAX_CACHE_ENTRIES = 512;
 	private static final Duration TIMEOUT = Duration.ofSeconds(10);
 	/** Profile responses are untrusted remote input; never let one consume arbitrary memory. */
-	private static final int MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+	private static final int MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 	private static final int MAX_JSON_DEPTH = 32;
 	private static final int MAX_JSON_NODES = 50_000;
 	private static final int MAX_ITEM_TEXT_CHARS = 64 * 1024;
@@ -57,6 +58,12 @@ public final class DungeonStatsService {
 		"displayname", "display_name", "tag", "nbt");
 	private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2, r -> {
 		Thread thread = new Thread(r, "GeilerAddons dungeon stats");
+		thread.setDaemon(true);
+		return thread;
+	});
+	/** Network requests started after UUID resolution must not block the profile worker threads. */
+	private static final ExecutorService HTTP_EXECUTOR = Executors.newFixedThreadPool(4, r -> {
+		Thread thread = new Thread(r, "GeilerAddons dungeon stats HTTP");
 		thread.setDaemon(true);
 		return thread;
 	});
@@ -115,6 +122,7 @@ public final class DungeonStatsService {
 		IN_FLIGHT.clear();
 		CACHE.clear();
 		EXECUTOR.shutdownNow();
+		HTTP_EXECUTOR.shutdownNow();
 	}
 
 	private static void pruneCache(long now) {
@@ -154,14 +162,22 @@ public final class DungeonStatsService {
 			}
 			UUID uuid = UUID.fromString(withDashes(id));
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Loading profile {} ({})", returnedName == null ? name : returnedName, id);
-			JsonObject profile = getJson(API_BASE + "get/" + id);
+			// The profile and dedicated secrets endpoint are independent. Fetch them together so a
+			// party scan is not serialized behind two large profile responses per player.
+			CompletableFuture<JsonObject> profileFuture = CompletableFuture.supplyAsync(
+				() -> getJsonUnchecked(API_BASE + "get/" + id), HTTP_EXECUTOR);
+			CompletableFuture<JsonElement> secretsFuture = CompletableFuture.supplyAsync(
+				() -> getJsonElementUnchecked(API_BASE + "secrets/" + id), HTTP_EXECUTOR);
+			JsonObject profile = profileFuture.join();
+			Long endpointSecrets = readLong(secretsFuture);
 			JsonObject member = profileMember(profile, id);
 			if (member == null) {
 				GeilerAddons.LOGGER.debug("[Dungeon Stats] No profile member data for {}", name);
 				return Result.failure("Profile data is unavailable");
 			}
 
-			DungeonStats stats = parseStats(returnedName == null ? name : returnedName, uuid, profile, member);
+			DungeonStats stats = parseStats(returnedName == null ? name : returnedName, uuid, profile, member,
+				endpointSecrets);
 			if (stats.cacheable()) {
 				CACHE.put(name.toLowerCase(Locale.ROOT), new CacheEntry(stats, System.currentTimeMillis()));
 				pruneCache(System.currentTimeMillis());
@@ -177,17 +193,72 @@ public final class DungeonStatsService {
 		}
 	}
 
+	private static Long readLong(CompletableFuture<JsonElement> future) {
+		try {
+			JsonElement value = future.join();
+			if (value == null || !value.isJsonPrimitive()) return null;
+			return value.getAsLong();
+		} catch (RuntimeException exception) {
+			GeilerAddons.LOGGER.debug("[Dungeon Stats] Dedicated secrets lookup failed: {}", errorText(exception));
+			return null;
+		}
+	}
+
+	private static JsonObject getJsonUnchecked(String url) {
+		try {
+			return getJson(url);
+		} catch (IOException | InterruptedException exception) {
+			if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+			throw new RuntimeException(exception);
+		}
+	}
+
+	private static JsonElement getJsonElementUnchecked(String url) {
+		try {
+			return getJsonElement(url);
+		} catch (IOException | InterruptedException exception) {
+			if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+			throw new RuntimeException(exception);
+		}
+	}
+
 	private static JsonObject getJson(String url) throws IOException, InterruptedException {
-		URI uri = URI.create(url);
-		if (!allowedUri(uri)) throw new IOException("Refusing untrusted endpoint " + uri.getHost());
-		HttpRequest request = HttpRequest.newBuilder(uri).timeout(TIMEOUT)
-			.header("User-Agent", "GeilerAddons")
-			.header("Accept", "application/json")
-			.GET().build();
-		HttpResponse<InputStream> response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
+		JsonElement parsed = getJsonElement(url);
+		if (!parsed.isJsonObject()) throw new IOException("Response was not an object");
+		return parsed.getAsJsonObject();
+	}
+
+	private static JsonElement getJsonElement(String url) throws IOException, InterruptedException {
+		URI current = URI.create(url);
+		if (!allowedUri(current)) throw new IOException("Refusing untrusted endpoint " + current.getHost());
+		HttpResponse<InputStream> response;
+		int redirects = 0;
+		while (true) {
+			HttpRequest request = HttpRequest.newBuilder(current).timeout(TIMEOUT)
+				.header("User-Agent", "GeilerAddons")
+				.header("Accept", "application/json")
+				.GET().build();
+			response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
+			int status = response.statusCode();
+			if (status < 300 || status >= 400) break;
+			if (redirects++ >= 1) {
+				try (InputStream ignored = response.body()) {
+					// Close the response before rejecting an unexpected redirect chain.
+				}
+				throw new IOException("Too many redirects");
+			}
+			String location = response.headers().firstValue("Location").orElse(null);
+			try (InputStream ignored = response.body()) {
+				// The redirect body is not part of the profile contract.
+			}
+			if (location == null) throw new IOException("Redirect had no location");
+			URI next = current.resolve(location);
+			if (!allowedUri(next)) throw new IOException("Refusing redirected endpoint " + next.getHost());
+			current = next;
+		}
 		if (!allowedUri(response.uri())) {
 			try (InputStream ignored = response.body()) {
-				// Close a response that should never have been followed or accepted.
+				// Close a response that should never have been accepted.
 			}
 			throw new IOException("Refusing redirected endpoint " + response.uri().getHost());
 		}
@@ -208,14 +279,14 @@ public final class DungeonStatsService {
 		} catch (StackOverflowError overflow) {
 			throw new IOException("Response nesting exceeded parser limits", overflow);
 		}
-		if (!parsed.isJsonObject()) throw new IOException("Response was not an object");
-		return parsed.getAsJsonObject();
+		return parsed;
 	}
 
 	private static boolean allowedUri(URI uri) {
 		if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())) return false;
 		String host = uri.getHost();
 		return "api.minecraftservices.com".equalsIgnoreCase(host)
+			|| "api.odtheking.com".equalsIgnoreCase(host)
 			|| "hypixel.odtheking.com".equalsIgnoreCase(host);
 	}
 
@@ -244,7 +315,8 @@ public final class DungeonStatsService {
 		return member == null ? object(members, dashed) : member;
 	}
 
-	private static DungeonStats parseStats(String name, UUID uuid, JsonObject root, JsonObject member) {
+	private static DungeonStats parseStats(String name, UUID uuid, JsonObject root, JsonObject member,
+		Long endpointSecrets) {
 		JsonObject dungeons = object(member, "dungeons");
 		JsonObject types = object(dungeons, "dungeon_types");
 		JsonObject catacombs = object(types, "catacombs");
@@ -267,7 +339,9 @@ public final class DungeonStatsService {
 		double classAverage = classLevels.values().stream().mapToInt(Integer::intValue).average().orElse(0);
 		if (allClassesKnown) available.add(DungeonStats.DataField.CLASS_AVERAGE);
 
-		NumberValue secretValue = findNumber(dungeons, "total_secrets", "totalSecrets", "secrets", "secrets_found");
+		NumberValue profileSecretValue = findNumber(dungeons, "total_secrets", "totalSecrets", "secrets", "secrets_found");
+		NumberValue secretValue = endpointSecrets == null
+			? profileSecretValue : new NumberValue(Math.max(0, endpointSecrets), true);
 		long secrets = secretValue.present() ? secretValue.value() : 0;
 		if (secretValue.present()) available.add(DungeonStats.DataField.SECRETS);
 		long runs = totalRuns(catacombs, master);
@@ -288,6 +362,7 @@ public final class DungeonStatsService {
 		if (containsItemIdentifier(allText, "golden_dragon") || containsItemIdentifier(allText, "golden dragon")) {
 			gear.add(DungeonStats.Gear.GOLDEN_DRAGON);
 		}
+		if (containsPetIdentifier(member, "golden_dragon")) gear.add(DungeonStats.Gear.GOLDEN_DRAGON);
 
 		Map<DungeonFloor, Long> pbs = new EnumMap<>(DungeonFloor.class);
 		readPbs(pbs, catacombs, false);
@@ -295,12 +370,25 @@ public final class DungeonStatsService {
 		// The text collector is only a name extractor. Gate its result with validated item-shaped
 		// inventory evidence so an API error/status string containing "terminator" cannot authorize a
 		// gear check and turn an incomplete profile into a false kick.
-		boolean gearKnown = hasInventoryData(member);
-		if (gearKnown) available.add(DungeonStats.DataField.GEAR);
+		boolean inventoryKnown = hasInventoryData(member);
+		boolean petKnown = hasPetData(member);
+		EnumSet<DungeonStats.Gear> knownGear = EnumSet.noneOf(DungeonStats.Gear.class);
+		if (inventoryKnown) {
+			knownGear.add(DungeonStats.Gear.TERMINATOR);
+			knownGear.add(DungeonStats.Gear.HYPERION);
+		}
+		if (petKnown) knownGear.add(DungeonStats.Gear.GOLDEN_DRAGON);
+		if (knownGear.size() == DungeonStats.Gear.values().length) available.add(DungeonStats.DataField.GEAR);
 		DungeonClass selectedClass = DungeonClass.parse(firstString(dungeons, "selected_dungeon_class", "selectedClass"));
 		if (selectedClass != null) available.add(DungeonStats.DataField.SELECTED_CLASS);
 		return new DungeonStats(name, uuid, cata, selectedClass, classLevels, classAverage, secrets, runs,
-			magicalPower, bank, bankKnown, gearKnown, gear, pbs, available);
+			magicalPower, bank, bankKnown, knownGear, gear, pbs, available);
+	}
+
+	/** Package boundary for offline fixtures; production requests enter through {@link #fetch}. */
+	static DungeonStats parseForChecks(String name, UUID uuid, JsonObject root, JsonObject member,
+		Long endpointSecrets) {
+		return parseStats(name, uuid, root, member, endpointSecrets);
 	}
 
 	private static void readPbs(Map<DungeonFloor, Long> output, JsonObject type, boolean master) {
@@ -568,6 +656,48 @@ public final class DungeonStatsService {
 			from = end;
 		}
 		return false;
+	}
+
+	/** Pet data is a separate API section; it must not be inferred from inventory availability. */
+	private static boolean containsPetIdentifier(JsonObject member, String identifier) {
+		if (member == null || identifier == null || identifier.isBlank()) return false;
+		JsonObject petsData = object(member, "pets_data");
+		JsonElement pets = petsData == null ? member.get("pets") : petsData.get("pets");
+		return containsPetIdentifier(pets, identifier, 0, new JsonBudget(MAX_JSON_NODES));
+	}
+
+	private static boolean containsPetIdentifier(JsonElement element, String identifier, int depth,
+		JsonBudget budget) {
+		if (element == null || element.isJsonNull() || depth > MAX_JSON_DEPTH || !budget.visit()) return false;
+		if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+			return normalizeIdentifier(element.getAsString()).equals(normalizeIdentifier(identifier));
+		}
+		if (element.isJsonArray()) {
+			for (JsonElement child : element.getAsJsonArray()) {
+				if (containsPetIdentifier(child, identifier, depth + 1, budget)) return true;
+			}
+			return false;
+		}
+		if (!element.isJsonObject()) return false;
+		for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+			String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT);
+			if ((key.equals("type") || key.equals("pet_type") || key.equals("id") || key.equals("internal_name"))
+				&& entry.getValue().isJsonPrimitive() && entry.getValue().getAsJsonPrimitive().isString()
+				&& normalizeIdentifier(entry.getValue().getAsString()).equals(normalizeIdentifier(identifier))) return true;
+			if (containsPetIdentifier(entry.getValue(), identifier, depth + 1, budget)) return true;
+		}
+		return false;
+	}
+
+	private static boolean hasPetData(JsonObject member) {
+		if (member == null) return false;
+		JsonObject petsData = object(member, "pets_data");
+		if (petsData != null && array(petsData, "pets") != null) return true;
+		return member.has("pets") && member.get("pets").isJsonArray();
+	}
+
+	private static String normalizeIdentifier(String value) {
+		return value == null ? "" : value.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
 	}
 
 	private static JsonObject object(JsonObject parent, String name) {

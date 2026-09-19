@@ -224,8 +224,12 @@ public final class OfflineChecks {
 			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, 0).orElseThrow();
 		assertFalse(chrono.reached(chrono.displayedSequenceLength() - 1, 0),
 			"Chronomatron does not reach max clicks before the final sequence is known");
-		assertTrue(chrono.reached(chrono.displayedSequenceLength(), 0),
-			"Chronomatron reaches max clicks as soon as the final sequence is displayed");
+		assertFalse(chrono.reached(chrono.displayedSequenceLength(), 8),
+			"Chronomatron keeps round nine playable before round ten starts");
+		assertTrue(chrono.reached(chrono.displayedSequenceLength(), 9),
+			"Chronomatron reaches max clicks when round ten starts");
+		assertTrue(chrono.reached(chrono.displayedSequenceLength() + 1, -1),
+			"Chronomatron fallback waits for a sequence beyond the target");
 	}
 
 	private static void checkAutoKickLabels() {

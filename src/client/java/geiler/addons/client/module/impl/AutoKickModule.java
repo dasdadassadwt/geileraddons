@@ -538,10 +538,12 @@ public final class AutoKickModule extends Module {
 			long bank = minBank.longValue(0);
 			if (bank > 0 && !stats.has(DungeonStats.DataField.BANK)) result.unknowns.add("Bank");
 			else if (bank > 0 && stats.bank() < bank) result.failures.add("bank " + stats.bank());
-			if ((terminator.value() || hyperion.value() || goldenDragon.value()) && !stats.has(DungeonStats.DataField.GEAR)) result.unknowns.add("Gear");
-			if (terminator.value() && stats.has(DungeonStats.DataField.GEAR) && !stats.has(DungeonStats.Gear.TERMINATOR)) result.failures.add("no Term");
-			if (hyperion.value() && stats.has(DungeonStats.DataField.GEAR) && !stats.has(DungeonStats.Gear.HYPERION)) result.failures.add("no Hype");
-			if (goldenDragon.value() && stats.has(DungeonStats.DataField.GEAR) && !stats.has(DungeonStats.Gear.GOLDEN_DRAGON)) result.failures.add("no GDrag");
+			if (terminator.value() && !stats.hasGearData(DungeonStats.Gear.TERMINATOR)) result.unknowns.add("Term");
+			else if (terminator.value() && !stats.has(DungeonStats.Gear.TERMINATOR)) result.failures.add("no Term");
+			if (hyperion.value() && !stats.hasGearData(DungeonStats.Gear.HYPERION)) result.unknowns.add("Hype");
+			else if (hyperion.value() && !stats.has(DungeonStats.Gear.HYPERION)) result.failures.add("no Hype");
+			if (goldenDragon.value() && !stats.hasGearData(DungeonStats.Gear.GOLDEN_DRAGON)) result.unknowns.add("GDrag");
+			else if (goldenDragon.value() && !stats.has(DungeonStats.Gear.GOLDEN_DRAGON)) result.failures.add("no GDrag");
 			return result;
 		}
 

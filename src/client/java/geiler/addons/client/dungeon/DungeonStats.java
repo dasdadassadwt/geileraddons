@@ -31,7 +31,7 @@ public final class DungeonStats {
 	private final int magicalPower;
 	private final long bank;
 	private final boolean bankKnown;
-	private final boolean gearKnown;
+	private final EnumSet<Gear> knownGear;
 	private final EnumSet<Gear> gear;
 	private final Map<DungeonFloor, Long> fastestSPlusSeconds;
 	private final EnumSet<DataField> availableFields;
@@ -43,13 +43,14 @@ public final class DungeonStats {
 		double classAverage, long totalSecrets, long totalRuns, int magicalPower, long bank, boolean bankKnown,
 		boolean gearKnown, EnumSet<Gear> gear, Map<DungeonFloor, Long> fastestSPlusSeconds) {
 		this(name, uuid, catacombsLevel, selectedClass, classLevels, classAverage, totalSecrets, totalRuns,
-			magicalPower, bank, bankKnown, gearKnown, gear, fastestSPlusSeconds, EnumSet.noneOf(DataField.class));
+			magicalPower, bank, bankKnown, gearKnown ? EnumSet.allOf(Gear.class) : EnumSet.noneOf(Gear.class),
+			gear, fastestSPlusSeconds, EnumSet.noneOf(DataField.class));
 	}
 
 	public DungeonStats(String name, UUID uuid, int catacombsLevel, DungeonClass selectedClass,
 		Map<DungeonClass, Integer> classLevels,
 		double classAverage, long totalSecrets, long totalRuns, int magicalPower, long bank, boolean bankKnown,
-		boolean gearKnown, EnumSet<Gear> gear, Map<DungeonFloor, Long> fastestSPlusSeconds,
+		EnumSet<Gear> knownGear, EnumSet<Gear> gear, Map<DungeonFloor, Long> fastestSPlusSeconds,
 		EnumSet<DataField> availableFields) {
 		this.name = name;
 		this.uuid = uuid;
@@ -63,7 +64,7 @@ public final class DungeonStats {
 		this.magicalPower = Math.max(0, magicalPower);
 		this.bank = Math.max(0, bank);
 		this.bankKnown = bankKnown;
-		this.gearKnown = gearKnown;
+		this.knownGear = knownGear == null ? EnumSet.noneOf(Gear.class) : knownGear.clone();
 		this.gear = gear.clone();
 		this.fastestSPlusSeconds = Map.copyOf(fastestSPlusSeconds);
 		this.availableFields = availableFields.clone();
@@ -82,7 +83,9 @@ public final class DungeonStats {
 	public int magicalPower() { return magicalPower; }
 	public long bank() { return bank; }
 	public boolean bankKnown() { return bankKnown; }
-	public boolean gearKnown() { return gearKnown; }
+	/** True only when every supported gear check has authoritative inventory/pet evidence. */
+	public boolean gearKnown() { return knownGear.size() == Gear.values().length; }
+	public boolean hasGearData(Gear item) { return item != null && knownGear.contains(item); }
 	public boolean has(Gear item) { return gear.contains(item); }
 	public boolean has(DataField field) { return availableFields.contains(field); }
 	public boolean hasClassLevel(DungeonClass dungeonClass) {
