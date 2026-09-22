@@ -6,9 +6,11 @@ import geiler.addons.client.hud.MacroTitleOverlay;
 import geiler.addons.client.location.HypixelModApi;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.module.Category;
+import geiler.addons.client.module.CheatsState;
 import geiler.addons.client.module.ModuleKeybind;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.MacrosModule;
+import geiler.addons.client.module.impl.GeneralModule;
 import geiler.addons.client.module.impl.InventoryButtonRules;
 import geiler.addons.client.module.impl.InventoryButtonPlacement;
 import geiler.addons.client.gui.ClickGuiScreen;
@@ -72,6 +74,11 @@ public final class MacroRunner {
 	private static final Set<Run> inputBlockOwners = new HashSet<>();
 	private static final Map<Integer, Set<Run>> heldKeyOwners = new HashMap<>();
 	private static final Map<String, WorldTriggerState> worldTriggerStates = new HashMap<>();
+	private static final Map<String, Long> chatTriggerStarts = new HashMap<>();
+	/** Chat this client sent from a macro recently enough that its echo could still arrive. */
+	private static List<MacroChatTrigger.SentLine> sentChatLines = List.of();
+	/** The last chat-triggered stack that matched a line but could not start. See {@link #replayLastBlocked()}. */
+	private static MacroChatTrigger.Blocked lastBlockedChatTrigger;
 	private static final Map<String, Long> finishedScripts = new HashMap<>();
 	private static String triggerWorldKey = "";
 	private static Level triggerLevel;
@@ -130,7 +137,11 @@ public final class MacroRunner {
 			if (!contextAllowed(macro.triggerContext(), minecraft.screen)) continue;
 			if (!macro.allowsIsland(HypixelModApi.currentIsland())) continue;
 			for (MacroScript script : macro.scripts()) {
-				if (script.trigger() == MacroScript.Trigger.KEY_PRESS && script.keybind().matches(event)) {
+				// A chat stack's hotkey is its manual replay key: the message itself cannot be
+				// pressed again, so the same field is what starts it by hand.
+				boolean hotkeyed = script.trigger() == MacroScript.Trigger.KEY_PRESS
+					|| script.trigger() == MacroScript.Trigger.CHAT;
+				if (hotkeyed && script.keybind().matches(event)) {
 					if (!isScriptRunning(script.id())) matches.add(new MacroScriptOwner(macro, script));
 				}
 			}
@@ -154,11 +165,21 @@ public final class MacroRunner {
 			lastLevel = minecraft.level;
 			lastChat = "";
 			lastChatSequence = chatSequence;
+			// Repeat delays belong to the world they started in; a fresh session is not "still
+			// cooling down" from one the player left.
+			chatTriggerStarts.clear();
 		}
 		for (Run run : List.copyOf(activeRuns)) {
 			if (MacroFlowRules.contextEnded(MacrosModule.INSTANCE.isActive(), minecraft.level != null,
 				minecraft.player != null, run.waitingForWorldSwitch())) {
 				finishRun(run, "context ended", false);
+				continue;
+			}
+			if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(run.macro)) {
+				// Switching the gate off has to stop what it would have prevented from starting,
+				// but only those runs: a single-action workflow is still allowed to finish.
+				message(minecraft, "Macro '" + run.macro.name() + "' stopped: Cheats were switched off.");
+				finishRun(run, "cheats disabled", false);
 				continue;
 			}
 			Island currentIsland = HypixelModApi.currentIsland();
@@ -171,6 +192,7 @@ public final class MacroRunner {
 		}
 		tickWorldTriggers(minecraft);
 		finishedScripts.entrySet().removeIf(entry -> System.nanoTime() - entry.getValue() > 2_000_000_000L);
+		sentChatLines = MacroChatTrigger.pruneSent(sentChatLines, System.nanoTime());
 	}
 
 	public static void onChatMessage(String content) {
@@ -179,6 +201,116 @@ public final class MacroRunner {
 		lastChatSequence = ++chatSequence;
 		lastChat = normalized.length() > MAX_CHAT_LENGTH
 			? normalized.substring(normalized.length() - MAX_CHAT_LENGTH) : normalized;
+		tickChatTriggers(normalized);
+	}
+
+	/**
+	 * Starts every chat-triggered stack whose pattern matches a received line.
+	 *
+	 * <p>Called from the message hook, which Fabric runs on the client thread, so a trigger can
+	 * never race the workflow it starts. The macro's trigger context is deliberately not consulted
+	 * here: a chat line is not a screen interaction, and the only screen rule that matters is that
+	 * inputs must not be injected while the player is typing - which the General module's override
+	 * relaxes on request.
+	 */
+	private static void tickChatTriggers(String normalized) {
+		Minecraft minecraft = Minecraft.getInstance();
+		long now = System.nanoTime();
+		sentChatLines = MacroChatTrigger.pruneSent(sentChatLines, now);
+		if (minecraft == null || minecraft.level == null || minecraft.player == null) return;
+		if (!MacrosModule.INSTANCE.isActive()) return;
+		if (MacroChatTrigger.isOwnEcho(normalized, sentChatLines, now)) {
+			chatDebug(minecraft, "a chat trigger ignored this macro's own sent line");
+			return;
+		}
+
+		Island island = HypixelModApi.currentIsland();
+		boolean typing = isTextOrEditorScreen(minecraft.screen);
+		String heldBack = typing && !GeneralModule.INSTANCE.chatTriggersInTextScreens().value()
+			? "a text or editor screen is open" : null;
+
+		for (MacroDefinition macro : MacrosModule.INSTANCE.macros()) {
+			if (!macro.enabled() || !macro.allowsIsland(island)) continue;
+			for (MacroScript script : macro.scripts()) {
+				if (script.trigger() != MacroScript.Trigger.CHAT) continue;
+				if (!MacroChatTrigger.matches(script.chatPattern(), script.chatContains(), normalized)) continue;
+				if (heldBack != null) {
+					blockChatTrigger(macro, script, heldBack, now, minecraft);
+					continue;
+				}
+				if (isScriptRunning(script.id())) {
+					blockChatTrigger(macro, script, "that stack is already running", now, minecraft);
+					continue;
+				}
+				if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(macro)) {
+					blockChatTrigger(macro, script, "Cheats are off and this workflow is "
+						+ MacroCheatRules.reason(macro.scripts()), now, minecraft);
+					continue;
+				}
+				long lastStart = chatTriggerStarts.getOrDefault(script.id(), 0L);
+				if (!MacroChatTrigger.cooldownElapsed(lastStart, now, script.chatCooldownMillis())) {
+					blockChatTrigger(macro, script, "its repeat delay has not elapsed", now, minecraft);
+					continue;
+				}
+				if (!start(macro, script)) {
+					blockChatTrigger(macro, script, "the macro runner refused the start", now, minecraft);
+					continue;
+				}
+				chatTriggerStarts.put(script.id(), System.nanoTime());
+			}
+		}
+	}
+
+	/**
+	 * Starts the chat-triggered stack that was most recently refused.
+	 *
+	 * <p>Bound to the General module's hotkey and offered as an action there. Every guard is
+	 * re-checked rather than trusted from the moment the trigger was blocked, because that moment
+	 * is exactly when it failed.
+	 */
+	public static void replayLastBlocked() {
+		Minecraft minecraft = Minecraft.getInstance();
+		MacroChatTrigger.Blocked blocked = lastBlockedChatTrigger;
+		if (blocked == null) {
+			message(minecraft, "No blocked macro to replay.");
+			return;
+		}
+		MacroDefinition macro = MacrosModule.INSTANCE.macro(blocked.macroId());
+		if (macro == null) {
+			lastBlockedChatTrigger = null;
+			message(minecraft, "That blocked macro no longer exists.");
+			return;
+		}
+		MacroScript script = null;
+		for (MacroScript candidate : macro.scripts()) {
+			if (candidate.id().equals(blocked.scriptId())) script = candidate;
+		}
+		if (script == null) {
+			lastBlockedChatTrigger = null;
+			message(minecraft, "That blocked event stack no longer exists.");
+			return;
+		}
+		if (!MacrosModule.INSTANCE.isActive()) {
+			message(minecraft, "The macro system is switched off.");
+			return;
+		}
+		if (minecraft == null || minecraft.level == null || minecraft.player == null) {
+			message(minecraft, "Join a world before replaying a macro.");
+			return;
+		}
+		if (isTextOrEditorScreen(minecraft.screen) && !GeneralModule.INSTANCE.chatTriggersInTextScreens().value()) {
+			message(minecraft, "Close the screen first: that is what blocked this macro.");
+			return;
+		}
+		long lastStart = chatTriggerStarts.getOrDefault(script.id(), 0L);
+		if (!MacroChatTrigger.cooldownElapsed(lastStart, System.nanoTime(), script.chatCooldownMillis())) {
+			message(minecraft, "Macro '" + macro.name() + "' is still inside its repeat delay.");
+			return;
+		}
+		if (!start(macro, script)) return;
+		chatTriggerStarts.put(script.id(), System.nanoTime());
+		log(macro, "REPLAY after being blocked by " + blocked.reason());
+		lastBlockedChatTrigger = null;
 	}
 
 	public static void cancel(String reason) {
@@ -204,6 +336,15 @@ public final class MacroRunner {
 		if (macro == null || script == null) return false;
 		if (script.steps().isEmpty()) {
 			message(Minecraft.getInstance(), "Macro '" + macro.name() + "' has no blocks in this event stack.");
+			return false;
+		}
+		if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(macro)) {
+			// Deliberately before the run-cap check: this refusal is about what the macro is, not
+			// about how busy the runner is, and the message has to say which one it is.
+			String reason = MacroCheatRules.reason(macro.scripts());
+			message(Minecraft.getInstance(), "Macro '" + macro.name() + "' needs Cheats because "
+				+ reason + ". Turn it on under Miscellaneous → General → Cheats.");
+			log(macro, "BLOCKED by the Cheats gate: " + reason);
 			return false;
 		}
 		if (!MacroRuntimeRules.canStart(isScriptRunning(script.id()), activeRuns.size(), MAX_ACTIVE_RUNS)) {
@@ -455,14 +596,35 @@ public final class MacroRunner {
 	}
 
 	private static void log(MacroDefinition macro, String text) {
-		long tick = 0;
-		Minecraft minecraft = Minecraft.getInstance();
-		if (minecraft.level != null) tick = minecraft.level.getGameTime();
 		// Keep chat/command payloads useful for diagnosis without allowing a pasted token or an
 		// accidentally huge hand-edited message to turn a per-macro log into a data dump.
 		if (text != null && text.length() > 192) text = text.substring(0, 189) + "…";
-		GeilerAddonsLog.write(Category.MISCELLANEOUS, "Macros-" + macro.id(), tick,
+		GeilerAddonsLog.write(Category.MISCELLANEOUS, "Macros-" + macro.id(), tickOf(Minecraft.getInstance()),
 			macro.name() + ": " + text);
+	}
+
+	/** Remembers a refused chat trigger so the replay key can start exactly that stack later. */
+	private static void blockChatTrigger(MacroDefinition macro, MacroScript script, String reason,
+		long nowNanos, Minecraft minecraft) {
+		lastBlockedChatTrigger = new MacroChatTrigger.Blocked(macro.id(), script.id(), reason, nowNanos);
+		GeilerAddonsLog.write(Category.MISCELLANEOUS, "Macros-" + macro.id(), tickOf(minecraft),
+			macro.name() + ": chat trigger on '" + script.chatPattern() + "' did not start — " + reason);
+	}
+
+	private static void chatDebug(Minecraft minecraft, String text) {
+		GeilerAddonsLog.write(Category.MISCELLANEOUS, "Macros", tickOf(minecraft), text);
+	}
+
+	/** Records chat this client just sent, so its echo cannot retrigger the stack that sent it. */
+	private static void rememberSentChat(String value) {
+		long now = System.nanoTime();
+		List<MacroChatTrigger.SentLine> updated = new ArrayList<>(sentChatLines);
+		updated.add(new MacroChatTrigger.SentLine(value, now));
+		sentChatLines = MacroChatTrigger.pruneSent(updated, now);
+	}
+
+	private static long tickOf(Minecraft minecraft) {
+		return minecraft == null || minecraft.level == null ? 0 : minecraft.level.getGameTime();
 	}
 
 	private static InputConstants.Key parseKey(String value) {
@@ -701,6 +863,14 @@ public final class MacroRunner {
 				abort("missing or disabled macro " + call.macroId());
 				return false;
 			}
+			if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(target)) {
+				// Unreachable from a normal start - a Macro Call block is itself complex, so the
+				// caller already needed Cheats - but a hand-edited package should still not be able
+				// to reach a gated workflow through the back door.
+				message(minecraft, "Macro '" + macro.name() + "' stopped: the called macro needs Cheats.");
+				abort("called macro needs Cheats " + call.macroId());
+				return false;
+			}
 			if (!MacroRuntimeRules.canEnterCall(caller.callDepth, MAX_CALL_DEPTH,
 				caller.macroPath.contains(target.id()))) {
 				message(minecraft, "Macro '" + macro.name() + "' stopped: recursive macro call limit reached.");
@@ -843,6 +1013,16 @@ public final class MacroRunner {
 					continue;
 				}
 				if (step instanceof MacroStep.MacroCall macroCall) {
+					// A false condition skips the call and the workflow carries on: the block is a
+					// shorthand for "call it if this holds", not an error path, so it stays quiet in
+					// chat and leaves one line in the debug log.
+					if (macroCall.condition() != null
+						&& !condition(macroCall.condition(), minecraft, chatStartSequence, cursor.frame().variables)) {
+						cursor.frame().index++;
+						clearBlocked();
+						log(macro, "SKIP call to macro " + macroCall.macroId() + " (condition false)");
+						continue;
+					}
 					if (!callMacro(macroCall, cursor.frame(), minecraft)) return;
 					continue;
 				}
@@ -941,6 +1121,7 @@ public final class MacroRunner {
 				if (minecraft.player == null || chat.message().isBlank()) return false;
 				String value = expandVariables(chat.message(), variables);
 				minecraft.player.connection.sendChat(value);
+				rememberSentChat(value);
 				log(macro, "CHAT " + value);
 				return true;
 			}

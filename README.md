@@ -30,6 +30,43 @@ planning list and does not represent a commitment to a specific implementation o
 ## Modules
 
 <details>
+<summary><b>General</b> — the mod-wide switches: Cheats, macro chat, updates</summary>
+
+<br>
+
+**General** in **Miscellaneous** holds the settings that belong to the mod as a whole rather than to
+one overlay. Its own switch does nothing: the values are read where they are used, so a fresh install
+gets the safe behaviour without having to enable a card first.
+
+**Cheats** (off by default) is a master gate, not another copy of the switches it covers. While it is
+off, a cheat-style option is forced to its safe behaviour and is shown greyed out in place, with a
+tooltip saying so — the gate is visible, never silent. What it covers today:
+
+- the **Depth Check** off-state in **Block ESP**, **Mob Highlight**, **Safari Floor Drops** and
+  **Pest Highlighter**. With Cheats off those overlays are depth-tested no matter what is stored, so
+  nothing is drawn through terrain.
+- macro automation: a workflow runs with Cheats off only if it is a single action (waits and input
+  blocking do not count as actions). Two actions, a condition, a loop, a call or a variable needs
+  Cheats, and those macros say so in the list, in the editor, and when you try to start one.
+
+Your stored choices are never overwritten by the gate: switch Cheats back on and everything is
+exactly as you left it.
+
+**Chat Triggers In Text Screens** (off by default) lets chat-triggered macro stacks run while a chat
+box, editor or menu has the keyboard. Leave it off and chat can never make a macro type into what you
+are writing.
+
+The **General hotkey** is the **Replay Last Blocked Macro** key, and the same action is a button in
+the module. It starts the chat-triggered stack that was most recently refused — the usual case being
+a message that arrived while chat was open — and explains itself when there is nothing to replay.
+
+**Check for Updates** lives here now instead of in the config file. The old top-level
+`checkForUpdates` key still seeds it once on the first launch after the move, so nobody loses their
+choice.
+
+</details>
+
+<details>
 <summary><b>Party Finder Stats</b> — shows dungeon stats for joining players</summary>
 
 <br>
@@ -224,8 +261,29 @@ can be switched independently. Ring mode supports several phase-shifted rings an
 selects the camera-facing point on the nearest moving ring, so it remains attached while the
 animation runs. The box has separate outline/fill colours, alpha and outline width; rings have
 their own colour, alpha, width, radius, count and speed. Depth Check applies to all world markers,
-while the projected name remains a normal HUD label. HP is intentionally not shown because the
-head marker does not provide reliable health data.
+while the projected name remains a normal HUD label. Its off-state is cheat-gated: see **General**.
+HP is intentionally not shown because the head marker does not provide reliable health data.
+
+</details>
+
+<details>
+<summary><b>Garden Plot Borders</b> — fixed 3D boxes around Garden plots</summary>
+
+<br>
+
+Draws a box around every plot, coloured by what the client actually knows: confirmed infested,
+confirmed clear, or unknown because the evidence is missing or too old. Cut, tree and clear reports
+are only ever used when they name a plot explicitly; a plot listed as infested without a count shows
+as infested rather than as zero pests.
+
+**The boxes stay put.** Each border is a 3D box drawn between a fixed world height and a chosen wall
+height, so it is a landmark you can navigate by — it does not ride your eye level while you walk or
+jump. **Capture Current Y** stores wherever you are standing as the border's floor the first time you
+need it; from then on it is yours to set, and **Wall Height** controls how tall the boxes are.
+
+Unknown plots are dashed rather than solid, so expired evidence cannot read as confirmed clear.
+Infested plots get a second, inset box of the same height. Labels sit on top of the box and are
+optional, as are clear and unknown plots themselves.
 
 </details>
 
@@ -255,6 +313,20 @@ condition is false. For example, Repeat Until with an **Item → Missing** condi
 separated partial-name list can click any matching item until none remain, with a delay on the Click
 Item node. Conditions can use item present/missing, exact/partial matching, screen, slot, chat, and
 world state, combined with AND, OR, and NOT. Wait Until resumes when its condition becomes true.
+**Call another macro** waits for that macro's **On Call** stack and can carry its own condition:
+with one set, the call is skipped when the condition is false and the workflow continues with the
+next block, so a gated call never has to be wrapped in an If/Else.
+
+**Chat event stacks.** Besides a hotkey and a world area, a macro can have a stack that fires from a
+received chat line: give it the text to look for and it starts whenever a line contains it (or
+matches the whole line, if you switch that off). Matching ignores Minecraft formatting codes and
+case, so a rank or channel prefix in front of the message does not matter, and action-bar lines count
+too. Each chat stack has a **minimum repeat delay** so a repeated line cannot restart it constantly,
+and it will not react to its own message being echoed back by the server. Chat stacks do not run while
+you are typing: **General → Chat Triggers In Text Screens** overrides that, and
+**General → Replay Last Blocked Macro** (hotkey or button) starts whichever stack was most recently
+refused. A chat stack can also be given a **replay hotkey** of its own, which starts it by hand at
+any time.
 
 World Switch destinations are selected from a dropdown of named islands. Island names cannot be
 typed manually. A switch to a different or unknown island stops the workflow safely. A macro can
@@ -262,8 +334,10 @@ also be restricted to selected islands and can run in the world, containers, or 
 Each node has a labeled minimum and maximum pre-node delay in milliseconds; there is no hidden
 macro-wide default delay.
 
-Only one macro runs at a time. Starting another replaces the previous run; pressing the active
-macro's hotkey cancels it. Duplicate hotkeys are rejected with a client-side warning. A missing
+Event stacks run independently: a macro's key, world-area, chat and `On Call` stacks each have their
+own run state, concurrent runs are supported, and re-entry is prevented per stack rather than per
+macro. Starting another stack does not replace one already running; pressing a stack's own hotkey
+while it runs is ignored. Duplicate hotkeys are rejected with a client-side warning. A missing
 slot/item or unmet wait condition is retried for five seconds, then the run stops with a chat
 message. Click **Set hotkey** and release a key to save it; **Escape** clears it, and the editor
 shows a visible listening banner while capturing. The **Help** button gives step-by-step recipes for
@@ -273,10 +347,13 @@ island rule. The `/ga` command is registered locally, so Brigadier can suggest i
 when **Dev → Debug** is enabled; log sessions are retained rather than deleted automatically.
 
 The **Enable Macro System** toggle is the master switch for all macro hotkeys and running
-workflows; each macro also has its own **Macro Enabled** toggle. **Share / Paste Macros** opens a
+workflows; each macro also has its own **Macro Enabled** toggle. With **Cheats** off, a macro that is
+more than a single action needs Cheats before it will start, and says so in its list entry, in the
+editor, and when you try to run it — see **General**. **Share / Paste Macros** opens a
 multi-select manager that copies selected macros as a portable clipboard package and appends
-packages as new macros without overwriting existing ones. New packages use transfer format v2;
-format v1 packages remain importable. **Manage Folders** provides a separate nested macro tree.
+packages as new macros without overwriting existing ones. New packages use transfer format v5, which
+added chat event stacks and conditional macro calls; v1–v4 packages remain importable and simply
+arrive without those new fields. **Manage Folders** provides a separate nested macro tree.
 Folder names may repeat because UI state is keyed by stable folder ID; deleting a non-empty folder
 promotes its entries and child folders to its parent instead of deleting them.
 
@@ -363,6 +440,7 @@ In-world colours — waypoint states, solver directions, device highlights — s
 
 - Modules are cards. The **switch** turns one on; **clicking anywhere else** on the card opens its settings — either mouse button works.
 - Settings are grouped into sections you can fold shut. It remembers which ones you closed.
+- A greyed-out switch is being held safe by **Cheats**; hover it to see what would need turning on.
 - Colours open a proper picker: drag the square for shade, the strip under it for hue, the one below that for transparency, or type a hex code straight in.
 - Small numeric ranges (maximum 50 or below) are draggable sliders with a live readout. Larger
   ranges use a direct text input so values such as delays and scan intervals can be entered
@@ -383,7 +461,7 @@ are a spatial layout, not a multi-entry folder list.
 
 Your settings live in `.minecraft/config/geileraddons/config.json`. Delete it to reset everything.
 
-**Update check:** on launch, the mod asks GitHub whether a newer release exists, and tells you in chat if so. It never downloads or installs anything. To turn it off, set `"checkForUpdates": false` in that config file.
+**Update check:** on launch, the mod asks GitHub whether a newer release exists, and tells you in chat if so. When one does, the Click GUI header grows a row with **Download** and **Info**: Download opens the release page through the usual link confirmation, and Info opens a scrollable panel with the release notes and the version you have. Both stay inside the mod — nothing is ever downloaded or installed. Turn the check off with **Miscellaneous → General → Check for Updates** (an existing `"checkForUpdates"` key in the config file seeds that setting once, then the setting is authoritative).
 
 **Island detection:** modules that only apply on one island need to know which island you're on, so the mod subscribes to the official Hypixel Mod API. The shared API handles the greeting and registration, then reports the island whenever you change server. One config-file key controls it:
 

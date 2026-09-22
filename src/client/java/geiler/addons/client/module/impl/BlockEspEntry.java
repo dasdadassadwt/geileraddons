@@ -27,7 +27,8 @@ public final class BlockEspEntry {
 	private final BooleanSetting showLabel = new BooleanSetting("Show Label", true);
 	private final BooleanSetting tracer = new BooleanSetting("Tracer", false);
 	private final BooleanSetting connectTouching = new BooleanSetting("Connect Touching Blocks", true);
-	private final BooleanSetting depthCheck = new BooleanSetting("Depth Check", false);
+	/** Seeing the block through terrain is the cheat; the safe state is depth-checked. */
+	private final BooleanSetting depthCheck = BooleanSetting.cheat("Depth Check", "Depth Check", false, true);
 	private final BooleanSetting useCustomRange = new BooleanSetting("Use Custom Range", false);
 	private final NumberSetting customRange = new NumberSetting("Custom Range (blocks)", 1, 512, 32, true);
 	private final ColorSetting outlineColor = new ColorSetting("Outline Color", 255, 190, 0, 255);

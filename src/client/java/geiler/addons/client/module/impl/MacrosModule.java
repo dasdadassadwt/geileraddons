@@ -24,8 +24,11 @@ import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.gui.MacroTransferScreen;
+import geiler.addons.client.macro.MacroCheatRules;
+import geiler.addons.client.module.CheatsState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.input.KeyEvent;
+import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.ArrayDeque;
@@ -176,6 +179,19 @@ public final class MacrosModule extends Module {
 			SettingGroup macroGroup = new SettingGroup("Macro " + macro.id() + " • " + macro.name(),
 				c.enabled, c.name, c.context,
 				c.islandRestricted, capture, edit, delete);
+			// The gate is visible here rather than only when a start is refused: the row explains
+			// what the workflow would need and what to turn on, without moving the macro's switch.
+			if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(macro)) {
+				String reason = MacroCheatRules.reason(macro.scripts());
+				macroGroup = new SettingGroup("Macro " + macro.id() + " • " + macro.name(),
+					c.enabled, c.name, c.context, c.islandRestricted, capture, edit,
+					new ModuleAction("Cheats required",
+						"This workflow needs Cheats because " + reason
+							+ ". Turn it on under Miscellaneous → General → Cheats.",
+						() -> message("Macro '" + macro.name() + "' needs Cheats because " + reason
+							+ ". Turn it on under Miscellaneous → General → Cheats.")),
+					delete);
+			}
 			SettingGroup islands = SettingGroup.folded("Islands",
 				c.islands.values().toArray(new Setting[0]));
 			return macroGroup.containing(islands).keyed("macro-entry:" + macro.id());
@@ -184,6 +200,14 @@ public final class MacrosModule extends Module {
 	private void openEditor(MacroDefinition macro) {
 		Minecraft minecraft = Minecraft.getInstance();
 		minecraft.setScreen(new ScratchMacroEditorScreen(minecraft.screen, macro));
+	}
+
+	/** Client-side note for a refusal the player asked about; the same wording the runner uses. */
+	private static void message(String text) {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft != null && minecraft.gui != null) {
+			minecraft.gui.getChat().addClientSystemMessage(Component.literal("[Macros] " + text));
+		}
 	}
 
 	private void openTransfer() {
@@ -270,8 +294,13 @@ public final class MacrosModule extends Module {
 			} else if (step instanceof MacroStep.FunctionCall call) {
 				if (!call.functionId().isBlank()) functionQueue.add(call.functionId());
 				for (geiler.addons.client.macro.MacroValue argument : call.arguments()) collectValueReference(argument, globalVariableIds);
-			} else if (step instanceof MacroStep.MacroCall call && call.macroId() >= 0) macroQueue.add(call.macroId());
-			else if (step instanceof MacroStep.IfElse branch) {
+			} else if (step instanceof MacroStep.MacroCall call) {
+				if (call.macroId() >= 0) macroQueue.add(call.macroId());
+				// A gated call can reference a global variable inside its condition, which an
+				// import has to carry along or the imported copy would read a variable that does
+				// not exist on the receiving client.
+				collectConditionReference(call.condition(), globalVariableIds);
+			} else if (step instanceof MacroStep.IfElse branch) {
 				collectConditionReference(branch.condition(), globalVariableIds);
 				collectReferences(branch.thenSteps(), macroQueue, functionQueue, globalVariableIds, depth + 1);
 				collectReferences(branch.elseSteps(), macroQueue, functionQueue, globalVariableIds, depth + 1);

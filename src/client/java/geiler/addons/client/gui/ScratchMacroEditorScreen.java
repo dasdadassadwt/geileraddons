@@ -3,6 +3,8 @@ package geiler.addons.client.gui;
 import com.mojang.blaze3d.platform.InputConstants;
 import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.location.Island;
+import geiler.addons.client.macro.MacroChatTrigger;
+import geiler.addons.client.macro.MacroCheatRules;
 import geiler.addons.client.macro.MacroCondition;
 import geiler.addons.client.macro.MacroDefinition;
 import geiler.addons.client.macro.MacroFunction;
@@ -12,6 +14,7 @@ import geiler.addons.client.macro.MacroStep;
 import geiler.addons.client.macro.MacroValue;
 import geiler.addons.client.macro.MacroVariableStore;
 import geiler.addons.client.macro.MacroWorldRegion;
+import geiler.addons.client.module.CheatsState;
 import geiler.addons.client.module.ModuleKeybindManager;
 import geiler.addons.client.module.impl.MacrosModule;
 import geiler.addons.client.module.impl.VisualModule;
@@ -373,6 +376,25 @@ public final class ScratchMacroEditorScreen extends Screen {
 		if (!replayingCanvasTargets) cacheCanvasTargets(viewport, hitStart, dropStart);
 		replayingCanvasTargets = false;
 		renderZoomControls(graphics, viewport, mouseX, mouseY);
+		if (tab == Tab.CODE && macro != null && !CheatsState.enabled()
+			&& MacroCheatRules.requiresCheats(macro)) {
+			drawCheatsWarning(graphics, viewport);
+		}
+	}
+
+	/**
+	 * The editor has to say the gate is closed, or a workflow that never starts looks broken.
+	 *
+	 * <p>Drawn over the canvas rather than in its own row: the workspace layout is shared with the
+	 * Functions tab and shifting every stack down by a banner would move what the player is editing.
+	 */
+	private void drawCheatsWarning(GuiGraphicsExtractor graphics, Rect viewport) {
+		int height = 15;
+		roundedRect(graphics, viewport.x + 4, viewport.y + 2, viewport.w - 8, height, RADIUS_SMALL,
+			withOpacity(0xFFB4453C, 0.88f));
+		graphics.centeredText(font,
+			trim("Cheats are off — this workflow needs Cheats to run", viewport.w - 20),
+			viewport.x + viewport.w / 2, viewport.y + 2 + (height - 8) / 2, 0xFFFFFFFF);
 	}
 
 	private boolean canReuseCanvasTargets(Rect viewport) {
@@ -404,23 +426,34 @@ public final class ScratchMacroEditorScreen extends Screen {
 		int x = pane.x + 8;
 		int controlY = y;
 		if (tab == Tab.CODE) {
-			int buttonW = pane.w < 430 ? Math.max(44, (pane.w - 36) / 3) : 57;
-			Rect addKey = new Rect(pane.x + pane.w - 8 - buttonW * 3 - 6, controlY, buttonW, 19);
+			int buttonW = pane.w < 560 ? Math.max(38, (pane.w - 48) / 4) : 54;
+			int buttonsX = pane.x + pane.w - 8 - (buttonW * 4 + 9);
+			Rect addKey = new Rect(buttonsX, controlY, buttonW, 19);
 			Rect addRegion = new Rect(addKey.x + buttonW + 3, controlY, buttonW, 19);
 			Rect addCall = new Rect(addRegion.x + buttonW + 3, controlY, buttonW, 19);
+			Rect addChat = new Rect(addCall.x + buttonW + 3, controlY, buttonW, 19);
 			button(graphics, "+ Key", addKey, mouseX, mouseY, pane, () -> addScript(MacroScript.Trigger.KEY_PRESS), false, categoryColor(Category.ACTIONS));
 			button(graphics, "+ Area", addRegion, mouseX, mouseY, pane, () -> addScript(MacroScript.Trigger.WORLD_REGION), false, categoryColor(Category.WORLD));
 			button(graphics, "+ Call", addCall, mouseX, mouseY, pane, () -> addScript(MacroScript.Trigger.ON_CALL), false, categoryColor(Category.FUNCTIONS));
-			if (pane.w >= 350 && selectedScript != null && selectedScript.trigger() == MacroScript.Trigger.KEY_PRESS) {
+			button(graphics, "+ Chat", addChat, mouseX, mouseY, pane, () -> addScript(MacroScript.Trigger.CHAT), false, categoryColor(Category.ACTIONS));
+			boolean bindable = selectedScript != null && (selectedScript.trigger() == MacroScript.Trigger.KEY_PRESS
+				|| selectedScript.trigger() == MacroScript.Trigger.CHAT);
+			if (bindable) {
+				// Drawn only when it actually fits beside the event buttons: four of them leave less
+				// room than three did, and an overlapping hit box would steal their clicks.
 				int captureW = Math.min(102, Math.max(72, pane.w / 5));
 				Rect capture = new Rect(x, controlY, captureW, 19);
-				boolean binding = ModuleKeybindManager.bindingScript() == selectedScript;
-				button(graphics, binding ? "Listening…" : "Set key", capture, mouseX, mouseY, pane,
-					this::toggleScriptBinding, false, binding ? categoryColor(Category.ACTIONS) : 0);
+				if (capture.x + capture.w + 6 <= buttonsX) {
+					boolean binding = ModuleKeybindManager.bindingScript() == selectedScript;
+					button(graphics, binding ? "Listening…" : "Set key", capture, mouseX, mouseY, pane,
+						this::toggleScriptBinding, false, binding ? categoryColor(Category.ACTIONS) : 0);
+				}
 			}
-			if (pane.w >= 350 && selectedScript != null && macro.scripts().size() > 1) {
+			if (selectedScript != null && macro.scripts().size() > 1) {
 				Rect remove = new Rect(addKey.x - 34, controlY, 30, 19);
-				button(graphics, "×", remove, mouseX, mouseY, pane, this::removeSelectedScript, false, TEXT_ERROR);
+				if (remove.x >= pane.x + 4) {
+					button(graphics, "×", remove, mouseX, mouseY, pane, this::removeSelectedScript, false, TEXT_ERROR);
+				}
 			}
 		} else {
 			int createW = pane.w < 360 ? Math.max(72, pane.w / 3) : 96;
@@ -484,6 +517,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		Rect hat = new Rect(x, y, stackW, hatH);
 		int color = script.trigger() == MacroScript.Trigger.KEY_PRESS ? categoryColor(Category.ACTIONS)
 			: script.trigger() == MacroScript.Trigger.WORLD_REGION ? categoryColor(Category.WORLD)
+			: script.trigger() == MacroScript.Trigger.CHAT ? categoryColor(Category.ACTIONS)
 			: categoryColor(Category.FUNCTIONS);
 		boolean selected = script == selectedScript;
 		roundedRectBordered(graphics, hat.x, hat.y, hat.w, hat.h, 11,
@@ -492,6 +526,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 			case KEY_PRESS -> "when  " + script.keybind().displayName() + "  pressed";
 			case WORLD_REGION -> regionHatLabel(script.worldRegion());
 			case ON_CALL -> "when this macro is called";
+			case CHAT -> chatHatLabel(script);
 		};
 		graphics.text(font, trim(label, hat.w - 58), hat.x + 10, hat.y + 7,
 			macroAccentText(0xFF1C2028));
@@ -760,6 +795,8 @@ public final class ScratchMacroEditorScreen extends Screen {
 			y[0] += 28;
 		} else if (script.trigger() == MacroScript.Trigger.WORLD_REGION) {
 			drawRegionProperties(graphics, viewport, y, script.worldRegion(), script, mouseX, mouseY);
+		} else if (script.trigger() == MacroScript.Trigger.CHAT) {
+			drawChatProperties(graphics, viewport, y, script, mouseX, mouseY);
 		}
 		button(graphics, "Remove this event stack", rowRect(viewport, y[0], 23), mouseX, mouseY,
 			viewport, this::removeSelectedScript, false, TEXT_ERROR);
@@ -803,6 +840,34 @@ public final class ScratchMacroEditorScreen extends Screen {
 			});
 		toggleRow(graphics, viewport, y, "Once per loaded world", region.oncePerWorld(),
 			() -> { region.setOncePerWorld(!region.oncePerWorld()); dirty(); }, mouseX, mouseY);
+	}
+
+	/**
+	 * Chat event settings.
+	 *
+	 * <p>No trigger context or priority here on purpose: the trigger is a phrase, and the only
+	 * choices that change what it does are how the phrase is compared, how often it may fire, and
+	 * which key starts the stack by hand when a line arrives at a bad moment.
+	 */
+	private void drawChatProperties(GuiGraphicsExtractor graphics, Rect viewport, int[] y,
+		MacroScript script, int mouseX, int mouseY) {
+		sectionTitle(graphics, viewport, y, "Chat message");
+		drawTextField(graphics, viewport, y, "Text to look for", "chat-pattern-" + script.id(),
+			script::chatPattern, script::setChatPattern);
+		toggleRow(graphics, viewport, y, "Match anywhere in the line", script.chatContains(),
+			() -> { script.setChatContains(!script.chatContains()); dirty(); }, mouseX, mouseY);
+		drawIntField(graphics, viewport, y, "Minimum repeat delay (ms)", "chat-delay-" + script.id(),
+			script::chatCooldownMillis, script::setChatCooldownMillis);
+		lineText(graphics, viewport, y, "Replay hotkey", script.keybind().displayName());
+		button(graphics, ModuleKeybindManager.bindingScript() == script
+				? "Listening for key…" : "Capture replay hotkey",
+			rowRect(viewport, y[0], 23), mouseX, mouseY, viewport, this::toggleScriptBinding,
+			false, categoryColor(Category.ACTIONS));
+		y[0] += 28;
+		if (script.chatPattern().isBlank()) {
+			lineText(graphics, viewport, y, "Status", "Needs text before it can fire");
+		}
+		lineText(graphics, viewport, y, "Behaviour", "Chat triggers never run while typing");
 	}
 
 	private void drawFunctionProperties(GuiGraphicsExtractor graphics, Rect viewport, int[] y,
@@ -1109,7 +1174,16 @@ public final class ScratchMacroEditorScreen extends Screen {
 				openPicker("Choose a macro", options);
 			}, false, categoryColor(Category.FUNCTIONS));
 		y[0] += 27;
+		// Optional gate. Left as "always" it stays unconditional, which is what every macro written
+		// before this existed keeps doing.
+		drawConditionButton(graphics, viewport, y, "Condition", call.condition(), call::setCondition,
+			mouseX, mouseY, 0);
+		drawConditionProperties(graphics, viewport, y, call.condition(), call::setCondition,
+			mouseX, mouseY, 0);
 		lineText(graphics, viewport, y, "Behavior", "Waits for the target’s On Call stack");
+		if (call.condition() != null) {
+			lineText(graphics, viewport, y, "When false", "The call is skipped; the workflow continues");
+		}
 		lineText(graphics, viewport, y, "Available", targets.size() + " other macros");
 	}
 
@@ -2453,7 +2527,8 @@ public final class ScratchMacroEditorScreen extends Screen {
 		}
 		if (step instanceof MacroStep.MacroCall call) {
 			MacroDefinition target = MacrosModule.INSTANCE.macro(call.macroId());
-			return "call macro  " + (target == null ? "[choose macro]" : target.name());
+			String base = "call macro  " + (target == null ? "[choose macro]" : target.name());
+			return call.condition() == null ? base : base + "  if  " + conditionLabel(call.condition());
 		}
 		if (step instanceof MacroStep.IfElse branch) return "if  " + conditionLabel(branch.condition()) + "  then";
 		if (step instanceof MacroStep.Repeat repeat) return repeat.forever() ? "repeat forever" : "repeat  " + repeat.count() + "  times";
@@ -2521,7 +2596,8 @@ public final class ScratchMacroEditorScreen extends Screen {
 		}
 		if (step instanceof MacroStep.MacroCall call) {
 			MacroDefinition target = MacrosModule.INSTANCE.macro(call.macroId());
-			return new BlockPreview("call macro", target == null ? "choose" : target.name(), "");
+			String suffix = call.condition() == null ? "" : "if " + conditionLabel(call.condition());
+			return new BlockPreview("call macro", target == null ? "choose" : target.name(), suffix);
 		}
 		if (step instanceof MacroStep.IfElse branch) return new BlockPreview("if",
 			conditionLabel(branch.condition()), "then");
@@ -2561,11 +2637,20 @@ public final class ScratchMacroEditorScreen extends Screen {
 			+ (region.oncePerWorld() ? "  · once" : "  · repeat " + region.repeatDelayMillis() + "ms");
 	}
 
+	/** The hat line for a chat stack: what it looks for, and how it can be started by hand. */
+	private String chatHatLabel(MacroScript script) {
+		String pattern = script.chatPattern().isBlank() ? "…" : trim(script.chatPattern(), 60);
+		String base = "when chat  " + (script.chatContains() ? "contains" : "matches")
+			+ "  \u201C" + pattern + "\u201D";
+		return script.keybind().isBound() ? base + "  · " + script.keybind().displayName() : base;
+	}
+
 	private String triggerName(MacroScript.Trigger trigger) {
 		return switch (trigger) {
 			case KEY_PRESS -> "Key pressed";
 			case WORLD_REGION -> "World area";
 			case ON_CALL -> "On Call";
+			case CHAT -> "Chat message";
 		};
 	}
 

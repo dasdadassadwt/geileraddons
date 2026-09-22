@@ -32,6 +32,9 @@ public final class MacroScriptConfigCodec {
 			object.addProperty("modifiers", script.keybind().modifiers());
 			object.addProperty("canvasX", script.canvasX());
 			object.addProperty("canvasY", script.canvasY());
+			object.addProperty("chatPattern", script.chatPattern());
+			object.addProperty("chatContains", script.chatContains());
+			object.addProperty("chatCooldownMillis", script.chatCooldownMillis());
 			object.add("steps", MacroStepConfigCodec.encode(script.steps()));
 			object.add("worldRegion", encodeRegion(script.worldRegion()));
 			result.add(object);
@@ -53,6 +56,9 @@ public final class MacroScriptConfigCodec {
 				catch (RuntimeException ignored) { script.setKeybind(ModuleKeybind.NONE); }
 			}
 			script.setCanvasPosition((float) decimal(object, "canvasX", 0), (float) decimal(object, "canvasY", 0));
+			script.setChatPattern(string(object, "chatPattern", ""));
+			script.setChatContains(bool(object, "chatContains", true));
+			script.setChatCooldownMillis(integer(object, "chatCooldownMillis", 500));
 			script.steps().addAll(MacroStepConfigCodec.decode(array(object, "steps")));
 			script.setWorldRegion(decodeRegion(object.get("worldRegion")));
 			result.add(script);

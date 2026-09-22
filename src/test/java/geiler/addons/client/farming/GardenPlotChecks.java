@@ -50,11 +50,53 @@ public final class GardenPlotChecks {
 			"inset border spans the 96-block plot minus both margins");
 		check(solid.stream().allMatch(edge -> edge.from().y() == 72.25 && edge.to().y() == 72.25),
 			"all border segments stay on the selected render plane");
-		List<GardenPlotGeometry.Segment> dashed = GardenPlotGeometry.dashedPerimeter(plot, 72.25, 0.5, 8, 6);
+		// Unknown or expired evidence is dashed, so it cannot read as confirmed clear.
+		List<GardenPlotGeometry.Segment> dashed = GardenPlotGeometry.dashedSegments(
+			GardenPlotGeometry.perimeter(plot, 72.25, 0.5), 8, 6);
 		check(dashed.size() > solid.size(), "unknown-state outline is segmented rather than solid");
 		check(dashed.stream().allMatch(dash -> dash.length() <= 8.0001), "unknown outline respects dash length");
-		check(GardenPlotGeometry.dashedPerimeter(plot, 72, 0, 0, 3).isEmpty(),
+		check(GardenPlotGeometry.dashedSegments(GardenPlotGeometry.perimeter(plot, 72, 0), 0, 3).isEmpty(),
 			"invalid dash settings fail closed");
+		checkBoxEdges(plot);
+	}
+
+	/**
+	 * The border is a fixed landmark now: every edge lives between the two stored heights and none
+	 * of them can move when the player does.
+	 */
+	private static void checkBoxEdges(GardenPlotGrid.Plot plot) {
+		List<GardenPlotGeometry.Segment> box = GardenPlotGeometry.boxEdges(plot, 70, 73, 0.5);
+		check(box.size() == 12, "a plot box has twelve edges");
+		check(box.stream().allMatch(edge -> edge.from().y() >= 70.0 && edge.to().y() >= 70.0
+			&& edge.from().y() <= 73.0 && edge.to().y() <= 73.0),
+			"every box edge stays between the fixed bottom and top heights");
+		check(box.stream().anyMatch(edge -> edge.from().y() == 70.0 && edge.to().y() == 70.0),
+			"the box has a bottom ring at the stored world height");
+		check(box.stream().anyMatch(edge -> edge.from().y() == 73.0 && edge.to().y() == 73.0),
+			"the box has a top ring at the wall height");
+		check(box.stream().anyMatch(edge -> edge.from().y() == 70.0 && edge.to().y() == 73.0),
+			"the box has vertical walls connecting them");
+		check(box.stream().allMatch(edge -> edge.from().x() >= plot.minX() + 0.5
+			&& edge.from().x() <= plot.maxX() - 0.5), "the box keeps its inset on the X axis");
+		check(box.stream().allMatch(edge -> edge.from().z() >= plot.minZ() + 0.5
+			&& edge.from().z() <= plot.maxZ() - 0.5), "the box keeps its inset on the Z axis");
+
+		// Reversed and degenerate heights still produce a drawable box rather than nothing.
+		check(GardenPlotGeometry.boxEdges(plot, 73, 70, 0.5).size() == 12,
+			"reversed heights are normalised into a box");
+		List<GardenPlotGeometry.Segment> flat = GardenPlotGeometry.boxEdges(plot, 70, 70, 0.5);
+		check(flat.size() == 12, "a degenerate height still draws a box");
+		check(flat.stream().allMatch(edge -> Math.abs(edge.length()) < 96.0001),
+			"a degenerate box stays within the plot");
+		check(GardenPlotGeometry.boxEdges(null, 70, 73, 0.5).isEmpty(), "a missing plot yields no geometry");
+		check(GardenPlotGeometry.boxEdges(plot, Double.NaN, 73, 0.5).isEmpty(),
+			"a non-finite height yields no geometry");
+
+		List<GardenPlotGeometry.Segment> dashedBox = GardenPlotGeometry.dashedSegments(
+			GardenPlotGeometry.boxEdges(plot, 70, 73, 0.5), 8, 6);
+		check(dashedBox.size() > box.size(), "a dashed box is segmented rather than solid");
+		check(dashedBox.stream().allMatch(dash -> dash.length() <= 8.0001), "a dashed box respects dash length");
+		check(GardenPlotGeometry.dashedSegments(box, 0, 6).isEmpty(), "an invalid dash fails closed");
 	}
 
 	private static void checkEvidenceStates() {

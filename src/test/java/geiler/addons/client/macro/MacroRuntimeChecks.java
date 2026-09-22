@@ -1,5 +1,6 @@
 package geiler.addons.client.macro;
 
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import geiler.addons.client.config.MacroStepConfigCodec;
 import geiler.addons.client.config.MacroVariableConfigCodec;
@@ -157,8 +158,12 @@ public final class MacroRuntimeChecks {
 		assertFalse(imported.globalVariables().getFirst().persistValue(),
 			"portable packages never transfer the local persistence preference");
 
-		String versionThree = packageText.replace("\"version\":4", "\"version\":3");
-		MacroTransfer.ImportResult legacy = MacroTransfer.decode(versionThree, 902);
+		// Downgrade by editing the JSON rather than string-replacing a version literal, so this
+		// keeps testing "a v3 package has no globalVariables section" as the format advances.
+		JsonObject olderPackage = JsonParser.parseString(packageText).getAsJsonObject();
+		olderPackage.addProperty("version", 3);
+		olderPackage.remove("globalVariables");
+		MacroTransfer.ImportResult legacy = MacroTransfer.decode(olderPackage.toString(), 902);
 		assertTrue(legacy.success(), "version 3 packages remain readable after the transfer version advances");
 		assertTrue(legacy.globalVariables().isEmpty(), "older packages without global definitions remain valid");
 		MacrosModule.INSTANCE.globalVariables().restore(previousGlobals);
@@ -195,6 +200,56 @@ public final class MacroRuntimeChecks {
 		assertEquals(2, restoredCall.arguments().size(), "function arguments are preserved");
 		assertTrue(restoredCall.arguments().get(1).variableReference(), "variable argument references are preserved");
 		assertEquals(72, ((MacroStep.MacroCall) restored.get(8)).macroId(), "macro-call target is preserved before import remapping");
+		assertTrue(((MacroStep.MacroCall) restored.get(8)).condition() == null,
+			"a call written without a condition stays unconditional");
+		checkConditionalMacroCall();
+	}
+
+	/**
+	 * A gated Macro Call has to survive both codecs, stay unconditional when it was written that
+	 * way, and carry a global variable its condition reads - otherwise an imported copy would refer
+	 * to a variable the receiving client does not have.
+	 */
+	private static void checkConditionalMacroCall() {
+		MacroStep.MacroCall gated = new MacroStep.MacroCall(73);
+		gated.setCondition(new MacroCondition.Not(new MacroCondition.Variable("ready",
+			MacroCondition.Variable.Operator.EQUALS, MacroValue.literal(MacroValue.Type.BOOLEAN, "true"))));
+		List<MacroStep> restored = MacroStepConfigCodec.decode(JsonParser.parseString(
+			MacroStepConfigCodec.encode(List.of(gated)).toString()).getAsJsonArray());
+		MacroStep.MacroCall restoredCall = (MacroStep.MacroCall) restored.getFirst();
+		assertEquals(73, restoredCall.macroId(), "a gated call keeps its target");
+		assertTrue(restoredCall.condition() instanceof MacroCondition.Not,
+			"a compound condition survives the config round trip");
+		assertTrue(((MacroCondition.Not) restoredCall.condition()).child() instanceof MacroCondition.Variable,
+			"the nested condition survives the config round trip");
+
+		MacroStep.MacroCall legacy = (MacroStep.MacroCall) MacroStepConfigCodec.decode(
+			JsonParser.parseString("[{\"type\":\"macro_call\",\"macroId\":9}]").getAsJsonArray()).getFirst();
+		assertTrue(legacy.condition() == null,
+			"a call written before conditions existed decodes as unconditional");
+
+		MacroVariableStore.SavedVariable definition = new MacroVariableStore.SavedVariable(
+			new MacroVariableStore.Definition("variable-id", "ready", MacroValue.Type.BOOLEAN, false), null);
+		List<MacroVariableStore.SavedVariable> previousDefinitions =
+			MacrosModule.INSTANCE.globalVariables().savedVariables();
+		MacroDefinition caller = new MacroDefinition(42);
+		MacroStep.MacroCall referencing = new MacroStep.MacroCall(43);
+		referencing.setCondition(new MacroCondition.Variable("x", MacroCondition.Variable.Operator.EQUALS,
+			MacroValue.literal(MacroValue.Type.TEXT, ""), "variable-id"));
+		caller.steps().add(referencing);
+		MacroDefinition target = new MacroDefinition(43);
+		target.addScript(MacroScript.Trigger.ON_CALL).steps().add(new MacroStep.Chat("ran"));
+		MacrosModule.INSTANCE.restore(List.of(caller, target));
+		MacrosModule.INSTANCE.globalVariables().restore(List.of(definition));
+		try {
+			MacroTransfer.ImportResult imported = MacroTransfer.decode(
+				MacrosModule.INSTANCE.exportEncoded(List.of(caller)), 700);
+			assertTrue(imported.success(), "a macro whose call condition reads a global exports cleanly");
+			assertEquals(1, imported.globalVariables().size(),
+				"a global variable referenced only by a call condition is exported with its macro");
+		} finally {
+			MacrosModule.INSTANCE.globalVariables().restore(previousDefinitions);
+		}
 	}
 
 	private static void checkDependenciesAndLegacyMigration() {

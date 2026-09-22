@@ -22,7 +22,8 @@ import java.util.List;
 public final class MacroTransfer {
 	private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 	private static final String FORMAT = "geileraddons-macros";
-	private static final int VERSION = 4;
+	/** 5 added chat event stacks and conditional macro calls; both decode from 4 with their defaults. */
+	private static final int VERSION = 5;
 	private static final int MAX_PAYLOAD_LENGTH = 512_000;
 	private static final int MAX_MACROS = 64;
 	private static final int MAX_STEPS = 512;

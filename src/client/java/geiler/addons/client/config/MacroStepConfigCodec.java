@@ -115,7 +115,11 @@ public final class MacroStepConfigCodec {
 			for (MacroValue argument : value.arguments()) arguments.add(writeValue(argument));
 			result.add("arguments", arguments);
 		}
-		if (step instanceof MacroStep.MacroCall value) result.addProperty("macroId", value.macroId());
+		if (step instanceof MacroStep.MacroCall value) {
+			result.addProperty("macroId", value.macroId());
+			// Written only when set: an unconditional call keeps the shape it has always had.
+			if (value.condition() != null) result.add("condition", writeCondition(value.condition(), depth + 1));
+		}
 		if (step instanceof MacroStep.WorldSwitch value) result.addProperty("island", value.target().name());
 		if (step instanceof MacroStep.WaitUntil value) result.add("condition", writeCondition(value.condition(), depth + 1));
 		if (step instanceof MacroStep.IfElse value) {
@@ -229,7 +233,7 @@ public final class MacroStepConfigCodec {
 			case "change_variable" -> new MacroStep.ChangeVariable(string(object, "name", "value"),
 				decimal(object, "amount", 1), string(object, "globalVariableId", null));
 			case "function_call" -> readFunctionCall(object);
-			case "macro_call" -> new MacroStep.MacroCall(integer(object, "macroId", 0));
+			case "macro_call" -> readMacroCall(object, depth + 1);
 			case "world_switch" -> new MacroStep.WorldSwitch(selectableIsland(string(object, "island", Island.HUB.name())));
 			case "wait_until" -> new MacroStep.WaitUntil(readCondition(object.get("condition"), depth + 1));
 			case "if" -> readIf(object, depth + 1);
@@ -286,6 +290,19 @@ public final class MacroStepConfigCodec {
 				if (step != null) target.add(step);
 			}
 		}
+	}
+
+	/**
+	 * A Macro Call carries a condition only when one was set.
+	 *
+	 * <p>Kept separate from the other condition-bearing steps: an absent condition means "always
+	 * call", not "the default condition", so it has to stay null through a round trip and can never
+	 * turn an old unconditional call into a gated one.
+	 */
+	private static MacroStep.MacroCall readMacroCall(JsonObject object, int depth) {
+		MacroStep.MacroCall call = new MacroStep.MacroCall(integer(object, "macroId", 0));
+		if (object.has("condition")) call.setCondition(readCondition(object.get("condition"), depth));
+		return call;
 	}
 
 	private static MacroCondition readCondition(JsonElement element, int depth) {

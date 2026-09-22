@@ -124,7 +124,7 @@ public final class PestHighlighterModule extends Module {
 		final BooleanSetting circle = new BooleanSetting("Circle", "Ring Mode", false);
 		final BooleanSetting tracer = new BooleanSetting("Tracer", false);
 		final BooleanSetting showName = new BooleanSetting("Show Name", true);
-		final BooleanSetting depthCheck = new BooleanSetting("Depth Check", false);
+		final BooleanSetting depthCheck = BooleanSetting.cheat("Depth Check", "Depth Check", false, true);
 		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 1, true);
 
 		final ColorSetting outlineColor = new ColorSetting("Outline Color", 182, 47, 0, 255);

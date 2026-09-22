@@ -9,6 +9,7 @@ import geiler.addons.client.entity.ClientEntitySnapshotChecks;
 import geiler.addons.client.entity.NameplatesChecks;
 import geiler.addons.client.farming.GardenPlotChecks;
 import geiler.addons.client.render.BlockOutlineChecks;
+import geiler.addons.client.update.ReleaseNotesChecks;
 import geiler.addons.client.enchanting.ExperimentCell;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
 import geiler.addons.client.enchanting.AutoExperimentAutomation;
@@ -67,6 +68,8 @@ public final class OfflineChecks {
 		checkEveryStatsToggleCombination();
 		checkDungeonStatsHovers();
 		checkGlobalDebugGate();
+		CheatGateChecks.run();
+		ReleaseNotesChecks.run();
 		checkModuleKeybinds();
 		checkSettingInputBounds();
 		checkChoiceDirection();

@@ -75,7 +75,7 @@ public final class SafariFloorDropsModule extends Module {
 	private static final class Settings {
 		final NumberSetting scanDelay = new NumberSetting("Scan Delay", 1, 200, 20, true);
 		final ColorSetting color = new ColorSetting("Color", 0, 255, 0, 128);
-		final BooleanSetting depthCheck = new BooleanSetting("Depth Check", true);
+		final BooleanSetting depthCheck = BooleanSetting.cheat("Depth Check", "Depth Check", true, true);
 	}
 
 	// ---- lifecycle ----------------------------------------------------------------------

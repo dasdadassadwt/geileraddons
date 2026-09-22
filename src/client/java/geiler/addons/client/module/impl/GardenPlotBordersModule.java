@@ -1,5 +1,6 @@
 package geiler.addons.client.module.impl;
 
+import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.farming.GardenPlotGrid;
 import geiler.addons.client.farming.GardenPlotState;
 import geiler.addons.client.farming.GardenPlotState.PlotStatus;
@@ -11,7 +12,9 @@ import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
+import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.NumberSetting;
+import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.render.GardenPlotBorderRenderer;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
@@ -40,7 +43,10 @@ public final class GardenPlotBordersModule extends Module {
 	private final BooleanSetting showLabels;
 	private final BooleanSetting depthCheck;
 	private final NumberSetting lineWidth;
-	private final NumberSetting heightOffset;
+	private final NumberSetting borderY;
+	private final NumberSetting wallHeight;
+	/** Hidden row: remembers that the border height was taken from the player once and never again. */
+	private final BooleanSetting heightCaptured;
 	private final NumberSetting labelScale;
 	private final NumberSetting staleAfterSeconds;
 	private final ColorSetting infestedColor;
@@ -59,15 +65,18 @@ public final class GardenPlotBordersModule extends Module {
 	}
 
 	private GardenPlotBordersModule(Settings s) {
-		super("Garden Plot Borders", "Draws clear, infested, and unknown pest status around Garden plots.",
+		super("Garden Plot Borders", "Draws clear, infested, and unknown pest status as fixed 3D boxes around Garden plots.",
 			Category.FARMING, s.showClear, s.showUnknown, s.showLabels, s.depthCheck, s.lineWidth,
-			s.heightOffset, s.labelScale, s.staleAfterSeconds, s.infestedColor, s.clearColor, s.unknownColor);
+			s.borderY, s.wallHeight, s.heightCaptured, s.captureHeight, s.labelScale, s.staleAfterSeconds,
+			s.infestedColor, s.clearColor, s.unknownColor);
 		showClear = s.showClear;
 		showUnknown = s.showUnknown;
 		showLabels = s.showLabels;
 		depthCheck = s.depthCheck;
 		lineWidth = s.lineWidth;
-		heightOffset = s.heightOffset;
+		borderY = s.borderY;
+		wallHeight = s.wallHeight;
+		heightCaptured = s.heightCaptured;
 		labelScale = s.labelScale;
 		staleAfterSeconds = s.staleAfterSeconds;
 		infestedColor = s.infestedColor;
@@ -76,7 +85,8 @@ public final class GardenPlotBordersModule extends Module {
 
 		group(
 			new SettingGroup("Display", s.showClear, s.showUnknown, s.showLabels, s.depthCheck),
-			new SettingGroup("Border Style", s.lineWidth, s.heightOffset, s.staleAfterSeconds),
+			new SettingGroup("Border Style", s.lineWidth, s.wallHeight, s.borderY, s.captureHeight,
+				s.staleAfterSeconds),
 			new SettingGroup("Labels", s.labelScale),
 			new SettingGroup("Status Colours", s.infestedColor, s.clearColor, s.unknownColor)
 		);
@@ -88,12 +98,27 @@ public final class GardenPlotBordersModule extends Module {
 		final BooleanSetting showLabels = new BooleanSetting("Show Labels", true);
 		final BooleanSetting depthCheck = new BooleanSetting("Depth Check", true);
 		final NumberSetting lineWidth = new NumberSetting("Border Width", 0.5f, 5.0f, 2.4f);
-		final NumberSetting heightOffset = new NumberSetting("Height Offset", -4.0f, 8.0f, 0.12f);
+		final NumberSetting wallHeight = new NumberSetting("Wall Height", 0.5f, 16.0f, 3.0f);
+		/**
+		 * Fixed world height of the border's floor. Every plot box is drawn at this Y, so the
+		 * borders stay put while the player walks and jumps instead of riding their eye level.
+		 */
+		final NumberSetting borderY = new NumberSetting("Border Y", 0, 320, 70, true);
+		final BooleanSetting heightCaptured = new BooleanSetting("Height Captured", false);
+		final ModuleAction captureHeight = new ModuleAction("Capture Current Y",
+			"Store your current block height as the border's fixed world height.",
+			() -> INSTANCE.captureHeight());
 		final NumberSetting labelScale = new NumberSetting("Label Scale", 0.55f, 2.0f, 0.9f);
 		final NumberSetting staleAfterSeconds = new NumberSetting("Data Max Age", 15, 600, 120, true);
 		final ColorSetting infestedColor = new ColorSetting("Infested Colour", 255, 94, 80, 228);
 		final ColorSetting clearColor = new ColorSetting("Clear Colour", 65, 218, 167, 205);
 		final ColorSetting unknownColor = new ColorSetting("Unknown Colour", 249, 183, 75, 205);
+	}
+
+	/** The hidden capture flag is state, not a choice, so it never renders as a row. */
+	@Override
+	public boolean isSettingVisible(Setting setting) {
+		return setting != heightCaptured;
 	}
 
 	@Override
@@ -125,11 +150,35 @@ public final class GardenPlotBordersModule extends Module {
 			return;
 		}
 		if (!ensureGardenContext()) return;
+		captureHeightIfNeeded(mc);
 		if (++ticksSinceEntityScan >= 20) {
 			ticksSinceEntityScan = 0;
 			observeNearbyPests(mc);
 		}
 		publishSnapshot(nowMillis());
+	}
+
+	/**
+	 * Takes the player's height once, the first time they are in the Garden with no stored height.
+	 *
+	 * <p>A fresh install has no idea where the plot floor is, and that first tick is the only moment
+	 * the mod can find out without scanning chunks. It is written to the setting and then left
+	 * alone: the border is a landmark, so it must not follow the player afterwards.
+	 */
+	private void captureHeightIfNeeded(Minecraft mc) {
+		if (heightCaptured.value() || mc.player == null) return;
+		heightCaptured.setValue(true);
+		borderY.setValue((float) Math.floor(mc.player.getY()));
+		ModConfig.markDirty();
+	}
+
+	/** Stores the player's current block height as the border's fixed world Y. */
+	public void captureHeight() {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.player == null || mc.level == null) return;
+		heightCaptured.setValue(true);
+		borderY.setValue((float) Math.floor(mc.player.getY()));
+		ModConfig.markDirty();
 	}
 
 	private void observeNearbyPests(Minecraft mc) {
@@ -212,10 +261,8 @@ public final class GardenPlotBordersModule extends Module {
 	public void render(LevelRenderContext context) {
 		Minecraft mc = Minecraft.getInstance();
 		if (!mc.isSameThread() || !ensureGardenContext()) return;
-		LocalPlayer player = mc.player;
-		if (player == null) return;
 		GardenPlotBorderRenderer.renderWorld(context, renderSnapshot,
-			player.getY() + heightOffset.value(), lineWidth.value(), depthCheck.value(),
+			borderY.value(), wallHeight.value(), lineWidth.value(), depthCheck.value(),
 			showClear.value(), showUnknown.value(), infestedColor.argb(), clearColor.argb(), unknownColor.argb());
 	}
 
@@ -223,10 +270,8 @@ public final class GardenPlotBordersModule extends Module {
 	public void renderHud(GuiGraphicsExtractor graphics) {
 		Minecraft mc = Minecraft.getInstance();
 		if (!mc.isSameThread() || !ensureGardenContext() || !showLabels.value()) return;
-		LocalPlayer player = mc.player;
-		if (player == null) return;
 		GardenPlotBorderRenderer.renderLabels(graphics, renderSnapshot,
-			player.getY() + heightOffset.value(), labelScale.value(), showClear.value(), showUnknown.value(),
+			borderY.value(), wallHeight.value(), labelScale.value(), showClear.value(), showUnknown.value(),
 			infestedColor.argb(), clearColor.argb(), unknownColor.argb());
 	}
 

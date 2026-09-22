@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **General module** (Miscellaneous) — the mod-wide switches: the **Cheats** master gate, the macro
+  chat override, the **Replay Last Blocked Macro** action and hotkey, and **Check for Updates**,
+  which moved here from the config file.
+- **Chat-message macro triggers** — a macro event stack that fires from a received chat line, with a
+  configurable match, a minimum repeat delay, its own optional replay hotkey, and a remembered block
+  reason that the replay key acts on.
+- **Conditional macro calls** — a **Call another macro** block can carry a condition and is skipped
+  when it is false.
+- **Update panel** — when a newer release exists the Click GUI header gains **Download** and **Info**;
+  Info opens a scrollable, plain-text release-notes panel in the menu.
+- **Garden Plot Borders** — borders are now stationary 3D boxes with a captured world Y and a
+  configurable wall height.
+
+### Changed
+
+- **Cheats is off by default and now has teeth.** With it off, the `Depth Check` off-state in Block
+  ESP, Mob Highlight, Safari Floor Drops and Pest Highlighter is forced to depth-tested, and a macro
+  only runs if it is a single action. Gated rows stay visible, show the safe position, refuse clicks,
+  and name Cheats in a tooltip. Stored values are never overwritten, so turning Cheats back on
+  restores exactly what was set. Expect multi-action and conditional macros to refuse to start, and
+  overlays that previously drew through terrain to become depth-tested, until Cheats is enabled.
+- Macro clipboard packages use transfer format **v5**. v1–v4 packages still import; they simply
+  arrive without chat stacks or call conditions.
+
+### Fixed
+
+- Garden plot borders no longer follow the player's height, so a border stays where it was placed.
+
 ## [1.5.2] - 2026-09-22
 
 ### Added

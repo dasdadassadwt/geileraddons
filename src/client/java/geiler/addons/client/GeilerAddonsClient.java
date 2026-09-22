@@ -18,6 +18,7 @@ import geiler.addons.client.module.impl.BlockEspModule;
 import geiler.addons.client.module.impl.InventoryButtonsModule;
 import geiler.addons.client.module.impl.AutoKickModule;
 import geiler.addons.client.module.impl.DebugModule;
+import geiler.addons.client.module.impl.GeneralModule;
 import geiler.addons.client.module.impl.SlotIdsModule;
 import geiler.addons.client.module.impl.PartyFinderStatsModule;
 import geiler.addons.client.party.PartyListBackend;
@@ -52,6 +53,7 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		GeilerAddonsCommand.register();
 		// Register first so ModConfig can restore the global gate before loading module state.
 		ModuleManager.register(DebugModule.INSTANCE);
+		ModuleManager.register(GeneralModule.INSTANCE);
 		ModuleManager.register(SlotIdsModule.INSTANCE);
 		ModuleManager.register(I4HelperModule.INSTANCE);
 		ModuleManager.register(ExperimentSolverModule.INSTANCE);

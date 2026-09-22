@@ -19,13 +19,21 @@ public final class GardenPlotBorderRenderer {
 	private static final double INFESTED_ACCENT_INSET = 2.0;
 	private static final double UNKNOWN_DASH_LENGTH = 8.0;
 	private static final double UNKNOWN_DASH_GAP = 6.0;
+	/** The main box sits just inside the plot boundary, leaving the plot's own edge visible. */
+	private static final double BORDER_INSET = 0.5;
+	private static final double MIN_WALL_HEIGHT = 0.5;
+	private static final double MAX_WALL_HEIGHT = 16.0;
+	/** Nudges the accent box off the main one so the two do not z-fight where they overlap. */
+	private static final double AUTOMATIC_HEIGHT_SNAPSHOT = 0.025;
+	private static final double LABEL_HEIGHT_ABOVE_TOP = 1.0;
 
 	private GardenPlotBorderRenderer() { }
 
 	public static void renderWorld(LevelRenderContext context, List<GardenPlotState.PlotStatus> plots,
-		double borderY, float lineWidth, boolean depthTested, boolean showClear, boolean showUnknown,
-		int infestedColor, int clearColor, int unknownColor) {
-		if (context == null || plots == null || plots.isEmpty() || !Double.isFinite(borderY)) return;
+		double borderY, double wallHeight, float lineWidth, boolean depthTested, boolean showClear,
+		boolean showUnknown, int infestedColor, int clearColor, int unknownColor) {
+		if (context == null || plots == null || plots.isEmpty() || !Double.isFinite(borderY)
+			|| !Double.isFinite(wallHeight)) return;
 		Minecraft mc = Minecraft.getInstance();
 		if (!mc.isSameThread() || mc.level == null || mc.player == null || mc.gameRenderer == null) return;
 
@@ -34,6 +42,9 @@ public final class GardenPlotBorderRenderer {
 		PoseStack poseStack = context.poseStack();
 		MultiBufferSource.BufferSource bufferSource = context.bufferSource();
 		float width = Math.max(0.5f, Math.min(5.0f, lineWidth));
+		// The box is fixed in the world: neither end of it follows the player, which is the whole
+		// point of a border you can navigate by.
+		double top = borderY + Math.max(MIN_WALL_HEIGHT, Math.min(MAX_WALL_HEIGHT, wallHeight));
 		boolean drew = false;
 
 		for (GardenPlotState.PlotStatus status : plots) {
@@ -54,14 +65,15 @@ public final class GardenPlotBorderRenderer {
 			}
 
 			List<GardenPlotGeometry.Segment> border = status.status() == GardenPlotState.Status.UNKNOWN
-				? GardenPlotGeometry.dashedPerimeter(plot, borderY, 0.5, UNKNOWN_DASH_LENGTH, UNKNOWN_DASH_GAP)
-				: GardenPlotGeometry.perimeter(plot, borderY, 0.5);
+				? GardenPlotGeometry.dashedSegments(GardenPlotGeometry.boxEdges(plot, borderY, top, BORDER_INSET),
+					UNKNOWN_DASH_LENGTH, UNKNOWN_DASH_GAP)
+				: GardenPlotGeometry.boxEdges(plot, borderY, top, BORDER_INSET);
 			drew |= renderSegments(poseStack, bufferSource, cameraPosition, border, color,
 				status.status() == GardenPlotState.Status.CLEAR ? Math.min(width, 1.8f) : width, depthTested);
 
 			if (status.status() == GardenPlotState.Status.INFESTED) {
-				List<GardenPlotGeometry.Segment> accent = GardenPlotGeometry.perimeter(plot,
-					borderY + 0.025, INFESTED_ACCENT_INSET);
+				List<GardenPlotGeometry.Segment> accent = GardenPlotGeometry.boxEdges(plot,
+					borderY + AUTOMATIC_HEIGHT_SNAPSHOT, top + AUTOMATIC_HEIGHT_SNAPSHOT, INFESTED_ACCENT_INSET);
 				drew |= renderSegments(poseStack, bufferSource, cameraPosition, accent,
 					GuiTheme.withOpacity(color, 0.58f), Math.max(0.7f, width * 0.45f), depthTested);
 			}
@@ -71,14 +83,16 @@ public final class GardenPlotBorderRenderer {
 	}
 
 	public static void renderLabels(GuiGraphicsExtractor graphics, List<GardenPlotState.PlotStatus> plots,
-		double borderY, float scale, boolean showClear, boolean showUnknown,
+		double borderY, double wallHeight, float scale, boolean showClear, boolean showUnknown,
 		int infestedColor, int clearColor, int unknownColor) {
-		if (graphics == null || plots == null || plots.isEmpty() || !Double.isFinite(borderY)) return;
+		if (graphics == null || plots == null || plots.isEmpty() || !Double.isFinite(borderY)
+			|| !Double.isFinite(wallHeight)) return;
 		Minecraft mc = Minecraft.getInstance();
 		if (!mc.isSameThread() || mc.level == null || mc.player == null || mc.options.hideGui) return;
 
 		Camera camera = mc.gameRenderer.getMainCamera();
 		float safeScale = Math.max(0.55f, Math.min(2.0f, scale));
+		double labelY = borderY + Math.max(MIN_WALL_HEIGHT, Math.min(MAX_WALL_HEIGHT, wallHeight)) + LABEL_HEIGHT_ABOVE_TOP;
 
 		for (GardenPlotState.PlotStatus status : plots) {
 			if (status.status() == GardenPlotState.Status.CLEAR && !showClear) continue;
@@ -88,7 +102,7 @@ public final class GardenPlotBorderRenderer {
 
 			String label = label(status);
 			int color = color(status, infestedColor, clearColor, unknownColor);
-			Vec3 world = new Vec3(plot.centerX(), borderY + 2.0, plot.centerZ());
+			Vec3 world = new Vec3(plot.centerX(), labelY, plot.centerZ());
 			ProjectedLabelRenderer.draw(graphics, camera, mc.font, world, label, color, safeScale);
 		}
 	}

@@ -286,9 +286,16 @@ public sealed interface MacroStep permits MacroStep.Base {
 
 	final class MacroCall extends Base {
 		private int macroId;
+		/**
+		 * Optional gate. Null means the call is unconditional, which is what every macro written
+		 * before this field existed decodes to - so adding a condition never changes an old workflow.
+		 */
+		private MacroCondition condition;
 		public MacroCall(int macroId) { setMacroId(macroId); }
 		public int macroId() { return macroId; }
 		public void setMacroId(int value) { macroId = value < 0 ? -1 : value; }
+		public MacroCondition condition() { return condition; }
+		public void setCondition(MacroCondition value) { condition = value; }
 		@Override public String type() { return "macro_call"; }
 	}
 

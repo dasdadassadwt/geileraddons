@@ -28,6 +28,7 @@ import geiler.addons.client.module.impl.MobHighlightModule;
 import geiler.addons.client.module.impl.BlockEspEntry;
 import geiler.addons.client.module.impl.BlockEspModule;
 import geiler.addons.client.module.impl.AutoExperimentsModule;
+import geiler.addons.client.module.impl.GeneralModule;
 import geiler.addons.client.module.impl.InventoryButtonPlacement;
 import geiler.addons.client.module.impl.InventoryButtonsModule;
 import geiler.addons.client.module.impl.MacrosModule;
@@ -103,7 +104,7 @@ public final class ModConfig {
 		int uiSettingsScroll;
 		/** Folded-shut settings sections, as "module.group" keys. */
 		List<String> uiCollapsedGroups;
-		/** Absent means "never saved", which keeps the check on by default. */
+		/** Legacy/mirror of the General module's update row. See {@link #checkForUpdates()}. */
 		Boolean checkForUpdates;
 		/** Absent means "never saved", which keeps island detection on by default. */
 		Boolean hypixelModApi;
@@ -193,15 +194,8 @@ public final class ModConfig {
 	}
 
 	/**
-	 * Whether the mod may contact GitHub once per launch to see if a newer release exists.
-	 * Config-file only: it is the mod's single outbound request and belongs with the other
-	 * one-off preferences rather than in a module's settings panel.
-	 */
-	private static boolean checkForUpdates = true;
-
-	/**
 	 * Whether the mod may speak the Hypixel Mod API to learn which island it is on.
-	 * Config-file only, like {@link #checkForUpdates}: it decides how the mod talks to the server
+	 * Config-file only, like the Cheats gate's neighbours: it decides how the mod talks to the server
 	 * rather than what any one module does, so it is not any module's setting.
 	 */
 	private static boolean hypixelModApi = true;
@@ -221,8 +215,15 @@ public final class ModConfig {
 	private static Future<?> pendingSave;
 	private static long queuedVersion = -1;
 
+	/**
+	 * Whether the mod may contact GitHub once per launch to see if a newer release exists.
+	 *
+	 * <p>Reads the General module now that the switch is a settings-panel row. The first load after
+	 * that move seeds the row from the old top-level key, so a player who had turned the check off
+	 * does not silently get it back; the top-level key is still written as a mirror afterwards.
+	 */
 	public static boolean checkForUpdates() {
-		return checkForUpdates;
+		return GeneralModule.INSTANCE.checkForUpdates().value();
 	}
 
 	public static boolean hypixelModApi() {
@@ -293,8 +294,12 @@ public final class ModConfig {
 			&& data.toggles.containsKey("Debug.Show Slot IDs")) {
 			SlotIdsModule.INSTANCE.setEnabled(Boolean.TRUE.equals(data.toggles.get("Debug.Show Slot IDs")));
 		}
-		if (data.checkForUpdates != null) {
-			checkForUpdates = data.checkForUpdates;
+		if (data.checkForUpdates != null
+			&& !data.toggles.containsKey(settingKey(GeneralModule.INSTANCE,
+				GeneralModule.INSTANCE.checkForUpdates().name()))) {
+			// One-time move of the update preference into the General module. The module's own key
+			// wins once it exists, so the legacy key can never undo a change made in the panel.
+			GeneralModule.INSTANCE.checkForUpdates().setValue(data.checkForUpdates);
 		}
 		if (data.hypixelModApi != null) {
 			hypixelModApi = data.hypixelModApi;
@@ -405,8 +410,9 @@ public final class ModConfig {
 				data.numbers.put(settingKey(module, setting.name()), setting.value());
 			}
 			for (BooleanSetting setting : module.booleanSettings()) {
-				// Debug-only toggles expose an effective false while the global gate is off. Persist the
-				// raw user choice so disabling diagnostics never erases what re-enabling should restore.
+				// Debug-only and cheat-gated toggles expose an effective value while their gate is
+				// off. Persist the raw user choice so closing either gate never erases what
+				// reopening it should restore.
 				data.toggles.put(settingKey(module, setting.name()), setting.rawValue());
 			}
 			for (ChoiceSetting setting : module.choiceSettings()) {
@@ -489,7 +495,9 @@ public final class ModConfig {
 		data.uiExpandedColor = ClickGuiState.expandedColor() == null ? null : ClickGuiState.expandedColor().name();
 		data.uiSettingsScroll = ClickGuiState.settingsScroll();
 		data.uiCollapsedGroups = new ArrayList<>(ClickGuiState.collapsedGroups());
-		data.checkForUpdates = checkForUpdates;
+		// Mirror of the General module row, kept so an older build reading this file still sees the
+		// player's choice instead of silently re-enabling the check.
+		data.checkForUpdates = GeneralModule.INSTANCE.checkForUpdates().value();
 		data.hypixelModApi = hypixelModApi;
 		return data;
 	}

@@ -130,7 +130,10 @@ public final class PestChecks {
 		assertFalse(booleanSetting(module, "Circle").value(), "circle is optional by default");
 		assertFalse(booleanSetting(module, "Tracer").value(), "tracer is optional by default");
 		assertTrue(booleanSetting(module, "Show Name").value(), "name is enabled by default");
-		assertFalse(booleanSetting(module, "Depth Check").value(), "depth check is off by default");
+		BooleanSetting depthCheck = booleanSetting(module, "Depth Check");
+		assertFalse(depthCheck.rawValue(), "depth check is stored off by default");
+		assertTrue(depthCheck.value(),
+			"a closed Cheats gate forces the depth check safe, so a default install cannot see through terrain");
 		assertEquals(1, numberSetting(module, "Scan Interval").intValue(), "scan interval default");
 		assertEquals("B62F00FF", colorSetting(module, "Outline Color").hex(), "outline default color");
 		assertEquals("B62F003C", colorSetting(module, "Fill Color").hex(), "fill default color");

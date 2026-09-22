@@ -212,9 +212,9 @@ public final class MacroChecks {
 		MacroStep.Sound sound = new MacroStep.Sound("minecraft:entity.experience_orb.pickup");
 		effects.steps().add(title);
 		effects.steps().add(sound);
-		JsonObject versionThree = JsonParser.parseString(MacroTransfer.encode(List.of(effects))).getAsJsonObject();
-		assertEquals(4, versionThree.get("version").getAsInt(), "new macro transfers use format version 4");
-		MacroDefinition effectsCopy = MacroTransfer.decode(versionThree.toString(), 121).macros().getFirst();
+		JsonObject currentPackage = JsonParser.parseString(MacroTransfer.encode(List.of(effects))).getAsJsonObject();
+		assertEquals(5, currentPackage.get("version").getAsInt(), "new macro transfers use format version 5");
+		MacroDefinition effectsCopy = MacroTransfer.decode(currentPackage.toString(), 121).macros().getFirst();
 		MacroStep.Title titleCopy = (MacroStep.Title) effectsCopy.steps().get(0);
 		assertEquals(title.text(), titleCopy.text(), "v4 transfer preserves macro title text");
 		assertEquals(title.font(), titleCopy.font(), "v4 transfer preserves title font");
@@ -379,6 +379,8 @@ public final class MacroChecks {
 
 		assertEquals("None", ModuleKeybind.NONE.displayName(), "macro keybind uses the shared display format");
 		MacroRuntimeChecks.run();
+		MacroChatTriggerChecks.run();
+		MacroCheatRulesChecks.run();
 	}
 
 	private static void assertSame(Object expected, Object actual, String label) {

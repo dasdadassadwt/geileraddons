@@ -56,6 +56,9 @@ public class ClickGuiScreen extends Screen {
 	/** Reserved inside each panel for the profile/search strip above the old content. */
 	private static final int HEADER_HEIGHT = 32;
 	private static final int HEADER_ROW_HEIGHT = 20;
+	/** Extra header row, added only while an update offers its Download and Info buttons. */
+	private static final int UPDATE_ROW_HEIGHT = 18;
+	private static final int UPDATE_BUTTON_HEIGHT = 15;
 	private static final int PROFILE_FACE_SIZE = 18;
 	private static final int HEADER_INSET = 6;
 	private static final int SEARCH_MAX_LENGTH = 64;
@@ -139,6 +142,12 @@ public class ClickGuiScreen extends Screen {
 	private String searchQuery = "";
 	private boolean searchFocused;
 	private boolean searchSelectAll;
+
+	/** The release-notes panel: open state, its scroll, and the wrapped lines last drawn in it. */
+	private boolean changelogOpen;
+	private double changelogScroll;
+	private String changelogCacheKey = "";
+	private List<String> changelogLines = List.of();
 
 	/** Last accepted control, used for a short tactile pulse without delaying the next action. */
 	private Object lastInteraction;
@@ -481,12 +490,36 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private int contentTop(int outerPanelY) {
-		return outerPanelY + HEADER_HEIGHT;
+		return outerPanelY + headerHeight();
+	}
+
+	/**
+	 * The header band, which grows by one row only while there is an update to talk about.
+	 *
+	 * <p>Everything below it - the category rows, the settings view's own header - is measured from
+	 * this, so the extra row can never overlap the content it was added above.
+	 */
+	private int headerHeight() {
+		return HEADER_HEIGHT + (UpdateChecker.newerVersion() == null ? 0 : UPDATE_ROW_HEIGHT);
 	}
 
 	private Rect profileHeaderRect(int panelX, int panelY) {
 		return new Rect(panelX + HEADER_INSET, panelY + HEADER_INSET,
 			Math.max(1, categoryWidth() - HEADER_INSET * 2), HEADER_ROW_HEIGHT);
+	}
+
+	private Rect updateDownloadRect(int panelX, int panelY) {
+		int available = Math.max(2, categoryWidth() - HEADER_INSET * 2);
+		int buttonWidth = Math.max(1, (available - 4) / 2);
+		return new Rect(panelX + HEADER_INSET, panelY + HEADER_INSET + HEADER_ROW_HEIGHT + 2,
+			buttonWidth, UPDATE_BUTTON_HEIGHT);
+	}
+
+	private Rect updateInfoRect(int panelX, int panelY) {
+		Rect download = updateDownloadRect(panelX, panelY);
+		int available = Math.max(2, categoryWidth() - HEADER_INSET * 2);
+		return new Rect(download.x + download.w + 4, download.y,
+			Math.max(1, available - download.w - 4), UPDATE_BUTTON_HEIGHT);
 	}
 
 	private Rect searchRect(int rightX, int panelY) {
@@ -541,6 +574,10 @@ public class ClickGuiScreen extends Screen {
 		if (newer != null && profile.w > 120) {
 			String update = textFit(font, "Update v" + newer, Math.max(1, available - 2));
 			graphics.text(font, update, textX, profile.y + 11, TEXT_WARN);
+		}
+		if (newer != null) {
+			renderUpdateButton(graphics, font, updateDownloadRect(panelX, panelY), "Download", mouseX, mouseY);
+			renderUpdateButton(graphics, font, updateInfoRect(panelX, panelY), "Info", mouseX, mouseY);
 		}
 
 		String queryText = searchQuery.isEmpty() ? "Search modules..." : searchQuery;
@@ -628,6 +665,105 @@ public class ClickGuiScreen extends Screen {
 		pose.popMatrix();
 		renderHoverTooltip(graphics, font, mouseX, mouseY);
 		renderBindingNotice(graphics, font);
+		// Last of all and outside the panel pose: it is a modal over the finished menu, not part of it.
+		renderChangelogOverlay(graphics, font, mouseX, mouseY);
+	}
+
+	/**
+	 * One of the two update buttons. Drawn in the header's extra row and hit-tested before the
+	 * profile card, which is a single click target that opens the release page.
+	 */
+	private void renderUpdateButton(GuiGraphicsExtractor graphics, Font font, Rect bounds, String label,
+		int mouseX, int mouseY) {
+		boolean hovered = bounds.contains(mouseX, mouseY);
+		int surface = hovered ? BUTTON_HOVER : BUTTON_BG;
+		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
+			surface, surface, BORDER);
+		graphics.centeredText(font, textFit(font, label, Math.max(1, bounds.w - 8)),
+			bounds.x + bounds.w / 2, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_PRIMARY);
+	}
+
+	/**
+	 * The release-notes panel.
+	 *
+	 * <p>Drawn over everything, inside the Click GUI rather than as a second screen, so the update can
+	 * be read without losing the menu behind it. The body is plain text with no click events: the only
+	 * interactive parts are closing it and scrolling it.
+	 */
+	private void renderChangelogOverlay(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY) {
+		if (!changelogOpen) return;
+		Rect panel = changelogPanelRect();
+		graphics.fill(0, 0, width, height, withOpacity(0xFF000000, 0.45f));
+		roundedRectBordered(graphics, panel.x, panel.y, panel.w, panel.h, RADIUS, PANEL_TOP, PANEL_BOTTOM, BORDER);
+
+		String newer = UpdateChecker.newerVersion();
+		String title = "GeilerAddons v" + (newer == null ? "?" : newer) + " is available";
+		String current = "You have v" + (UpdateChecker.currentVersion().isBlank()
+			? "?" : UpdateChecker.currentVersion());
+		graphics.text(font, textFit(font, title, Math.max(1, panel.w - 24)), panel.x + 10, panel.y + 8, TEXT_WARN);
+		graphics.text(font, textFit(font, current, Math.max(1, panel.w - 24)), panel.x + 10, panel.y + 19, TEXT_MUTED);
+
+		Rect viewport = changelogViewport(panel);
+		List<String> lines = changelogLines();
+		int contentHeight = lines.size() * LINE_HEIGHT;
+		int maxScroll = Math.max(0, contentHeight - viewport.h);
+		changelogScroll = Math.max(0, Math.min(maxScroll, changelogScroll));
+		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
+		for (int index = 0; index < lines.size(); index++) {
+			int lineY = viewport.y + index * LINE_HEIGHT - (int) changelogScroll;
+			if (lineY + LINE_HEIGHT < viewport.y || lineY > viewport.y + viewport.h) continue;
+			graphics.text(font, lines.get(index), viewport.x, lineY, TEXT_SECONDARY);
+		}
+		graphics.disableScissor();
+		renderScrollbar(graphics, viewport, contentHeight, (int) changelogScroll);
+		graphics.text(font, "Escape or click outside to close", panel.x + 10, panel.y + panel.h - 13, TEXT_MUTED);
+	}
+
+	private Rect changelogPanelRect() {
+		int panelW = Math.min(Math.max(240, panelWidth() - 40), Math.max(200, width - 24));
+		int panelH = Math.min(Math.max(120, panelHeight() + 40), Math.max(100, height - 24));
+		return new Rect((width - panelW) / 2, (height - panelH) / 2, panelW, panelH);
+	}
+
+	private Rect changelogViewport(Rect panel) {
+		return new Rect(panel.x + 10, panel.y + 32, Math.max(1, panel.w - 20), Math.max(1, panel.h - 50));
+	}
+
+	/** Wrapped at the current panel width; recomputed only when the width or the release changes. */
+	private List<String> changelogLines() {
+		String notes = UpdateChecker.releaseNotes();
+		Rect viewport = changelogViewport(changelogPanelRect());
+		String key = width + "x" + height + "|" + UpdateChecker.newerVersion() + "|" + notes.length();
+		if (key.equals(changelogCacheKey)) return changelogLines;
+		List<String> wrapped = new ArrayList<>();
+		for (String line : notes.split("\n", -1)) {
+			if (line.isEmpty()) {
+				wrapped.add("");
+				continue;
+			}
+			String remaining = line;
+			while (font.width(remaining) > viewport.w) {
+				int split = remaining.length();
+				while (split > 1 && font.width(remaining.substring(0, split)) > viewport.w) split--;
+				wrapped.add(remaining.substring(0, split));
+				remaining = remaining.substring(split);
+			}
+			wrapped.add(remaining);
+		}
+		changelogCacheKey = key;
+		changelogLines = List.copyOf(wrapped);
+		return changelogLines;
+	}
+
+	private void openChangelog() {
+		changelogOpen = true;
+		changelogScroll = 0;
+		changelogCacheKey = "";
+	}
+
+	private void closeChangelog() {
+		changelogOpen = false;
+		changelogScroll = 0;
 	}
 
 	private void renderBindingNotice(GuiGraphicsExtractor graphics, Font font) {
@@ -696,6 +832,10 @@ public class ClickGuiScreen extends Screen {
 	}
 
 	private String toggleTooltip(Module module, BooleanSetting setting) {
+		if (setting.forcedByCheats()) {
+			return "Disabled while Cheats is off. Turn it on under Miscellaneous → General → Cheats "
+				+ "to use the stored setting again.";
+		}
 		if ("Macros".equals(module.name()) && "Enable Macro System".equals(setting.displayName())) {
 			return "Master toggle for all macro hotkeys and running workflows. The module card must also be enabled.";
 		}
@@ -1362,14 +1502,17 @@ public class ClickGuiScreen extends Screen {
 	private void renderToggleRow(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
 		ToggleRow toggleRow, boolean hoverable, long now, ClickGuiMotion motion) {
 		Rect bounds = toggleRow.bounds;
+		boolean forced = toggleRow.setting.forcedByCheats();
+		// A cheat-gated row stays on screen while its gate is closed, but it reads as unavailable
+		// rather than as a switch that silently ignores the click.
 		boolean hovered = hoverable && bounds.contains(mouseX, mouseY);
-		float pulse = interactionPulse(toggleRow.setting, now, motion);
+		float pulse = forced ? 0.0f : interactionPulse(toggleRow.setting, now, motion);
 		if (hovered || pulse > 0.0f) {
 			int highlight = hovered ? CATEGORY_HOVER : withOpacity(PANEL_HIGHLIGHT, pulse * 0.35f);
 			roundedRect(graphics, bounds.x + 9, bounds.y, bounds.w - 18, bounds.h - 2, RADIUS_SMALL, highlight);
 		}
 		graphics.text(font, textFit(font, toggleRow.setting.displayName(), bounds.w - SWITCH_WIDTH - 36),
-			bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, TEXT_SECONDARY);
+			bounds.x + 16, bounds.y + (bounds.h - TEXT_HEIGHT) / 2, forced ? TEXT_MUTED : TEXT_SECONDARY);
 
 		int switchX = bounds.x + bounds.w - SWITCH_WIDTH - 14;
 		int switchY = bounds.y + (bounds.h - SWITCH_HEIGHT) / 2;
@@ -1682,10 +1825,29 @@ public class ClickGuiScreen extends Screen {
 		// leave a field quietly eating keystrokes after the user moved on.
 		blurTextField();
 
+		if (changelogOpen) {
+			// A click outside closes it; a click inside is swallowed so it cannot act on the menu
+			// showing through underneath.
+			if (!changelogPanelRect().contains(mouseX, mouseY)) closeChangelog();
+			return true;
+		}
+
 		if (left && searchRect(rightX, panelY).contains(mouseX, mouseY)) {
 			searchFocused = true;
 			searchSelectAll = false;
 			return true;
+		}
+		if (left && UpdateChecker.newerVersion() != null) {
+			// Tested before the profile card: that card is one big target that opens the release page.
+			if (updateDownloadRect(panelX, panelY).contains(mouseX, mouseY)) {
+				ConfirmLinkScreen.confirmLinkNow(this, UpdateChecker.releaseUrl());
+				return true;
+			}
+			if (updateInfoRect(panelX, panelY).contains(mouseX, mouseY)) {
+				playClick();
+				openChangelog();
+				return true;
+			}
 		}
 		if (left && profileHeaderRect(panelX, panelY).contains(mouseX, mouseY)) {
 			String link = UpdateChecker.newerVersion() == null
@@ -1865,6 +2027,9 @@ public class ClickGuiScreen extends Screen {
 				}
 				case ToggleRow toggleRow -> {
 					if (toggleRow.bounds.contains(mouseX, mouseY)) {
+						// The gate wins over the click: the switch shows its safe position and the
+						// tooltip explains why, so there is nothing here to flip.
+						if (toggleRow.setting.forcedByCheats()) return true;
 						markInteraction(toggleRow.setting);
 						playClick();
 						boolean wasEnabled = toggleRow.setting.value();
@@ -1999,6 +2164,12 @@ public class ClickGuiScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(KeyEvent event) {
+		if (changelogOpen && event.key() == GLFW.GLFW_KEY_ESCAPE) {
+			// The notes panel is the topmost thing on screen, so Escape has to close it before it
+			// reaches any of the menu's own back-out steps.
+			closeChangelog();
+			return true;
+		}
 		if (searchFocused) {
 			if ((event.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0 && event.key() == GLFW.GLFW_KEY_A) {
 				searchSelectAll = true;
@@ -2137,6 +2308,13 @@ public class ClickGuiScreen extends Screen {
 		if (!inputSettled()) return true;
 		int rightX = panelX() + categoryWidth();
 		int notch = (int) Math.round(scrollY * CHANNEL_ROW_HEIGHT);
+
+		if (changelogOpen) {
+			Rect viewport = changelogViewport(changelogPanelRect());
+			int maxScroll = Math.max(0, changelogLines().size() * LINE_HEIGHT - viewport.h);
+			changelogScroll = Math.max(0, Math.min(maxScroll, changelogScroll - notch));
+			return true;
+		}
 
 		if (openSettingsModule != null) {
 			Rect viewport = settingsViewport(rightX, panelY());

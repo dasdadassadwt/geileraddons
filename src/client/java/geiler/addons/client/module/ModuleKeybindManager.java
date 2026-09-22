@@ -6,6 +6,7 @@ import geiler.addons.client.macro.MacroDefinition;
 import geiler.addons.client.macro.MacroRunner;
 import geiler.addons.client.macro.MacroStep;
 import geiler.addons.client.macro.MacroScript;
+import geiler.addons.client.module.impl.GeneralModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.input.KeyEvent;
 import org.lwjgl.glfw.GLFW;
@@ -68,7 +69,9 @@ public final class ModuleKeybindManager {
 	}
 
 	public static void beginScriptBinding(MacroScript script) {
-		if (script == null || script.trigger() != MacroScript.Trigger.KEY_PRESS) return;
+		// A chat stack's hotkey is its manual replay key, so both event kinds are bindable.
+		if (script == null || (script.trigger() != MacroScript.Trigger.KEY_PRESS
+			&& script.trigger() != MacroScript.Trigger.CHAT)) return;
 		bindingModule = null;
 		bindingMacro = null;
 		bindingKeyStep = null;
@@ -173,10 +176,12 @@ public final class ModuleKeybindManager {
 		List<Module> modules = ModuleManager.modules();
 		boolean matched = false;
 		for (Module module : modules) {
-			if (module.keybind().matches(event)) {
-				module.toggle();
-				matched = true;
-			}
+			if (!module.keybind().matches(event)) continue;
+			// General is a settings holder with nothing to toggle, so its key does the one action
+			// it advertises instead of flipping a switch that changes nothing.
+			if (module == GeneralModule.INSTANCE) MacroRunner.replayLastBlocked();
+			else module.toggle();
+			matched = true;
 		}
 		if (matched) ModConfig.markDirty();
 		return matched;

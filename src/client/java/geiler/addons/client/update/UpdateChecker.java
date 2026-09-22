@@ -1,6 +1,7 @@
 package geiler.addons.client.update;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
@@ -38,6 +39,10 @@ public final class UpdateChecker {
 
 	/** Non-null only when a strictly newer release exists. Written off-thread, so volatile. */
 	private static volatile String newerVersion;
+	/** Plain-text notes for that release; read by the Info panel, never fetched separately. */
+	private static volatile String releaseNotes;
+	/** Validated release page for the Download button; the releases page until a release arrives. */
+	private static volatile String releaseUrl = RELEASES_PAGE;
 	private static String currentVersion = "";
 	private static boolean announced;
 
@@ -102,6 +107,23 @@ public final class UpdateChecker {
 		return RELEASES_PAGE;
 	}
 
+	/** Sanitized release notes for the Info panel; empty until a newer release is known. */
+	public static String releaseNotes() {
+		String notes = releaseNotes;
+		return notes == null ? "" : notes;
+	}
+
+	/**
+	 * The release page to open.
+	 *
+	 * <p>The URL comes out of the same response as everything else, so it is validated against this
+	 * project's own release pages and falls back to the releases page constant - a hand-edited or
+	 * hostile response can never turn the Download button into a redirect somewhere else.
+	 */
+	public static String releaseUrl() {
+		return releaseUrl;
+	}
+
 	private static void check() {
 		try (HttpClient client = HttpClient.newBuilder().connectTimeout(TIMEOUT).build()) {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(RELEASES_URL))
@@ -127,6 +149,12 @@ public final class UpdateChecker {
 			if (json == null || !json.has("tag_name")) return;
 			String tag = stripPrefix(json.get("tag_name").getAsString());
 			if (isNewer(tag, currentVersion)) {
+				// Notes and URL first: newerVersion is the flag every reader checks, so it has to be
+				// the last thing written or the GUI could draw a release with another one's notes.
+				String notes = ReleaseNotes.sanitize(text(json, "body"));
+				String validated = ReleaseNotes.validateReleaseUrl(text(json, "html_url"));
+				releaseNotes = notes;
+				releaseUrl = validated == null ? RELEASES_PAGE : validated;
 				newerVersion = tag;
 			}
 		} catch (InterruptedException e) {
@@ -155,6 +183,17 @@ public final class UpdateChecker {
 	private static String stripPrefix(String tag) {
 		String trimmed = tag.trim();
 		return trimmed.startsWith("v") || trimmed.startsWith("V") ? trimmed.substring(1) : trimmed;
+	}
+
+	/** A missing or non-textual field is treated as absent rather than as a parse failure. */
+	private static String text(JsonObject json, String name) {
+		JsonElement value = json.get(name);
+		if (value == null || !value.isJsonPrimitive()) return null;
+		try {
+			return value.getAsString();
+		} catch (RuntimeException ignored) {
+			return null;
+		}
 	}
 
 	/** Numeric compare per dot-separated part, so 1.10.0 correctly beats 1.9.0. */

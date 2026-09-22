@@ -42,8 +42,12 @@ public final class MobHighlight {
 	 * <p>A box wrapping a mob is fighting that mob's own model for the same pixels, and Minecraft
 	 * models routinely reach past the hitbox they are given - so occlusion here hides the highlight
 	 * behind the very thing it is pointing at. Seeing the mob through terrain is the point.
+	 *
+	 * <p>That is also why this is cheat-gated: the safe state is depth-checked, so an install with
+	 * Cheats off draws the box only where it is actually visible and keeps the stored preference for
+	 * the moment Cheats is switched on.
 	 */
-	private final BooleanSetting depthCheck = new BooleanSetting("Depth Check", false);
+	private final BooleanSetting depthCheck = BooleanSetting.cheat("Depth Check", "Depth Check", false, true);
 	private final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 20, true);
 	private final TextSetting displayName = new TextSetting("Display Name", DEFAULT_DISPLAY_NAME, MAX_TEXT_LENGTH);
 	private final ModuleAction delete;
