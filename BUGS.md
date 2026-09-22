@@ -63,4 +63,30 @@ something the player cannot work around.
 
 ## Fixed
 
-Nothing yet.
+### BUG-003 — Auto Experiments clicks only the first item of every Ultrasequencer round
+
+- **Area:** Enchanting → Auto Experiments on the Ultrasequencer board. **Severity:** high (the run
+  fails and the player can only work around it by not using the module).
+- **Observed:** Auto dispatched the first remembered item of a round and then stopped clicking for
+  the rest of that round, while the Solver preview kept showing the correct remaining solution.
+- **Expected:** Auto replays every remembered click of every round.
+- **Cause:** `UltrasequencerModel.markDirty()` turned any new non-black pane colour into `State.END`,
+  which maps to `ExperimentPhase.ROUND_COMPLETE`. The board repaints those panes inside a single
+  round for its own buttons, so a round was closed after the first click while its remembered
+  sequence and cursor were still intact. `ExperimentClickGate.dispatchSequenceClick` accepts clicks
+  only during `ExperimentPhase.SOLVE`, so every later Auto request was rejected before vanilla saw
+  it. `nextSlot` also deliberately keeps pointing at the last button after the final click, so the
+  model could not tell "still owed clicks" apart from "waiting for the pane edge".
+- **Fix direction:** count the accepted clicks of the round in the model and let a pane colour change
+  close a round only once that round's clicks are complete; while the solve still owes clicks the
+  repaint is the button animation. The round is then counted at that boundary, exactly once, so the
+  round counter no longer depends on the next round's status arriving. A status tick that carries no
+  numbers also keeps the capture window open, which otherwise left the model waiting for its own
+  timer with an empty solution.
+- **Repro:** start Auto Experiments on an Ultrasequencer run of two or more rounds; only the first
+  item of each round is clicked. The offline traces in `OfflineChecks.checkAutoExperiments` and
+  `SequenceSolverChecks.checkUltraRounds` reproduce it without Minecraft or the network.
+- **Files:** `src/client/java/geiler/addons/client/enchanting/UltrasequencerModel.java`,
+  `src/test/java/geiler/addons/client/module/impl/OfflineChecks.java`,
+  `src/test/java/geiler/addons/client/module/impl/SequenceSolverChecks.java`.
+- **Status:** fixed in the working tree; live Hypixel confirmation still outstanding.

@@ -41,14 +41,8 @@ final class SequenceSolverChecks {
 
 	private static void checkUltraRounds() {
 		UltrasequencerModel model = new UltrasequencerModel();
-		model.markDirty(List.of("black", "white"));
+		model.markDirty(List.of("gray"));
 		for (int round = 1; round <= 8; round++) {
-			if (round > 1) {
-				model.markDirty(List.of(round % 2 == 0 ? "red" : "white"));
-				require(model.state() == UltrasequencerModel.State.END, "pane mutation ends round");
-				model.observe("Remember the pattern!", List.of(), null);
-				require(model.state() == UltrasequencerModel.State.REMEMBER, "tick starts next round without status callback");
-			}
 			List<ExperimentCell> cells = new ArrayList<>();
 			for (int i = 1; i <= round; i++) cells.add(ExperimentCell.number(9 + i, i));
 			model.observe("Remember the pattern!", cells, null);
@@ -56,15 +50,59 @@ final class SequenceSolverChecks {
 			require(model.sequence().size() == round, "WAIT freezes tick-captured number map");
 			model.observe("Timer: 3s", List.of(), null);
 			for (int i = 1; i <= round; i++) {
-				require(model.sequence().get(model.currentIndex()).slotIds().equals(List.of(9 + i)), "number order retained");
+				require(model.sequence().get(i - 1).slotIds().equals(List.of(9 + i)), "number order retained");
+				require(model.currentIndex() == i - 1, "cursor follows the remembered click order");
 				require(model.click(9 + i), "expected Ultra click accepted");
 				model.observe("Timer: 2s", List.of(), null);
-				model.markDirty(List.of("black"));
-				require(model.state() == UltrasequencerModel.State.SHOW, "timer and border panes cannot hide solution");
 			}
-			require(model.currentIndex() == round - 1, "last selection waits for server color edge, as upstream");
+			require(model.currentIndex() == round - 1,
+				"last selection waits for the server colour edge, as upstream");
+			if (round < 8) {
+				model.markDirty(List.of(round % 2 == 0 ? "blue" : "orange"));
+				require(model.state() == UltrasequencerModel.State.END,
+					"a pane boundary after the final click ends the round");
+				model.observe("Remember the pattern!", List.of(), null);
+				require(model.state() == UltrasequencerModel.State.REMEMBER,
+					"tick starts the next round without a status callback");
+				require(model.completedRounds() == round, "each real boundary counts exactly one round");
+			}
 		}
 		require(model.completedRounds() == 7, "all eight Ultra rounds retained");
+
+		UltrasequencerModel interrupted = new UltrasequencerModel();
+		interrupted.markDirty(List.of("gray"));
+		interrupted.observe("Remember the pattern!", List.of(ExperimentCell.number(30, 1),
+			ExperimentCell.number(31, 2), ExperimentCell.number(32, 3)), null);
+		interrupted.observe("Timer: 3s", List.of(), null);
+		require(interrupted.click(30), "first click of the round is accepted");
+		interrupted.markDirty(List.of("blue"));
+		interrupted.markDirty(List.of("gray"));
+		require(interrupted.state() == UltrasequencerModel.State.SHOW,
+			"pressed and released button panes cannot end an unfinished round");
+		require(interrupted.currentIndex() == 1, "the same panes cannot rewind or freeze the cursor");
+		require(interrupted.click(31) && interrupted.click(32),
+			"the rest of the round stays clickable after the pane churn");
+		interrupted.observe("Remember the pattern!", List.of(ExperimentCell.number(30, 1),
+			ExperimentCell.number(31, 2), ExperimentCell.number(32, 3),
+			ExperimentCell.number(33, 4)), null);
+		require(interrupted.sequence().size() == 4,
+			"the next memory notice resets and captures the longer round");
+		require(interrupted.completedRounds() == 1,
+			"an interrupted solve counts its round exactly once");
+
+		UltrasequencerModel counted = new UltrasequencerModel();
+		counted.markDirty(List.of("white"));
+		counted.observe("Remember the pattern!", List.of(ExperimentCell.number(30, 1)), null);
+		counted.observe("Timer: 3s", List.of(), null);
+		require(counted.click(30), "single-click round accepted before its boundary");
+		counted.markDirty(List.of("red"));
+		require(counted.state() == UltrasequencerModel.State.END,
+			"a completed round still ends through its pane boundary");
+		counted.observe("Remember the pattern!", List.of(ExperimentCell.number(30, 1),
+			ExperimentCell.number(31, 2)), null);
+		require(counted.completedRounds() == 1,
+			"a round that already ended through a pane is not counted twice");
+
 		model.reset();
 		model.observe("Remember the pattern!", List.of(
 			new ExperimentCell(20, "1", 4, true, false, false),

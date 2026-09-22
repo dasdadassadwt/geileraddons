@@ -1315,6 +1315,68 @@ public final class OfflineChecks {
 		assertSame(AutoExperimentAutomation.Action.WAIT,
 			milestoneStop.tick(superpairs, start + 1_000 * millis, 0L, 0L).action(),
 			"Auto Experiments ignores Superpairs completely");
+
+		// Regression: the board repaints its pane colours inside one round. Treating that as the round
+		// boundary used to freeze the shared cursor at the first click while the Solver still rendered
+		// the remaining solution, so Auto dispatched nothing further.
+		ExperimentSolverEngine paneChurn = new ExperimentSolverEngine();
+		AutoExperimentAutomation paneChurnAuto = new AutoExperimentAutomation();
+		ExperimentClickGate paneChurnGate = new ExperimentClickGate();
+		Object ultraScreen = new Object();
+		Object ultraMenu = new Object();
+		long firstDelay = 1_000 * millis;
+		List<ExperimentCell> rememberCells = List.of(ExperimentCell.number(30, 1),
+			ExperimentCell.number(31, 2));
+		paneChurn.markUltrasequencerDirty(List.of("gray"));
+		paneChurn.observe(new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
+			rememberCells, "gray", 200));
+		paneChurn.observe(new ExperimentSnapshot(ultraTitle, "Timer: 10.0s", rememberCells, "gray", 201));
+		assertSame(ExperimentPhase.SOLVE, paneChurn.view().phase(),
+			"the Ultrasequencer fixture enters its solve");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			paneChurnAuto.tick(autoSnapshot(ultraScreen, ultraMenu, ExperimentType.ULTRASEQUENCER,
+				ExperimentTier.HIGH, ExperimentPhase.SOLVE, "Timer: 10.0s", 0, 2, 30, 0, false),
+				start, firstDelay).action(),
+			"the fixture arms its first-click delay");
+		AutoExperimentAutomation.Decision paneFirst = paneChurnAuto.tick(
+			autoSnapshot(ultraScreen, ultraMenu, ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH,
+				ExperimentPhase.SOLVE, "Timer: 10.0s", 0, 2, 30, 0, false),
+			start + firstDelay, firstDelay);
+		assertSame(AutoExperimentAutomation.Action.CLICK, paneFirst.action(),
+			"the first remembered slot is queued after its delay");
+		int[] paneClicks = {0};
+		assertTrue(paneChurnGate.dispatchSequenceClick(paneChurn, paneFirst.sequenceIndex(),
+			paneFirst.slotId(), true, ignored -> paneClicks[0]++),
+			"the first remembered slot dispatches through the shared gate");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			paneChurnAuto.clickResult(true, autoSnapshot(ultraScreen, ultraMenu,
+				ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+				"Timer: 9.9s", 1, 2, 31, 0, false), start + firstDelay, 1_000 * millis).action(),
+			"the accepted click arms the between-click delay");
+		paneChurn.markUltrasequencerDirty(List.of("white"));
+		paneChurn.markUltrasequencerDirty(List.of("gray"));
+		assertSame(ExperimentPhase.SOLVE, paneChurn.view().phase(),
+			"a pane repaint during the solve cannot close the round");
+		assertEquals(1, paneChurn.view().visualIndex(),
+			"a pane repaint cannot freeze or rewind the shared cursor");
+		AutoExperimentAutomation.Decision paneSecond = paneChurnAuto.tick(
+			autoSnapshot(ultraScreen, ultraMenu, ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH,
+				ExperimentPhase.SOLVE, "Timer: 9.0s", 1, 2, 31, 0, false),
+			start + 3 * firstDelay, firstDelay);
+		assertSame(AutoExperimentAutomation.Action.CLICK, paneSecond.action(),
+			"the second remembered slot is queued after the pane churn");
+		assertEquals(1, paneSecond.sequenceIndex(), "the second request carries the advanced index");
+		assertTrue(paneChurnGate.dispatchSequenceClick(paneChurn, paneSecond.sequenceIndex(),
+			paneSecond.slotId(), true, ignored -> paneClicks[0]++),
+			"the second remembered slot also dispatches through the shared gate");
+		assertEquals(2, paneClicks[0], "both remembered slots reached vanilla exactly once");
+		paneChurn.observe(new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
+			List.of(ExperimentCell.number(30, 1), ExperimentCell.number(31, 2),
+				ExperimentCell.number(32, 3)), "gray", 202));
+		assertEquals(3, paneChurn.view().sequence().size(),
+			"the next memory notice replaces the finished round");
+		assertEquals(1, paneChurn.view().completedRounds(),
+			"the finished round is counted exactly once");
 	}
 
 	private static AutoExperimentAutomation.Snapshot autoSnapshot(Object screen, Object menu,
