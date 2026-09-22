@@ -266,7 +266,8 @@ public class ClickGuiScreen extends Screen {
 	private float lifecycleProgress(long now, ClickGuiMotion motion) {
 		if (motion == ClickGuiMotion.NONE) return 1.0f;
 		long elapsed = elapsedMillis(lifecycleStartedNanos, now);
-		return motion.ease(elapsed / (float) motion.lifecycleMillis());
+		return closing ? motion.closeProgress(elapsed)
+			: motion.ease(elapsed / (float) motion.lifecycleMillis());
 	}
 
 	private float transitionProgress(long now, ClickGuiMotion motion) {
@@ -586,14 +587,14 @@ public class ClickGuiScreen extends Screen {
 		var pose = graphics.pose();
 		pose.pushMatrix();
 		float scale;
-		if (motion == ClickGuiMotion.NONE) {
+		if (closing) {
+			scale = motion.closeScale(lifecycle);
+		} else if (motion == ClickGuiMotion.NONE) {
 			scale = 1.0f;
 		} else if (motion == ClickGuiMotion.REDUCED) {
-			float progress = closing ? 1.0f - lifecycle : lifecycle;
-			scale = 0.90f + 0.10f * progress;
+			scale = 0.90f + 0.10f * lifecycle;
 		} else {
-			float progress = motion.spring(lifecycle);
-			scale = closing ? 0.72f + 0.28f * (1.0f - progress) : 0.72f + 0.28f * progress;
+			scale = 0.72f + 0.28f * motion.spring(lifecycle);
 		}
 		pose.translate(this.width / 2.0f, this.height / 2.0f);
 		pose.scale(scale, scale);
@@ -2065,22 +2066,46 @@ public class ClickGuiScreen extends Screen {
 			}
 			return true;
 		}
-		if (focusedTextSetting == null) return super.keyPressed(event);
-		switch (event.key()) {
-			case GLFW.GLFW_KEY_BACKSPACE -> {
-				String value = focusedTextSetting.value();
-				if (!value.isEmpty()) {
-					focusedTextSetting.setValue(value.substring(0, value.length() - 1));
+		if (focusedTextSetting != null) {
+			switch (event.key()) {
+				case GLFW.GLFW_KEY_BACKSPACE -> {
+					String value = focusedTextSetting.value();
+					if (!value.isEmpty()) {
+						focusedTextSetting.setValue(value.substring(0, value.length() - 1));
+					}
+				}
+				// Escape leaves the field rather than the whole screen - closing the menu out from
+				// under someone who was only trying to stop typing is the wrong thing to do.
+				case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> blurTextField();
+				default -> {
+					return super.keyPressed(event);
 				}
 			}
-			// Escape leaves the field rather than the whole screen - closing the menu out from
-			// under someone who was only trying to stop typing is the wrong thing to do.
-			case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> blurTextField();
-			default -> {
-				return super.keyPressed(event);
-			}
+			return true;
 		}
-		return true;
+
+		if (event.key() == GLFW.GLFW_KEY_ESCAPE) {
+			if (draggingPicker != null) {
+				draggingPicker = null;
+				return true;
+			}
+			if (draggingNumberSetting != null) {
+				draggingNumberSetting = null;
+				return true;
+			}
+			if (expandedColorSetting != null) {
+				expandedColorSetting = null;
+				persistView();
+				return true;
+			}
+			if (openSettingsModule != null) {
+				requestNavigation(new ViewState(selectedCategory, null, gridScroll, 0, null), -1);
+				persistView();
+				return true;
+			}
+			return super.keyPressed(event);
+		}
+		return super.keyPressed(event);
 	}
 
 	private void blurTextField() {

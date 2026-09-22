@@ -55,6 +55,51 @@ public sealed interface MacroStep permits MacroStep.Base {
 		@Override public String type() { return "chat"; }
 	}
 
+	final class Title extends Base {
+		private String text = "TITLE";
+		private String font = "minecraft:default";
+		private float scale = 2.0f;
+		private int textColor = 0xFFFFFFFF;
+		private boolean showBackground;
+		private int backgroundColor = 0xFF000000;
+		private int backgroundOpacity = 160;
+		private int fadeInMillis = 200;
+		private int holdMillis = 2_000;
+		private int fadeOutMillis = 300;
+
+		public Title() { }
+		public String text() { return text; }
+		public String font() { return font; }
+		public float scale() { return scale; }
+		public int textColor() { return textColor; }
+		public boolean showBackground() { return showBackground; }
+		public int backgroundColor() { return backgroundColor; }
+		public int backgroundOpacity() { return backgroundOpacity; }
+		public int fadeInMillis() { return fadeInMillis; }
+		public int holdMillis() { return holdMillis; }
+		public int fadeOutMillis() { return fadeOutMillis; }
+		public void setText(String value) { text = clampText(value, 256); }
+		public void setFont(String value) { font = value == null || value.isBlank() ? "minecraft:default" : value.substring(0, Math.min(128, value.length())); }
+		public void setScale(float value) { scale = Float.isFinite(value) ? clamp(value, 0.5f, 6.0f) : 2.0f; }
+		public void setTextColor(int value) { textColor = value | 0xFF000000; }
+		public void setShowBackground(boolean value) { showBackground = value; }
+		public void setBackgroundColor(int value) { backgroundColor = value | 0xFF000000; }
+		public void setBackgroundOpacity(int value) { backgroundOpacity = clamp(value, 0, 255); }
+		public void setFadeInMillis(int value) { fadeInMillis = clamp(value, 0, 10_000); }
+		public void setHoldMillis(int value) { holdMillis = clamp(value, 0, 60_000); }
+		public void setFadeOutMillis(int value) { fadeOutMillis = clamp(value, 0, 10_000); }
+		@Override public String type() { return "title"; }
+}
+
+	final class Sound extends Base {
+		private String soundId = "minecraft:entity.player.levelup";
+		public Sound() { }
+		public Sound(String soundId) { setSoundId(soundId); }
+		public String soundId() { return soundId; }
+		public void setSoundId(String value) { soundId = value == null ? "" : value.substring(0, Math.min(128, value.length())); }
+		@Override public String type() { return "sound"; }
+	}
+
 	final class Wait extends Base {
 		private int minMillis;
 		private int maxMillis;
@@ -136,6 +181,117 @@ public sealed interface MacroStep permits MacroStep.Base {
 		@Override public String type() { return "close_screen"; }
 	}
 
+	final class SelectHotbarSlot extends Base {
+		private int slot;
+		public SelectHotbarSlot(int slot) { setSlot(slot); }
+		public int slot() { return slot; }
+		public void setSlot(int value) { slot = clamp(value, 1, 9); }
+		@Override public String type() { return "select_hotbar_slot"; }
+	}
+
+	final class MouseButton extends Base {
+		public enum Button { LEFT, RIGHT, MIDDLE }
+		private Button button;
+		private boolean hold;
+		private int holdMillis;
+		public MouseButton(Button button, boolean hold, int holdMillis) {
+			this.button = button == null ? Button.LEFT : button;
+			this.hold = hold;
+			setHoldMillis(holdMillis);
+		}
+		public Button button() { return button; }
+		public boolean hold() { return hold; }
+		public int holdMillis() { return holdMillis; }
+		public void setButton(Button value) { button = value == null ? Button.LEFT : value; }
+		public void setHold(boolean value) { hold = value; }
+		public void setHoldMillis(int value) { holdMillis = clamp(value, 1, 60_000); }
+		@Override public String type() { return "mouse_button"; }
+	}
+
+	final class BlockPlayerInput extends Base {
+		private int durationMillis;
+		public BlockPlayerInput(int durationMillis) { setDurationMillis(durationMillis); }
+		public int durationMillis() { return durationMillis; }
+		public void setDurationMillis(int value) { durationMillis = clamp(value, 1, 60_000); }
+		@Override public String type() { return "block_player_input"; }
+	}
+
+	final class StartBlockPlayerInput extends Base {
+		@Override public String type() { return "start_block_player_input"; }
+	}
+
+	final class StopBlockPlayerInput extends Base {
+		@Override public String type() { return "stop_block_player_input"; }
+	}
+
+	final class SetVariable extends Base {
+		private String name;
+		private MacroValue.Type valueType;
+		private MacroValue value;
+		private String globalVariableId;
+		public SetVariable(String name, MacroValue.Type valueType, MacroValue value) {
+			this(name, valueType, value, null);
+		}
+		public SetVariable(String name, MacroValue.Type valueType, MacroValue value, String globalVariableId) {
+			setName(name);
+			this.valueType = valueType == null ? MacroValue.Type.TEXT : valueType;
+			this.value = value == null ? MacroValue.literal(this.valueType, "") : value;
+			setGlobalVariableId(globalVariableId);
+		}
+		public String name() { return name; }
+		public MacroValue.Type valueType() { return valueType; }
+		public MacroValue value() { return value; }
+		public String globalVariableId() { return globalVariableId; }
+		public boolean targetsGlobal() { return globalVariableId != null; }
+		public void setName(String value) { name = value == null ? "value" : value.strip().substring(0, Math.min(32, value.strip().length())); if (name.isEmpty()) name = "value"; }
+		public void setValueType(MacroValue.Type value) { valueType = value == null ? MacroValue.Type.TEXT : value; }
+		public void setValue(MacroValue value) { this.value = value == null ? MacroValue.literal(valueType, "") : value; }
+		public void setGlobalVariableId(String value) {
+			globalVariableId = value == null || value.isBlank() ? null : value.substring(0, Math.min(64, value.length()));
+		}
+		@Override public String type() { return "set_variable"; }
+	}
+
+	final class ChangeVariable extends Base {
+		private String name;
+		private double amount;
+		private String globalVariableId;
+		public ChangeVariable(String name, double amount) { this(name, amount, null); }
+		public ChangeVariable(String name, double amount, String globalVariableId) {
+			setName(name);
+			setAmount(amount);
+			setGlobalVariableId(globalVariableId);
+		}
+		public String name() { return name; }
+		public double amount() { return amount; }
+		public String globalVariableId() { return globalVariableId; }
+		public boolean targetsGlobal() { return globalVariableId != null; }
+		public void setName(String value) { name = value == null ? "value" : value.strip().substring(0, Math.min(32, value.strip().length())); if (name.isEmpty()) name = "value"; }
+		public void setAmount(double value) { amount = Double.isFinite(value) ? Math.max(-1_000_000, Math.min(1_000_000, value)) : 0; }
+		public void setGlobalVariableId(String value) {
+			globalVariableId = value == null || value.isBlank() ? null : value.substring(0, Math.min(64, value.length()));
+		}
+		@Override public String type() { return "change_variable"; }
+	}
+
+	final class FunctionCall extends Base {
+		private String functionId;
+		private final List<MacroValue> arguments = new ArrayList<>();
+		public FunctionCall(String functionId) { this.functionId = functionId == null ? "" : functionId; }
+		public String functionId() { return functionId; }
+		public List<MacroValue> arguments() { return arguments; }
+		public void setFunctionId(String value) { functionId = value == null ? "" : value; }
+		@Override public String type() { return "function_call"; }
+	}
+
+	final class MacroCall extends Base {
+		private int macroId;
+		public MacroCall(int macroId) { setMacroId(macroId); }
+		public int macroId() { return macroId; }
+		public void setMacroId(int value) { macroId = value < 0 ? -1 : value; }
+		@Override public String type() { return "macro_call"; }
+	}
+
 	/**
 	 * Pauses a workflow until the client has changed levels and the location API confirms the
 	 * selected destination. A world switch without this node remains a safety boundary and stops
@@ -210,5 +366,13 @@ public sealed interface MacroStep permits MacroStep.Base {
 
 	private static int clamp(int value, int min, int max) {
 		return Math.max(min, Math.min(max, value));
+	}
+
+	private static float clamp(float value, float min, float max) {
+		return Math.max(min, Math.min(max, value));
+	}
+
+	private static String clampText(String value, int maximum) {
+		return value == null ? "" : value.substring(0, Math.min(maximum, value.length()));
 	}
 }

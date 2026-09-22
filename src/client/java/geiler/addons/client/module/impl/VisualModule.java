@@ -8,6 +8,7 @@ import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.SettingGroup;
+import geiler.addons.client.module.BooleanSetting;
 
 /**
  * The mod's one theme, shared by the click GUI and every HUD panel.
@@ -26,6 +27,7 @@ public final class VisualModule extends Module {
 	private final ColorSetting text;
 	private final ColorSetting muted;
 	private final ChoiceSetting clickGuiMotion;
+	private final BooleanSetting themeMacroColors;
 
 	private int lastBackground;
 	private int lastBorder;
@@ -49,11 +51,13 @@ public final class VisualModule extends Module {
 		this.text = s.text;
 		this.muted = s.muted;
 		this.clickGuiMotion = s.clickGuiMotion;
+		this.themeMacroColors = s.themeMacroColors;
 		group(
 			new SettingGroup("Colours", s.background, s.border, s.accent, s.text, s.muted),
 			new SettingGroup("Presets", s.tracker, s.amethyst, s.midnight, s.forest,
 				s.aurora, s.ember, s.orchid),
-			new SettingGroup("Click GUI", s.clickGuiMotion)
+			new SettingGroup("Click GUI", s.clickGuiMotion),
+			new SettingGroup("Macro Editor", s.themeMacroColors)
 		);
 	}
 
@@ -65,6 +69,7 @@ public final class VisualModule extends Module {
 		final ColorSetting text = new ColorSetting("Text", 255, 255, 255, 255);
 		final ColorSetting muted = new ColorSetting("Muted Text", 140, 140, 153, 255);
 		final ChoiceSetting clickGuiMotion = new ChoiceSetting("Motion", "Expressive", "None", "Reduced", "Expressive");
+		final BooleanSetting themeMacroColors = new BooleanSetting("Theme Macro Colors", true);
 
 		final ModuleAction tracker = new ModuleAction("Tracker", () -> preset(Preset.TRACKER));
 		final ModuleAction amethyst = new ModuleAction("Amethyst", () -> preset(Preset.AMETHYST));
@@ -135,5 +140,9 @@ public final class VisualModule extends Module {
 
 	public ChoiceSetting clickGuiMotion() {
 		return clickGuiMotion;
+	}
+
+	public BooleanSetting themeMacroColors() {
+		return themeMacroColors;
 	}
 }

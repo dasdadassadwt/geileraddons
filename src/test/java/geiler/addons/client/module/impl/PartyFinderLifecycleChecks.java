@@ -6,6 +6,7 @@ public final class PartyFinderLifecycleChecks {
 	}
 
 	public static void run() {
+		PartyFinderReliabilityChecks.run();
 		assertSame(PartyFinderStatsModule.LaterJoinDisposition.IGNORE,
 			PartyFinderStatsModule.laterJoinDisposition(0, 1, false, false),
 			"a callback after disable is ignored when no consumer remains");

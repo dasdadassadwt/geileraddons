@@ -29,10 +29,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.zip.GZIPInputStream;
@@ -60,6 +64,8 @@ public final class DungeonStatsService {
 	private static final int MAX_GEAR_TOOLTIP_LINE_CHARS = 2_048;
 	private static final int MAX_GEAR_TOOLTIP_CHARS = 64 * 1024;
 	private static final int MAX_GOLDEN_DRAGON_PETS = 32;
+	private static final int MAX_QUEUED_LOOKUPS = 32;
+	private static final long LOOKUP_START_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(1_000);
 	private static final long[] DUNGEON_XP_LEVELS = {
 		0, 50, 125, 235, 395, 625, 955, 1425, 2095, 3045, 4385,
 		6275, 8940, 12700, 17960, 25340, 35640, 50040, 70040, 97640,
@@ -73,13 +79,18 @@ public final class DungeonStatsService {
 	private static final Set<String> ITEM_ID_KEYS = Set.of(
 		"id", "item_id", "itemid", "item_name", "itemname", "internalname", "internal_name",
 		"displayname", "display_name", "tag", "nbt");
-	private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2, r -> {
+	private static final DungeonRequestLimiter REQUEST_LIMITER = new DungeonRequestLimiter(
+		MAX_QUEUED_LOOKUPS + 1, LOOKUP_START_INTERVAL_NANOS);
+	private static final DungeonRequestLimiter HTTP_REQUEST_PACER = new DungeonRequestLimiter(
+		1, TimeUnit.MILLISECONDS.toNanos(350));
+	private static final ExecutorService EXECUTOR = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+		new ArrayBlockingQueue<>(MAX_QUEUED_LOOKUPS), r -> {
 		Thread thread = new Thread(r, "GeilerAddons dungeon stats");
 		thread.setDaemon(true);
 		return thread;
-	});
+		}, new ThreadPoolExecutor.AbortPolicy());
 	/** Network requests started after UUID resolution must not block the profile worker threads. */
-	private static final ExecutorService HTTP_EXECUTOR = Executors.newFixedThreadPool(4, r -> {
+	private static final ExecutorService HTTP_EXECUTOR = Executors.newFixedThreadPool(2, r -> {
 		Thread thread = new Thread(r, "GeilerAddons dungeon stats HTTP");
 		thread.setDaemon(true);
 		return thread;
@@ -120,9 +131,33 @@ public final class DungeonStatsService {
 		AtomicBoolean created = new AtomicBoolean();
 		CompletableFuture<Result> future = IN_FLIGHT.computeIfAbsent(key, ignored -> {
 			created.set(true);
+			DungeonRequestLimiter.Ticket ticket = REQUEST_LIMITER.tryAcquire();
+			if (ticket == null) {
+				GeilerAddons.LOGGER.debug("[Dungeon Stats] Lookup queue is full; rejecting {}", name);
+				return CompletableFuture.completedFuture(Result.failure("Stats request queue is full"));
+			}
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Fetching {} from Mojang and hypixel.odtheking.com", name);
-			return CompletableFuture.supplyAsync(() -> load(name), EXECUTOR)
-				.exceptionally(error -> Result.failure(errorText(error)));
+			CompletableFuture<Result> request = new CompletableFuture<>();
+			try {
+				EXECUTOR.execute(() -> {
+					try {
+						long delay = REQUEST_LIMITER.reserveStartDelayNanos(System.nanoTime());
+						if (delay > 0) TimeUnit.NANOSECONDS.sleep(delay);
+						request.complete(load(name));
+					} catch (InterruptedException exception) {
+						Thread.currentThread().interrupt();
+						request.complete(Result.failure("Profile request was interrupted"));
+					} catch (Throwable exception) {
+						request.complete(Result.failure(errorText(exception)));
+					} finally {
+						ticket.close();
+					}
+				});
+			} catch (RejectedExecutionException exception) {
+				ticket.close();
+				request.complete(Result.failure("Stats request queue is full"));
+			}
+			return request;
 		});
 		if (!created.get()) GeilerAddons.LOGGER.debug("[Dungeon Stats] Joined in-flight request for {}", name);
 		future.whenComplete((result, error) -> IN_FLIGHT.remove(key, future));
@@ -251,6 +286,8 @@ public final class DungeonStatsService {
 		HttpResponse<InputStream> response;
 		int redirects = 0;
 		while (true) {
+			long requestDelay = HTTP_REQUEST_PACER.reserveStartDelayNanos(System.nanoTime());
+			if (requestDelay > 0) TimeUnit.NANOSECONDS.sleep(requestDelay);
 			HttpRequest request = HttpRequest.newBuilder(current).timeout(TIMEOUT)
 				.header("User-Agent", "GeilerAddons")
 				.header("Accept", "application/json")

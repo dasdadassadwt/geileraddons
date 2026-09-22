@@ -10,6 +10,11 @@ final class AutoKickRules {
 		return limitSeconds <= 0 || fastestSeconds > 0 && fastestSeconds <= limitSeconds;
 	}
 
+	/** Unknown or incomplete profile data can delay evaluation, but can never authorize a kick. */
+	static boolean canApplyAction(boolean hasUnknownOrIncompleteData, boolean hasKnownFailure) {
+		return !hasUnknownOrIncompleteData && hasKnownFailure;
+	}
+
 	/** Parses a PB limit as {@code m:ss} or as legacy whole seconds. Invalid values disable the check. */
 	static int parsePersonalBestLimitSeconds(String value) {
 		if (value == null || value.isBlank()) return 0;

@@ -6,8 +6,13 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonParseException;
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.hud.HudManager;
+import geiler.addons.client.collections.FolderTree;
+import geiler.addons.client.enchanting.AutoExperimentDelayRange;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.macro.MacroDefinition;
+import geiler.addons.client.macro.MacroFunction;
+import geiler.addons.client.macro.MacroScript;
+import geiler.addons.client.macro.MacroValue;
 import geiler.addons.client.macro.MacroTriggerContext;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
@@ -20,6 +25,11 @@ import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.module.impl.MobHighlight;
 import geiler.addons.client.module.impl.MobHighlightModule;
+import geiler.addons.client.module.impl.BlockEspEntry;
+import geiler.addons.client.module.impl.BlockEspModule;
+import geiler.addons.client.module.impl.AutoExperimentsModule;
+import geiler.addons.client.module.impl.InventoryButtonPlacement;
+import geiler.addons.client.module.impl.InventoryButtonsModule;
 import geiler.addons.client.module.impl.MacrosModule;
 import geiler.addons.client.module.impl.SlotIdsModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
@@ -83,6 +93,9 @@ public final class ModConfig {
 		 * by setting name, and every highlight would write to the same "Mob Highlight.Match Text".
 		 */
 		List<MobHighlightData> mobHighlights;
+		List<FolderTree.Folder> mobHighlightFolders;
+		List<BlockEspData> blockEspEntries;
+		List<FolderTree.Folder> blockEspFolders;
 		/** Click GUI view state - see {@link ClickGuiState}. */
 		String uiCategory;
 		String uiOpenModule;
@@ -96,6 +109,11 @@ public final class ModConfig {
 		Boolean hypixelModApi;
 		/** User-authored workflows. Absent means no macros have been created yet. */
 		List<MacroData> macros;
+		List<MacroFunctionData> macroFunctions;
+		JsonArray macroVariables;
+		List<FolderTree.Folder> macroFolders;
+		/** Spatial player-inventory layout stays local and is never embedded in macro transfers. */
+		JsonArray inventoryButtons;
 	}
 
 	/**
@@ -113,6 +131,27 @@ public final class ModConfig {
 		Float scanInterval;
 		String displayName;
 		/** Island name to whether the highlight is wanted there; legacy files without this map mean all islands. */
+		Map<String, Boolean> islands;
+		String folderId;
+	}
+
+	private static final class BlockEspData {
+		int id;
+		String blockId;
+		String folderId;
+		Boolean enabled;
+		Boolean box;
+		Boolean fill;
+		Boolean outline;
+		Boolean showLabel;
+		Boolean tracer;
+		Boolean connectTouching;
+		Boolean depthCheck;
+		Boolean useCustomRange;
+		Integer customRange;
+		int[] outlineColor;
+		int[] fillColor;
+		String displayName;
 		Map<String, Boolean> islands;
 	}
 
@@ -133,6 +172,24 @@ public final class ModConfig {
 		Integer defaultDelayMin;
 		Integer defaultDelayMax;
 		JsonArray steps;
+		JsonArray scripts;
+		Float canvasPanX;
+		Float canvasPanY;
+		Float canvasZoom;
+		String folderId;
+	}
+
+	private static final class MacroFunctionData {
+		String id;
+		String name;
+		List<MacroFunctionParameterData> parameters;
+		JsonArray steps;
+	}
+
+	private static final class MacroFunctionParameterData {
+		String name;
+		String type;
+		String defaultValue;
 	}
 
 	/**
@@ -219,6 +276,17 @@ public final class ModConfig {
 				module.setEnabled(true);
 			}
 		}
+		AutoExperimentsModule autoExperiments = AutoExperimentsModule.INSTANCE;
+		Float legacyExperimentDelay = data.numbers.get("Auto Experiments.Click Delay (ms)");
+		Float savedMinimumDelay = data.numbers.get(settingKey(autoExperiments,
+			autoExperiments.minimumClickDelay().name()));
+		Float savedMaximumDelay = data.numbers.get(settingKey(autoExperiments,
+			autoExperiments.maximumClickDelay().name()));
+		AutoExperimentDelayRange restoredDelay = AutoExperimentDelayRange.restore(legacyExperimentDelay,
+			savedMinimumDelay, savedMaximumDelay, autoExperiments.minimumClickDelay().intValue(),
+			autoExperiments.maximumClickDelay().intValue());
+		autoExperiments.minimumClickDelay().setValue(restoredDelay.minimumMillis());
+		autoExperiments.maximumClickDelay().setValue(restoredDelay.maximumMillis());
 		// Slot IDs used to be a toggle under Debug. Preserve that setting only when the new
 		// standalone module has never been saved, so diagnostics and the overlay stay independent.
 		if (!data.enabled.containsKey(SlotIdsModule.INSTANCE.name())
@@ -237,8 +305,15 @@ public final class ModConfig {
 			HudManager.restore(data.hudPositions);
 		}
 		loadTreeGifts(data);
+		MobHighlightModule.INSTANCE.folders().restore(data.mobHighlightFolders);
+		MacrosModule.INSTANCE.folders().restore(data.macroFolders);
+		BlockEspModule.INSTANCE.folders().restore(data.blockEspFolders);
 		loadMobHighlights(data);
+		loadBlockEspEntries(data);
+		MacrosModule.INSTANCE.globalVariables().restore(MacroVariableConfigCodec.decode(data.macroVariables));
+		loadMacroFunctions(data);
 		loadMacros(data);
+		loadInventoryButtons(data);
 		loadUiState(data);
 	}
 
@@ -358,9 +433,11 @@ public final class ModConfig {
 			});
 		}
 		data.mobHighlights = new ArrayList<>();
+		data.mobHighlightFolders = MobHighlightModule.INSTANCE.folders().folders();
 		for (MobHighlight highlight : MobHighlightModule.INSTANCE.highlights()) {
 			MobHighlightData saved = new MobHighlightData();
 			saved.id = highlight.id();
+			saved.folderId = highlight.folderId();
 			saved.enabled = highlight.enabled().rawValue();
 			saved.matchName = highlight.matchName().rawValue();
 			saved.matchText = highlight.matchText().value();
@@ -375,8 +452,38 @@ public final class ModConfig {
 			}
 			data.mobHighlights.add(saved);
 		}
+		data.blockEspFolders = BlockEspModule.INSTANCE.folders().folders();
+		data.blockEspEntries = new ArrayList<>();
+		for (BlockEspEntry entry : BlockEspModule.INSTANCE.entries()) {
+			BlockEspData saved = new BlockEspData();
+			saved.id = entry.id();
+			saved.blockId = entry.blockId();
+			saved.folderId = entry.folderId();
+			saved.enabled = entry.enabled().rawValue();
+			saved.box = entry.box().rawValue();
+			saved.fill = entry.fill().rawValue();
+			saved.outline = entry.outline().rawValue();
+			saved.showLabel = entry.showLabel().rawValue();
+			saved.tracer = entry.tracer().rawValue();
+			saved.connectTouching = entry.connectTouching().rawValue();
+			saved.depthCheck = entry.depthCheck().rawValue();
+			saved.useCustomRange = entry.useCustomRange().rawValue();
+			saved.customRange = entry.customRange().intValue();
+			saved.outlineColor = rgba(entry.outlineColor());
+			saved.fillColor = rgba(entry.fillColor());
+			saved.displayName = entry.displayName().value();
+			saved.islands = new LinkedHashMap<>();
+			for (Map.Entry<Island, BooleanSetting> island : entry.islands().entrySet()) {
+				saved.islands.put(island.getKey().name(), island.getValue().rawValue());
+			}
+			data.blockEspEntries.add(saved);
+		}
 		MacrosModule.INSTANCE.syncSettings();
 		data.macros = snapshotMacros();
+		data.macroFunctions = snapshotMacroFunctions();
+		data.macroVariables = MacroVariableConfigCodec.encode(MacrosModule.INSTANCE.globalVariables().savedVariables());
+		data.macroFolders = MacrosModule.INSTANCE.folders().folders();
+		data.inventoryButtons = InventoryButtonConfigCodec.encode(InventoryButtonsModule.INSTANCE.placements());
 		data.uiCategory = ClickGuiState.category().name();
 		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().name();
 		data.uiExpandedColor = ClickGuiState.expandedColor() == null ? null : ClickGuiState.expandedColor().name();
@@ -476,6 +583,7 @@ public final class ModConfig {
 			if (restored.size() >= MobHighlightModule.MAX_HIGHLIGHTS) break;
 			if (saved == null) continue;
 			MobHighlight highlight = MobHighlightModule.INSTANCE.blank(saved.id);
+			highlight.setFolderId(saved.folderId);
 			if (saved.enabled != null) highlight.enabled().setValue(saved.enabled);
 			if (saved.matchName != null) highlight.matchName().setValue(saved.matchName);
 			if (saved.matchText != null) highlight.matchText().setValue(saved.matchText);
@@ -497,6 +605,7 @@ public final class ModConfig {
 		for (MacroData saved : data.macros) {
 			if (saved == null || saved.id < 0 || !ids.add(saved.id)) continue;
 			MacroDefinition macro = new MacroDefinition(saved.id);
+			macro.setFolderId(saved.folderId);
 			if (saved.name != null) macro.setName(saved.name);
 			if (saved.enabled != null) macro.setEnabled(saved.enabled);
 			if (saved.key != null) {
@@ -515,14 +624,83 @@ public final class ModConfig {
 			}
 			if (saved.islandRestricted != null) macro.setIslandRestricted(saved.islandRestricted);
 			macro.setIslands(parseIslands(saved.islands));
+			macro.setCanvasView(saved.canvasPanX == null ? 0 : saved.canvasPanX,
+				saved.canvasPanY == null ? 0 : saved.canvasPanY,
+				saved.canvasZoom == null ? 1 : saved.canvasZoom);
 			// Legacy macro-level defaults are intentionally ignored. Delays now belong to individual
 			// workflow nodes, so an older file cannot silently reintroduce a hidden delay.
-			macro.steps().addAll(MacroStepConfigCodec.decode(saved.steps));
+			if (saved.scripts != null && !saved.scripts.isEmpty()) {
+				macro.restoreScripts(MacroScriptConfigCodec.decode(saved.scripts));
+			} else {
+				macro.steps().addAll(MacroStepConfigCodec.decode(saved.steps));
+			}
 			// Keep an intentionally empty macro visible so the user can finish it in the editor;
 			// pressing its key simply reports that there are no steps yet.
 			restored.add(macro);
 		}
 		MacrosModule.INSTANCE.restore(restored);
+	}
+
+	private static void loadMacroFunctions(Data data) {
+		List<MacroFunction> restored = new ArrayList<>();
+		if (data.macroFunctions != null) for (MacroFunctionData saved : data.macroFunctions) {
+			if (saved == null || restored.size() >= 256) continue;
+			MacroFunction function = new MacroFunction(saved.id);
+			function.setName(saved.name);
+			if (saved.parameters != null) for (MacroFunctionParameterData parameter : saved.parameters) {
+				if (function.parameters().size() >= 32 || parameter == null) break;
+				function.parameters().add(new MacroFunction.Parameter(parameter.name,
+					parseMacroValueType(parameter.type), parameter.defaultValue));
+			}
+			function.steps().addAll(MacroStepConfigCodec.decode(saved.steps));
+			restored.add(function);
+		}
+		MacrosModule.INSTANCE.restoreFunctions(restored);
+	}
+
+	private static void loadBlockEspEntries(Data data) {
+		if (data.blockEspEntries == null) return;
+		Float legacyScanRadius = data.numbers == null ? null : data.numbers.get("Block ESP.Scan Radius (blocks)");
+		List<BlockEspEntry> restored = new ArrayList<>();
+		java.util.HashSet<Integer> ids = new java.util.HashSet<>();
+		for (BlockEspData saved : data.blockEspEntries) {
+			if (saved == null || saved.id < 0 || !ids.add(saved.id)) continue;
+			if (restored.size() >= BlockEspModule.MAX_ENTRIES) break;
+			BlockEspEntry entry = BlockEspModule.INSTANCE.blank(saved.id);
+			entry.setBlockId(saved.blockId);
+			entry.setFolderId(saved.folderId);
+			if (saved.enabled != null) entry.enabled().setValue(saved.enabled);
+			if (saved.box != null) entry.box().setValue(saved.box);
+			if (saved.fill != null) entry.fill().setValue(saved.fill);
+			if (saved.outline != null) entry.outline().setValue(saved.outline);
+			if (saved.showLabel != null) entry.showLabel().setValue(saved.showLabel);
+			if (saved.tracer != null) entry.tracer().setValue(saved.tracer);
+			if (saved.connectTouching != null) entry.connectTouching().setValue(saved.connectTouching);
+			if (saved.depthCheck != null) entry.depthCheck().setValue(saved.depthCheck);
+			if (saved.useCustomRange != null) entry.useCustomRange().setValue(saved.useCustomRange);
+			if (saved.customRange != null) entry.customRange().setValue(saved.customRange);
+			else if (legacyScanRadius != null) entry.customRange().setValue(legacyScanRadius);
+			applyColor(entry.outlineColor(), saved.outlineColor);
+			applyColor(entry.fillColor(), saved.fillColor);
+			if (saved.displayName != null) entry.displayName().setValue(saved.displayName);
+			applyBlockIslands(entry, saved.islands);
+			restored.add(entry);
+		}
+		BlockEspModule.INSTANCE.restore(restored);
+	}
+
+	private static void loadInventoryButtons(Data data) {
+		List<InventoryButtonPlacement> restored = InventoryButtonConfigCodec.decode(data.inventoryButtons,
+			id -> MacrosModule.INSTANCE.macro(id) != null, InventoryButtonsModule.INSTANCE::isPngIconAllowed);
+		InventoryButtonsModule.INSTANCE.restore(restored);
+	}
+
+	private static void applyBlockIslands(BlockEspEntry entry, Map<String, Boolean> saved) {
+		if (saved == null) return;
+		for (Map.Entry<Island, BooleanSetting> island : entry.islands().entrySet()) {
+			Boolean wanted = saved.get(island.getKey().name());
+			if (wanted != null) island.getValue().setValue(wanted);
+		}
 	}
 
 	private static java.util.EnumSet<Island> parseIslands(List<String> names) {
@@ -545,6 +723,7 @@ public final class ModConfig {
 		for (MacroDefinition macro : MacrosModule.INSTANCE.macros()) {
 			MacroData data = new MacroData();
 			data.id = macro.id();
+			data.folderId = macro.folderId();
 			data.name = macro.name();
 			data.enabled = macro.enabled();
 			data.key = macro.keybind().isBound() ? macro.keybind().key().getName() : null;
@@ -554,9 +733,38 @@ public final class ModConfig {
 			data.islands = new ArrayList<>();
 			for (Island island : macro.islands()) data.islands.add(island.name());
 			data.steps = MacroStepConfigCodec.encode(macro.steps());
+			data.scripts = MacroScriptConfigCodec.encode(macro.scripts());
+			data.canvasPanX = macro.canvasPanX();
+			data.canvasPanY = macro.canvasPanY();
+			data.canvasZoom = macro.canvasZoom();
 			result.add(data);
 		}
 		return result;
+	}
+
+	private static List<MacroFunctionData> snapshotMacroFunctions() {
+		List<MacroFunctionData> result = new ArrayList<>();
+		for (MacroFunction function : MacrosModule.INSTANCE.functions()) {
+			MacroFunctionData data = new MacroFunctionData();
+			data.id = function.id();
+			data.name = function.name();
+			data.steps = MacroStepConfigCodec.encode(function.steps());
+			data.parameters = new ArrayList<>();
+			for (MacroFunction.Parameter parameter : function.parameters()) {
+				MacroFunctionParameterData saved = new MacroFunctionParameterData();
+				saved.name = parameter.name();
+				saved.type = parameter.type().name();
+				saved.defaultValue = parameter.defaultValue();
+				data.parameters.add(saved);
+			}
+			result.add(data);
+		}
+		return result;
+	}
+
+	private static MacroValue.Type parseMacroValueType(String value) {
+		try { return MacroValue.Type.valueOf(value == null ? "TEXT" : value.toUpperCase(java.util.Locale.ROOT)); }
+		catch (IllegalArgumentException ignored) { return MacroValue.Type.TEXT; }
 	}
 
 	/**

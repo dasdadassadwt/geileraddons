@@ -2,12 +2,20 @@ package geiler.addons.client.module.impl;
 
 import geiler.addons.client.dungeon.DungeonStatsChecks;
 import geiler.addons.client.dungeon.DungeonStatsCommand;
+import geiler.addons.client.collections.FolderTreeChecks;
+import geiler.addons.client.gui.ClickGuiMotionChecks;
+import geiler.addons.client.gui.SlotIdBadgeLayoutChecks;
 import geiler.addons.client.entity.ClientEntitySnapshotChecks;
 import geiler.addons.client.entity.NameplatesChecks;
+import geiler.addons.client.farming.GardenPlotChecks;
+import geiler.addons.client.render.BlockOutlineChecks;
 import geiler.addons.client.enchanting.ExperimentCell;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
+import geiler.addons.client.enchanting.AutoExperimentAutomation;
+import geiler.addons.client.enchanting.AutoExperimentDelayRange;
 import geiler.addons.client.enchanting.ChronomatronEvent;
 import geiler.addons.client.enchanting.ChronomatronModel;
+import geiler.addons.client.enchanting.ExperimentClickGate;
 import geiler.addons.client.enchanting.ExperimentMilestone;
 import geiler.addons.client.enchanting.ExperimentPhase;
 import geiler.addons.client.enchanting.ExperimentSnapshot;
@@ -46,6 +54,7 @@ public final class OfflineChecks {
 		checkMacroKeyCapturePolicy();
 		DungeonStatsChecks.run();
 		PestChecks.run();
+		GardenPlotChecks.run();
 		ClientEntitySnapshotChecks.run();
 		NameplatesChecks.run();
 		HideyhoChecks.run();
@@ -63,8 +72,15 @@ public final class OfflineChecks {
 		checkChoiceDirection();
 		checkChronomatronModel();
 		checkExperimentSolverEngine();
+		checkAutoExperiments();
 		checkExperimentStateEdges();
 		MacroChecks.run();
+		FolderTreeChecks.run();
+		BlockEspChecks.run();
+		BlockOutlineChecks.run();
+		InventoryButtonChecks.run();
+		SlotIdBadgeLayoutChecks.run();
+		ClickGuiMotionChecks.run();
 	}
 
 	private static void checkModuleKeybinds() {
@@ -266,8 +282,10 @@ public final class OfflineChecks {
 			"Chronomatron does not reach max clicks before the final sequence is known");
 		assertFalse(chrono.reached(chrono.displayedSequenceLength(), 8),
 			"Chronomatron keeps round nine playable before round ten starts");
+		assertTrue(chrono.reached(chrono.displayedSequenceLength(), 8, ExperimentPhase.ROUND_COMPLETE),
+			"Chronomatron reaches its max-click milestone as soon as target round nine is completed");
 		assertTrue(chrono.reached(chrono.displayedSequenceLength(), 9),
-			"Chronomatron reaches max clicks when round ten starts");
+			"Chronomatron keeps the next-round counter as a compatible milestone signal");
 		assertTrue(chrono.reached(chrono.displayedSequenceLength() + 1, -1),
 			"Chronomatron fallback waits for a sequence beyond the target");
 	}
@@ -483,6 +501,9 @@ public final class OfflineChecks {
 		assertEquals("DEV", DebugModule.INSTANCE.category().name(), "Dev Debug module category");
 		assertFalse(SlotIdsModule.INSTANCE.isEnabled(), "Slot IDs module defaults off");
 		assertEquals("DEV", SlotIdsModule.INSTANCE.category().name(), "Slot IDs module category");
+		assertEquals("slot_ids", SlotIdsModule.INSTANCE.id(), "Slot IDs has a stable HUD position key");
+		assertFalse(SlotIdsModule.INSTANCE.renderOnHud(),
+			"Slot IDs has a movable editor preview but keeps live badges attached to inventory slots");
 		DebugState.setEnabled(false);
 		BooleanSetting debug = BooleanSetting.debug("Debug", true);
 		assertFalse(debug.value(), "debug setting is effectively off behind the global gate");
@@ -883,6 +904,452 @@ public final class OfflineChecks {
 		assertFalse(ExperimentType.fromTitle("Chest").isPresent(), "unrelated title is ignored");
 		assertTrue(ExperimentSolverModule.INSTANCE.supports(ExperimentType.CHRONOMATRON),
 			"solver module exposes Chronomatron configuration");
+	}
+
+	private static void checkAutoExperiments() {
+		AutoExperimentsModule module = AutoExperimentsModule.INSTANCE;
+		assertFalse(module.isEnabled(), "Auto Experiments defaults off");
+		assertTrue(module.chronomatron().value(), "Chronomatron automation defaults on per game");
+		assertTrue(module.ultrasequencer().value(), "Ultrasequencer automation defaults on per game");
+		assertEquals(360, module.firstClickDelay().intValue(), "first-click delay follows the saved AutoTerms profile");
+		assertEquals(AutoExperimentDelayRange.DEFAULT_MINIMUM_MILLIS,
+			module.minimumClickDelay().intValue(), "fresh minimum click delay uses the selected range default");
+		assertEquals(AutoExperimentDelayRange.DEFAULT_MAXIMUM_MILLIS,
+			module.maximumClickDelay().intValue(), "fresh maximum click delay uses the selected range default");
+		assertFalse(module.supports(ExperimentType.SUPERPAIRS), "Auto Experiments excludes Superpairs");
+
+		AutoExperimentDelayRange standardRange = new AutoExperimentDelayRange(190, 260);
+		long[] requestedBound = {-1L};
+		assertEquals(190, standardRange.sampleMillis(bound -> {
+			requestedBound[0] = bound;
+			return 0L;
+		}), "random delay can deterministically select the inclusive minimum");
+		assertEquals(71L, requestedBound[0], "inclusive sampling requests one offset per millisecond value");
+		assertEquals(260, standardRange.sampleMillis(bound -> bound - 1L),
+			"random delay can deterministically select the inclusive maximum");
+		AutoExperimentDelayRange reversedRange = new AutoExperimentDelayRange(260, 190);
+		assertEquals(190, reversedRange.minimumMillis(), "reversed endpoints normalize before sampling");
+		assertEquals(260, reversedRange.maximumMillis(), "reversed endpoints retain the larger maximum");
+		assertEquals(221, new AutoExperimentDelayRange(221, 221).sampleMillis(bound -> {
+			assertEquals(1L, bound, "an equal endpoint range has exactly one choice");
+			return 0L;
+		}), "an equal delay range always samples its one value");
+		assertEquals(new AutoExperimentDelayRange(190, 260),
+			AutoExperimentDelayRange.fromLegacyDelay(190), "legacy delay migrates to itself plus 70 ms");
+		assertEquals(new AutoExperimentDelayRange(1_970, 2_000),
+			AutoExperimentDelayRange.fromLegacyDelay(1_970), "legacy maximum is capped at 2,000 ms");
+		assertEquals(new AutoExperimentDelayRange(220, 260),
+			AutoExperimentDelayRange.restore(190f, 220f, null, 190, 260),
+			"saved new minimum wins while the missing maximum migrates from the legacy value");
+		assertEquals(new AutoExperimentDelayRange(220, 240),
+			AutoExperimentDelayRange.restore(190f, 220f, 240f, 190, 260),
+			"saved new endpoints take precedence over the old single delay");
+		assertEquals(new AutoExperimentDelayRange(200, 300),
+			AutoExperimentDelayRange.restore(null, null, null, 200, 300),
+			"a fresh config retains the module's default endpoints");
+		assertSame(ExperimentType.CHRONOMATRON,
+			AutoExperimentsModule.hintedSequenceType("Chronomatron (Unrecognized Tier)"),
+			"malformed Chronomatron tier titles can be paused without becoming click-eligible");
+		assertSame(ExperimentType.ULTRASEQUENCER,
+			AutoExperimentsModule.hintedSequenceType("Ultrasequencer (Unrecognized Tier)"),
+			"malformed Ultrasequencer tier titles can be paused without becoming click-eligible");
+		assertSame(null, AutoExperimentsModule.hintedSequenceType("Superpairs (Unrecognized Tier)"),
+			"unknown Superpairs titles remain outside Auto Experiments");
+		assertTrue(ExperimentController.hasActiveOwner(ExperimentType.CHRONOMATRON,
+			true, true, true, true), "Solver and Auto share one Chronomatron owner path when both are enabled");
+		assertSame(ExperimentController.INSTANCE.engine(), ExperimentSolverModule.INSTANCE.engine(),
+			"the Solver facade exposes the controller's single shared engine");
+		assertTrue(ExperimentController.hasActiveOwner(ExperimentType.ULTRASEQUENCER,
+			false, true, true, true), "Auto can own Ultrasequencer observation while Solver is off");
+		assertFalse(ExperimentController.hasActiveOwner(ExperimentType.SUPERPAIRS,
+			false, false, true, true), "Auto never takes ownership of Superpairs");
+
+		ExperimentSolverEngine clickEngine = new ExperimentSolverEngine();
+		String ultraTitle = "Ultrasequencer (High)";
+		List<ExperimentCell> ultraCells = List.of(ExperimentCell.number(30, 1),
+			ExperimentCell.number(31, 2));
+		clickEngine.observe(new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
+			ultraCells, "black", 1));
+		var clickView = clickEngine.observe(new ExperimentSnapshot(ultraTitle, "Timer: 1.0s",
+			ultraCells, "white", 2));
+		assertSame(ExperimentPhase.SOLVE, clickView.phase(), "Ultrasequencer test fixture enters solve phase");
+		ExperimentClickGate clickGate = new ExperimentClickGate();
+		int[] vanillaClicks = {0};
+		assertFalse(clickGate.dispatchSequenceClick(clickEngine, 30, false,
+			ignored -> vanillaClicks[0]++), "a replaced screen/menu context blocks a click");
+		assertFalse(clickGate.dispatchSequenceClick(clickEngine, 31, true,
+			ignored -> vanillaClicks[0]++), "a future or stale slot never dispatches");
+		assertFalse(clickGate.dispatchSequenceClick(clickEngine, 1, 30, true,
+			ignored -> vanillaClicks[0]++), "an expected slot paired with a stale index never dispatches");
+		assertEquals(0, vanillaClicks[0], "rejected clicks never reach vanilla");
+		assertEquals(0, clickEngine.view().visualIndex(), "rejected clicks do not advance the shared cursor");
+		assertTrue(clickGate.dispatchSequenceClick(clickEngine, 30, true,
+			ignored -> vanillaClicks[0]++), "the exact current slot dispatches through the common click gate");
+		assertEquals(1, vanillaClicks[0], "one accepted action invokes vanilla exactly once");
+		assertEquals(1, clickEngine.view().visualIndex(), "one accepted vanilla dispatch confirms one engine step");
+		assertFalse(clickGate.dispatchSequenceClick(clickEngine, 30, true,
+			ignored -> vanillaClicks[0]++), "a previously current slot becomes stale after confirmation");
+		assertEquals(1, vanillaClicks[0], "a stale repeated request is not retried");
+		assertFalse(clickGate.dispatchSequenceClick(new ExperimentSolverEngine(), 30, true,
+			ignored -> vanillaClicks[0]++), "an unknown or idle engine never dispatches");
+
+		ExperimentSolverEngine repeatedSlotEngine = repeatedChronomatronEngine();
+		assertEquals(List.of(17), repeatedSlotEngine.view().sequence().get(0).slotIds(),
+			"first repeated Chronomatron step maps to the shared slot");
+		assertEquals(List.of(17), repeatedSlotEngine.view().sequence().get(1).slotIds(),
+			"second repeated Chronomatron step maps to the same shared slot");
+
+		long millis = 1_000_000L;
+		long start = 5_000_000_000L;
+		Object screen = new Object();
+		Object menu = new Object();
+		AutoExperimentAutomation automation = new AutoExperimentAutomation();
+		AutoExperimentAutomation.Snapshot firstStep = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 4.0s", 0, 2, 17, 8, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			automation.tick(firstStep, start, 360 * millis, 190 * millis).action(),
+			"automation arms a solve phase before its first-click delay");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			automation.tick(firstStep, start + 359 * millis, 360 * millis, 190 * millis).action(),
+			"first-click delay does not fire early");
+		var firstClick = automation.tick(firstStep, start + 360 * millis, 360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, firstClick.action(),
+			"the first step becomes due exactly at the configured delay");
+		assertEquals(0, firstClick.sequenceIndex(), "the pending click carries its sequence index");
+		assertEquals(17, firstClick.slotId(), "automation requests the current expected slot");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			automation.tick(firstStep, start + 360 * millis, 360 * millis, 190 * millis).action(),
+			"a pending click cannot be emitted twice before its dispatch result");
+		AutoExperimentAutomation.Snapshot secondStep = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Correct!", 1, 2, 18, 8, false);
+		automation.clickResult(true, secondStep, start + 360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			automation.tick(secondStep, start + 549 * millis, 360 * millis, 190 * millis).action(),
+			"between-click delay does not fire early, including during transient Correct feedback");
+		var secondClick = automation.tick(secondStep, start + 550 * millis, 360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, secondClick.action(),
+			"the next step becomes due exactly at the between-click delay");
+		assertEquals(18, secondClick.slotId(), "the next request follows the current shared solver step");
+
+		AutoExperimentAutomation repeatedSlotAutomation = new AutoExperimentAutomation();
+		AutoExperimentAutomation.Snapshot repeatedFirstStep = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 4.0s", 0, 2, 17, 0, false);
+		repeatedSlotAutomation.tick(repeatedFirstStep, start, 360 * millis);
+		var repeatedFirstClick = repeatedSlotAutomation.tick(repeatedFirstStep,
+			start + 360 * millis, 360 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, repeatedFirstClick.action(),
+			"the first click for two repeated slots is queued");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			repeatedSlotAutomation.tick(repeatedFirstStep, start + 360 * millis, 360 * millis).action(),
+			"the same sequence index cannot emit a duplicate while its click is pending");
+		ExperimentClickGate repeatedSlotGate = new ExperimentClickGate();
+		int[] repeatedVanillaClicks = {0};
+		assertTrue(repeatedSlotGate.dispatchSequenceClick(repeatedSlotEngine,
+			repeatedFirstClick.sequenceIndex(), repeatedFirstClick.slotId(), true,
+			ignored -> repeatedVanillaClicks[0]++),
+			"the first expected Chronomatron sequence index dispatches its slot");
+		assertFalse(repeatedSlotGate.dispatchSequenceClick(repeatedSlotEngine,
+			repeatedFirstClick.sequenceIndex(), repeatedFirstClick.slotId(), true,
+			ignored -> repeatedVanillaClicks[0]++),
+			"the same slot is rejected when requested again at its stale sequence index");
+		AutoExperimentAutomation.Snapshot repeatedSecondStep = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Correct!", 1, 2, 17, 0, false);
+		repeatedSlotAutomation.clickResult(true, repeatedSecondStep,
+			start + 360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			repeatedSlotAutomation.tick(repeatedSecondStep, start + 549 * millis, 360 * millis).action(),
+			"the same slot still observes the selected between-click delay");
+		var repeatedSecondClick = repeatedSlotAutomation.tick(repeatedSecondStep,
+			start + 550 * millis, 360 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, repeatedSecondClick.action(),
+			"the same slot is eligible after the sequence index advances");
+		assertEquals(1, repeatedSecondClick.sequenceIndex(), "the second click carries the advanced sequence index");
+		assertEquals(17, repeatedSecondClick.slotId(), "the second click can reuse the first slot id");
+		assertTrue(repeatedSlotGate.dispatchSequenceClick(repeatedSlotEngine,
+			repeatedSecondClick.sequenceIndex(), repeatedSecondClick.slotId(), true,
+			ignored -> repeatedVanillaClicks[0]++),
+			"the same Chronomatron slot dispatches again for the next sequence index");
+		assertEquals(2, repeatedVanillaClicks[0], "repeated slot flow performs exactly two vanilla dispatches");
+		assertFalse(repeatedSlotGate.dispatchSequenceClick(repeatedSlotEngine,
+			repeatedSecondClick.sequenceIndex(), repeatedSecondClick.slotId(), true,
+			ignored -> repeatedVanillaClicks[0]++),
+			"the second sequence index also cannot be dispatched twice");
+		AutoExperimentAutomation.Snapshot repeatedRoundComplete = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
+			"Round Complete", 2, 2, -1, 0, false);
+		repeatedSlotAutomation.clickResult(true, repeatedRoundComplete,
+			start + 550 * millis, 190 * millis);
+
+		AutoExperimentAutomation finalUltraClick = new AutoExperimentAutomation();
+		AutoExperimentAutomation.Snapshot lastUltraStep = autoSnapshot(new Object(), new Object(),
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 0.0s", 1, 2, 31, 0, false);
+		finalUltraClick.tick(lastUltraStep, start, 0L, 190 * millis);
+		var lastUltraRequest = finalUltraClick.tick(lastUltraStep, start, 0L, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, lastUltraRequest.action(),
+			"Ultrasequencer reaches its final remembered slot");
+		finalUltraClick.clickResult(true, lastUltraStep, start, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			finalUltraClick.tick(lastUltraStep, start + 190 * millis, 0L, 190 * millis).action(),
+			"the final Ultrasequencer slot is not resent while its pane transition is pending");
+		AutoExperimentAutomation.Snapshot completedRound = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
+			"Round Complete", 2, 2, -1, 8, false);
+		automation.clickResult(true, completedRound, start + 550 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			automation.tick(completedRound, start + 3_549 * millis, 360 * millis, 190 * millis).action(),
+			"stage watchdog allows the full three-second transition window");
+		var timedOut = automation.tick(completedRound, start + 3_550 * millis,
+			360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.PAUSED, timedOut.action(),
+			"a stalled stage pauses instead of retrying the final click");
+		assertTrue(timedOut.explanation().contains("no click was retried"),
+			"watchdog explains that no click was retried");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			automation.tick(completedRound, start + 3_600 * millis, 360 * millis, 190 * millis).action(),
+			"a watchdog pause reports only once and stays paused");
+
+		AutoExperimentAutomation transition = new AutoExperimentAutomation();
+		long transitionStart = 20_000_000_000L;
+		Object transitionScreen = new Object();
+		Object transitionMenu = new Object();
+		AutoExperimentAutomation.Snapshot oneStep = autoSnapshot(transitionScreen, transitionMenu,
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 2.0s", 0, 1, 30, 0, false);
+		transition.tick(oneStep, transitionStart, 360 * millis, 190 * millis);
+		var oneClick = transition.tick(oneStep, transitionStart + 360 * millis,
+			360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, oneClick.action(),
+			"Ultrasequencer uses the same first-click timing");
+		AutoExperimentAutomation.Snapshot memorize = autoSnapshot(transitionScreen, transitionMenu,
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.MEMORIZE,
+			"Remember the pattern!", 1, 1, -1, 0, false);
+		transition.clickResult(true, memorize, transitionStart + 360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			transition.tick(memorize, transitionStart + 10_000 * millis, 360 * millis, 190 * millis).action(),
+			"normal memorize phases do not trip the stage watchdog");
+		AutoExperimentAutomation.Snapshot nextUltraStage = autoSnapshot(transitionScreen, transitionMenu,
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 2.0s", 0, 2, 31, 1, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			transition.tick(nextUltraStage, transitionStart + 20_000 * millis,
+				360 * millis, 190 * millis).action(),
+			"each new solve phase receives a fresh first-click delay");
+		assertSame(AutoExperimentAutomation.Action.CLICK,
+			transition.tick(nextUltraStage, transitionStart + 20_360 * millis,
+				360 * millis, 190 * millis).action(),
+			"a valid next Ultrasequencer stage is replayed after that delay");
+
+		AutoExperimentAutomation transitionedWhileModelWaits = new AutoExperimentAutomation();
+		var roundCompleteStatus = autoSnapshot(new Object(), new Object(),
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
+			"Round Complete", 1, 1, -1, 0, false);
+		transitionedWhileModelWaits.tick(roundCompleteStatus, transitionStart, 0L, 0L);
+		var timerStatusWithOldModel = autoSnapshot(roundCompleteStatus.screenIdentity(),
+			roundCompleteStatus.menuIdentity(), ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH,
+			ExperimentPhase.ROUND_COMPLETE, "Timer: 1.0s", 1, 1, -1, 0, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			transitionedWhileModelWaits.tick(timerStatusWithOldModel, transitionStart + 2_500 * millis,
+				0L, 0L).action(),
+			"a known timer proves the stage is moving even while the menu model lags");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			transitionedWhileModelWaits.tick(timerStatusWithOldModel,
+				transitionStart + 2_999 * millis, 0L, 0L).action(),
+			"a solve timer without the next sequence gets the full watchdog window");
+		assertSame(AutoExperimentAutomation.Action.PAUSED,
+			transitionedWhileModelWaits.tick(timerStatusWithOldModel,
+				transitionStart + 3_000 * millis, 0L, 0L).action(),
+			"the watchdog pauses when the next solve sequence never becomes available");
+		AutoExperimentAutomation normalWaitTransition = new AutoExperimentAutomation();
+		normalWaitTransition.tick(roundCompleteStatus, transitionStart, 0L, 0L);
+		AutoExperimentAutomation.Snapshot memorizeWhileModelWaits = autoSnapshot(
+			roundCompleteStatus.screenIdentity(), roundCompleteStatus.menuIdentity(),
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
+			"Remember the pattern!", 1, 1, -1, 0, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			normalWaitTransition.tick(memorizeWhileModelWaits, transitionStart + 2_500 * millis,
+				0L, 0L).action(),
+			"a known memorize status cancels the stage watchdog while the model catches up");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			normalWaitTransition.tick(memorizeWhileModelWaits,
+				transitionStart + 10_000 * millis, 0L, 0L).action(),
+			"normal memorize/wait phases can take longer than the watchdog window");
+
+		AutoExperimentAutomation manualTakeover = new AutoExperimentAutomation();
+		manualTakeover.tick(firstStep, start, 360 * millis, 190 * millis);
+		manualTakeover.tick(firstStep, start + 360 * millis, 360 * millis, 190 * millis);
+		assertTrue(!manualTakeover.pauseForManualInput().isBlank(), "manual takeover explains the pause once");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			manualTakeover.tick(firstStep, start + 500 * millis, 360 * millis, 190 * millis).action(),
+			"manual input cancels a pending Auto click");
+		assertTrue(manualTakeover.pauseForManualInput().isBlank(), "manual takeover notification is not repeated");
+		manualTakeover.reset();
+		manualTakeover.tick(firstStep, start + 1_000 * millis, 360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK,
+			manualTakeover.tick(firstStep, start + 1_360 * millis, 360 * millis, 190 * millis).action(),
+			"toggling off and on clears the pause and arms a fresh delay");
+		AutoExperimentAutomation disabled = new AutoExperimentAutomation();
+		disabled.tick(firstStep, start, 360 * millis, 190 * millis);
+		AutoExperimentAutomation.Snapshot switchedOff = new AutoExperimentAutomation.Snapshot(false, true,
+			true, screen, menu, ExperimentType.CHRONOMATRON, ExperimentTier.HIGH,
+			ExperimentPhase.SOLVE, "Timer: 4.0s", true, 0, 2, 17, 8, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			disabled.tick(switchedOff, start + 350 * millis, 360 * millis, 190 * millis).action(),
+			"disabling Auto cancels the queued step");
+		disabled.tick(firstStep, start + 500 * millis, 360 * millis, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			disabled.tick(firstStep, start + 859 * millis, 360 * millis, 190 * millis).action(),
+			"re-enabling Auto starts a fresh delay instead of using stale queued work");
+		assertSame(AutoExperimentAutomation.Action.CLICK,
+			disabled.tick(firstStep, start + 860 * millis, 360 * millis, 190 * millis).action(),
+			"re-enabled automation clicks only after its new first delay");
+		AutoExperimentAutomation rejectedDispatch = new AutoExperimentAutomation();
+		rejectedDispatch.tick(firstStep, start, 0L, 190 * millis);
+		var rejectedClick = rejectedDispatch.tick(firstStep, start, 0L, 190 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, rejectedClick.action(),
+			"a zero-delay click still passes through the one-action queue");
+		assertSame(AutoExperimentAutomation.Action.PAUSED,
+			rejectedDispatch.clickResult(false, firstStep, start, 190 * millis).action(),
+			"a rejected by-slot dispatch pauses without retrying");
+
+		AutoExperimentAutomation replacement = new AutoExperimentAutomation();
+		replacement.tick(firstStep, start, 360 * millis, 190 * millis);
+		Object replacementScreen = new Object();
+		AutoExperimentAutomation.Snapshot replacedContext = autoSnapshot(replacementScreen, new Object(),
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 4.0s", 0, 2, 17, 8, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			replacement.tick(replacedContext, start + 350 * millis, 360 * millis, 190 * millis).action(),
+			"screen or menu replacement cancels a stale scheduled slot");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			replacement.tick(replacedContext, start + 709 * millis, 360 * millis, 190 * millis).action(),
+			"replacement context receives its own full first delay");
+		assertSame(AutoExperimentAutomation.Action.CLICK,
+			replacement.tick(replacedContext, start + 710 * millis, 360 * millis, 190 * millis).action(),
+			"only the expected slot from the current menu becomes eligible");
+		AutoExperimentAutomation changedSlot = new AutoExperimentAutomation();
+		changedSlot.tick(firstStep, start, 360 * millis);
+		AutoExperimentAutomation.Snapshot unexpectedSlot = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 4.0s", 0, 2, 18, 8, false);
+		assertSame(AutoExperimentAutomation.Action.PAUSED,
+			changedSlot.tick(unexpectedSlot, start + 360 * millis, 360 * millis).action(),
+			"a changed expected slot during a delay pauses without dispatching or retrying");
+
+		AutoExperimentAutomation unknownTier = new AutoExperimentAutomation();
+		AutoExperimentAutomation.Snapshot unknown = autoSnapshot(new Object(), new Object(),
+			ExperimentType.CHRONOMATRON, ExperimentTier.UNKNOWN, ExperimentPhase.SOLVE,
+			"Timer: 4.0s", 0, 2, 17, 0, false);
+		assertSame(AutoExperimentAutomation.Action.PAUSED,
+			unknownTier.tick(unknown, start, 360 * millis, 190 * millis).action(),
+			"an unknown tier pauses before any automatic click");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			unknownTier.tick(unknown, start + 500 * millis, 360 * millis, 190 * millis).action(),
+			"an unknown-tier pause is not repeatedly announced or retried");
+		unknownTier.reset();
+		AutoExperimentAutomation.Snapshot unknownState = autoSnapshot(new Object(), new Object(),
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.IDLE,
+			"server is syncing", 0, 0, -1, 0, false);
+		assertSame(AutoExperimentAutomation.Action.PAUSED,
+			unknownTier.tick(unknownState, start, 360 * millis, 190 * millis).action(),
+			"an unavailable sequence state pauses without clicking");
+		unknownTier.reset();
+		AutoExperimentAutomation.Snapshot unknownSolveStatus = autoSnapshot(new Object(), new Object(),
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"server is syncing", 0, 2, 17, 0, false);
+		assertSame(AutoExperimentAutomation.Action.PAUSED,
+			unknownTier.tick(unknownSolveStatus, start, 360 * millis, 190 * millis).action(),
+			"an unknown server state cannot authorize a click using stale solver context");
+
+		AutoExperimentAutomation milestoneStop = new AutoExperimentAutomation();
+		AutoExperimentAutomation.Snapshot milestone = autoSnapshot(new Object(), new Object(),
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
+			"Round Complete", 9, 9, -1, 8, true);
+		assertSame(AutoExperimentAutomation.Action.STOPPED,
+			milestoneStop.tick(milestone, start, 0L, 0L).action(),
+			"a milestone reached without an accepted Auto click stops without closing a menu");
+		AutoExperimentAutomation milestoneClose = new AutoExperimentAutomation();
+		AutoExperimentAutomation.Snapshot lastAutoStep = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 1.0s", 8, 9, 17, 8, false);
+		milestoneClose.tick(lastAutoStep, start, 0L);
+		var lastAutoClick = milestoneClose.tick(lastAutoStep, start, 0L);
+		assertSame(AutoExperimentAutomation.Action.CLICK, lastAutoClick.action(),
+			"the final requested milestone click enters the one-click queue");
+		AutoExperimentAutomation.Snapshot reachedAfterAcceptedClick = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
+			"Round Complete", 9, 9, -1, 8, true);
+		assertSame(AutoExperimentAutomation.Action.CLOSE_MENU,
+			milestoneClose.clickResult(true, reachedAfterAcceptedClick, start, 190 * millis).action(),
+			"an accepted click that reaches the shared milestone requests normal menu closure");
+		assertSame(AutoExperimentAutomation.Action.STOPPED,
+			milestoneClose.tick(reachedAfterAcceptedClick, start + 1 * millis, 0L).action(),
+			"milestone menu closure is emitted once even if the screen has not left yet");
+		AutoExperimentAutomation beginnerCompletion = new AutoExperimentAutomation();
+		AutoExperimentAutomation.Snapshot noBonusThreshold = autoSnapshot(new Object(), new Object(),
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.BEGINNER, ExperimentPhase.SOLVE,
+			"Timer: 1.0s", 0, 1, 30, 0, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			beginnerCompletion.tick(noBonusThreshold, start, 0L, 0L).action(),
+			"a recognized tier without a bonus-click milestone remains solvable");
+		assertSame(AutoExperimentAutomation.Action.CLICK,
+			beginnerCompletion.tick(noBonusThreshold, start, 0L, 0L).action(),
+			"a no-milestone tier continues while a valid step remains");
+		AutoExperimentAutomation.Snapshot beginnerComplete = autoSnapshot(
+			noBonusThreshold.screenIdentity(), noBonusThreshold.menuIdentity(),
+			ExperimentType.ULTRASEQUENCER, ExperimentTier.BEGINNER, ExperimentPhase.COMPLETE,
+			"Experiment complete", 1, 1, -1, 0, false);
+		assertSame(AutoExperimentAutomation.Action.STOPPED,
+			beginnerCompletion.tick(beginnerComplete, start + 1_000 * millis, 0L, 0L).action(),
+			"a tier without a milestone stops on completion without requesting menu closure");
+		AutoExperimentAutomation.Snapshot superpairs = autoSnapshot(new Object(), new Object(),
+			ExperimentType.SUPERPAIRS, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Next button", 0, 1, 10, -1, false);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			milestoneStop.tick(superpairs, start + 1_000 * millis, 0L, 0L).action(),
+			"Auto Experiments ignores Superpairs completely");
+	}
+
+	private static AutoExperimentAutomation.Snapshot autoSnapshot(Object screen, Object menu,
+		ExperimentType type, ExperimentTier tier, ExperimentPhase phase, String status,
+		int currentIndex, int sequenceLength, int expectedSlot, int completedRounds,
+		boolean milestoneReached) {
+		return new AutoExperimentAutomation.Snapshot(true, true, true, screen, menu, type, tier,
+			phase, status, sequenceLength > 0, currentIndex, sequenceLength, expectedSlot,
+			completedRounds, milestoneReached);
+	}
+
+	private static ExperimentSolverEngine repeatedChronomatronEngine() {
+		ExperimentSolverEngine engine = new ExperimentSolverEngine();
+		String title = "Chronomatron (High)";
+		observeRepeatedSlotChronomatron(engine, title, 1, ChronomatronEvent.board(17, "red", true));
+		observeRepeatedSlotChronomatron(engine, title, 2, ChronomatronEvent.status("Timer: 4.0s"));
+		assertTrue(engine.onClick(17).expected(), "the first one-step round can be completed to build a repeated trace");
+		assertTrue(engine.confirmClick(17).visualStateChanged(), "the first one-step round advances locally");
+		observeRepeatedSlotChronomatron(engine, title, 3, ChronomatronEvent.status("Remember the pattern!"));
+		observeRepeatedSlotChronomatron(engine, title, 4, ChronomatronEvent.board(17, "red", false));
+		observeRepeatedSlotChronomatron(engine, title, 5, ChronomatronEvent.board(17, "red", true));
+		observeRepeatedSlotChronomatron(engine, title, 6, ChronomatronEvent.board(17, "red", false));
+		observeRepeatedSlotChronomatron(engine, title, 7, ChronomatronEvent.board(17, "red", true));
+		observeRepeatedSlotChronomatron(engine, title, 8, ChronomatronEvent.status("Timer: 4.0s"));
+		assertSame(ExperimentPhase.SOLVE, engine.view().phase(),
+			"repeated Chronomatron trace reaches the solve phase");
+		assertEquals(2, engine.view().sequence().size(), "repeated Chronomatron trace has two steps");
+		return engine;
+	}
+
+	private static void observeRepeatedSlotChronomatron(ExperimentSolverEngine engine, String title,
+		long revision, ChronomatronEvent event) {
+		String status = event.kind() == ChronomatronEvent.Kind.STATUS
+			? event.status() : "Remember the pattern!";
+		boolean highlighted = event.kind() == ChronomatronEvent.Kind.BOARD && event.highlighted();
+		engine.observe(new ExperimentSnapshot(title, status,
+			List.of(ExperimentCell.token(17, "red", highlighted)), null, revision,
+			event.kind() == ChronomatronEvent.Kind.STATUS), event);
 	}
 
 	private static void assertDebugSetting(Module module, String name) {

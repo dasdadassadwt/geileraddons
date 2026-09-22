@@ -6,6 +6,7 @@ import geiler.addons.client.config.GeilerAddonsLog;
 import geiler.addons.client.dungeon.DungeonStatsService;
 import geiler.addons.client.command.GeilerAddonsCommand;
 import geiler.addons.client.hud.HudManager;
+import geiler.addons.client.hud.MacroTitleOverlay;
 import geiler.addons.client.location.HypixelModApi;
 import geiler.addons.client.location.SafariBiome;
 import geiler.addons.client.location.TorrhusPresence;
@@ -13,6 +14,8 @@ import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.HideyhoFinderModule;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.MobHighlightModule;
+import geiler.addons.client.module.impl.BlockEspModule;
+import geiler.addons.client.module.impl.InventoryButtonsModule;
 import geiler.addons.client.module.impl.AutoKickModule;
 import geiler.addons.client.module.impl.DebugModule;
 import geiler.addons.client.module.impl.SlotIdsModule;
@@ -22,11 +25,14 @@ import geiler.addons.client.tree.ChatText;
 import geiler.addons.client.module.impl.SafariFloorDropsModule;
 import geiler.addons.client.module.impl.SparklingCritterModule;
 import geiler.addons.client.module.impl.PestHighlighterModule;
+import geiler.addons.client.module.impl.GardenPlotBordersModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
 import geiler.addons.client.module.impl.TreeNotifierModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
 import geiler.addons.client.module.impl.VisualModule;
+import geiler.addons.client.render.ProjectedLabelRenderer;
 import geiler.addons.client.module.impl.ExperimentSolverModule;
+import geiler.addons.client.module.impl.AutoExperimentsModule;
 import geiler.addons.client.module.impl.MacrosModule;
 import geiler.addons.client.macro.MacroRunner;
 import geiler.addons.client.update.UpdateChecker;
@@ -49,6 +55,7 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModuleManager.register(SlotIdsModule.INSTANCE);
 		ModuleManager.register(I4HelperModule.INSTANCE);
 		ModuleManager.register(ExperimentSolverModule.INSTANCE);
+		ModuleManager.register(AutoExperimentsModule.INSTANCE);
 		ModuleManager.register(AutoKickModule.INSTANCE);
 		ModuleManager.register(PartyFinderStatsModule.INSTANCE);
 		ModuleManager.register(TikiHelperModule.INSTANCE);
@@ -56,13 +63,17 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModuleManager.register(HideyhoFinderModule.INSTANCE);
 		ModuleManager.register(SparklingCritterModule.INSTANCE);
 		ModuleManager.register(PestHighlighterModule.INSTANCE);
+		ModuleManager.register(GardenPlotBordersModule.INSTANCE);
 		ModuleManager.register(TreeTrackerModule.INSTANCE);
 		ModuleManager.register(TreeNotifierModule.INSTANCE);
 		ModuleManager.register(MacrosModule.INSTANCE);
 		ModuleManager.register(VisualModule.INSTANCE);
 		ModuleManager.register(MobHighlightModule.INSTANCE);
+		ModuleManager.register(BlockEspModule.INSTANCE);
+		ModuleManager.register(InventoryButtonsModule.INSTANCE);
 		HudManager.register(TreeTrackerModule.INSTANCE, 0.01f, 0.10f);
 		HudManager.register(TreeNotifierModule.INSTANCE, 0.5f, 0.28f);
+		HudManager.register(SlotIdsModule.INSTANCE, 0.72f, 0.72f);
 		// Must come after registration: this is what restores saved settings, HUD positions and
 		// gift counts onto the things that were just registered.
 		ModConfig.load();
@@ -73,6 +84,7 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> {
 			String content = ChatText.plain(message.getString()).trim();
 			PartyListBackend.onChatMessage(content);
+			GardenPlotBordersModule.INSTANCE.onChatMessage(content);
 			PartyFinderStatsModule.INSTANCE.onChatMessage(content);
 			I4HelperModule.INSTANCE.onChatMessage(content);
 			TikiHelperModule.INSTANCE.onChatMessage(content);
@@ -101,12 +113,16 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			UpdateChecker.tick();
 			I4HelperModule.INSTANCE.tick();
 			ExperimentSolverModule.INSTANCE.tick();
+			AutoExperimentsModule.INSTANCE.tick();
 			TikiHelperModule.INSTANCE.tick();
 			SafariFloorDropsModule.INSTANCE.tick();
 			HideyhoFinderModule.INSTANCE.tick();
 			SparklingCritterModule.INSTANCE.tick();
 			PestHighlighterModule.INSTANCE.tick();
+			GardenPlotBordersModule.INSTANCE.tick();
 			MobHighlightModule.INSTANCE.tick();
+			BlockEspModule.INSTANCE.tick();
+			InventoryButtonsModule.INSTANCE.tick();
 			// Releases any chat line held back while the mod worked out whether it opened a gift
 			// block, so nothing can be withheld for longer than a tick.
 			TreeNotifierModule.INSTANCE.tick();
@@ -127,19 +143,29 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			HideyhoFinderModule.INSTANCE.render(context);
 			SparklingCritterModule.INSTANCE.render(context);
 			PestHighlighterModule.INSTANCE.render(context);
+			GardenPlotBordersModule.INSTANCE.render(context);
 			MobHighlightModule.INSTANCE.render(context);
+			BlockEspModule.INSTANCE.render(context);
 		});
+		HudElementRegistry.addFirst(GeilerAddons.id("projected_label_frame"),
+			(graphics, tickCounter) -> ProjectedLabelRenderer.beginFrame());
 		// Solver labels are drawn here rather than in the world: in-world text does not render
 		// from any level stage reachable on 26.1, so they are projected onto the HUD instead.
 		HudElementRegistry.addLast(GeilerAddons.id("tiki_labels"),
 			(graphics, tickCounter) -> TikiHelperModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("mob_highlight_labels"),
 			(graphics, tickCounter) -> MobHighlightModule.INSTANCE.renderHud(graphics));
+		HudElementRegistry.addLast(GeilerAddons.id("block_esp_labels"),
+			(graphics, tickCounter) -> BlockEspModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("sparkling_labels"),
 			(graphics, tickCounter) -> SparklingCritterModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("pest_highlighter_labels"),
 			(graphics, tickCounter) -> PestHighlighterModule.INSTANCE.renderHud(graphics));
+		HudElementRegistry.addLast(GeilerAddons.id("garden_plot_borders"),
+			(graphics, tickCounter) -> GardenPlotBordersModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("hud_elements"),
 			(graphics, tickCounter) -> HudManager.render(graphics));
+		HudElementRegistry.addLast(GeilerAddons.id("macro_title"),
+			(graphics, tickCounter) -> MacroTitleOverlay.render(graphics));
 	}
 }

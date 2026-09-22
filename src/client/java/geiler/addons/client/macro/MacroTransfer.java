@@ -7,22 +7,26 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.blaze3d.platform.InputConstants;
+import geiler.addons.client.config.MacroScriptConfigCodec;
+import geiler.addons.client.config.MacroStepConfigCodec;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.module.ModuleKeybind;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.List;
 
 /** Safe, versioned clipboard representation for one or more user-authored macros. */
 public final class MacroTransfer {
 	private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 	private static final String FORMAT = "geileraddons-macros";
-	private static final int VERSION = 1;
+	private static final int VERSION = 4;
 	private static final int MAX_PAYLOAD_LENGTH = 512_000;
 	private static final int MAX_MACROS = 64;
 	private static final int MAX_STEPS = 512;
-	private static final int MAX_DEPTH = 8;
+	private static final int MAX_DEPTH = MacroTreeRules.MAX_DEPTH;
 	private static final int MAX_TEXT_LENGTH = 4_096;
 
 	private MacroTransfer() {
@@ -30,6 +34,16 @@ public final class MacroTransfer {
 
 	/** Encodes the selected macros without their internal ids, so imports never overwrite existing data. */
 	public static String encode(Iterable<MacroDefinition> source) {
+		return encode(source, List.of());
+	}
+
+	public static String encode(Iterable<MacroDefinition> source, Iterable<MacroFunction> functions) {
+		return encode(source, functions, List.of());
+	}
+
+	/** Encodes only the referenced global variable definitions, never their runtime values. */
+	public static String encode(Iterable<MacroDefinition> source, Iterable<MacroFunction> functions,
+		Iterable<MacroVariableStore.Definition> globalVariables) {
 		JsonObject root = new JsonObject();
 		root.addProperty("format", FORMAT);
 		root.addProperty("version", VERSION);
@@ -41,6 +55,23 @@ public final class MacroTransfer {
 			}
 		}
 		root.add("macros", macros);
+		JsonArray functionEntries = new JsonArray();
+		if (functions != null) for (MacroFunction function : functions) {
+			if (functionEntries.size() >= 256) break;
+			if (function != null) functionEntries.add(writeFunction(function));
+		}
+		root.add("functions", functionEntries);
+		JsonArray globalEntries = new JsonArray();
+		if (globalVariables != null) for (MacroVariableStore.Definition definition : globalVariables) {
+			if (globalEntries.size() >= MacroVariableStore.MAX_VARIABLES) break;
+			if (definition == null) continue;
+			JsonObject value = new JsonObject();
+			value.addProperty("id", limited(definition.id(), 64));
+			value.addProperty("name", limited(definition.name(), 32));
+			value.addProperty("type", definition.type().name());
+			globalEntries.add(value);
+		}
+		root.add("globalVariables", globalEntries);
 		return GSON.toJson(root);
 	}
 
@@ -56,30 +87,75 @@ public final class MacroTransfer {
 			if (!parsed.isJsonObject()) return failure("Clipboard data is not a macro package.");
 			JsonObject root = parsed.getAsJsonObject();
 			if (!FORMAT.equals(string(root, "format", ""))) return failure("Unknown macro package format.");
-			if (integer(root, "version", -1) != VERSION) return failure("Unsupported macro package version.");
+			int version = integer(root, "version", -1);
+			if (version < 1 || version > VERSION) return failure("Unsupported macro package version.");
 			JsonArray entries = array(root, "macros");
 			if (entries == null || entries.isEmpty()) return failure("The macro package contains no macros.");
 
 			List<MacroDefinition> result = new ArrayList<>();
+			Map<Integer, Integer> macroIds = new HashMap<>();
 			for (JsonElement entry : entries) {
 				if (result.size() >= MAX_MACROS) break;
 				if (!entry.isJsonObject()) continue;
-				MacroDefinition macro = readMacro(entry.getAsJsonObject(), firstId + result.size());
-				if (macro != null) result.add(macro);
+				JsonObject object = entry.getAsJsonObject();
+				int newId = firstId + result.size();
+				MacroDefinition macro = readMacro(object, newId, version);
+				if (macro != null) {
+					int oldId = integer(object, "id", -1);
+					if (oldId >= 0) macroIds.put(oldId, newId);
+					result.add(macro);
+				}
 			}
 			if (result.isEmpty()) return failure("The macro package contains no valid macros.");
-			return new ImportResult(List.copyOf(result), null);
+			List<MacroFunction> importedFunctions = new ArrayList<>();
+			Map<String, String> functionIds = new HashMap<>();
+			JsonArray functionSource = array(root, "functions");
+			if (functionSource != null) {
+				for (JsonElement entry : functionSource) {
+					if (importedFunctions.size() >= 256) break;
+					if (entry == null || !entry.isJsonObject()) continue;
+					FunctionImport functionImport = readFunction(entry.getAsJsonObject());
+					if (functionImport == null) continue;
+					importedFunctions.add(functionImport.function());
+					functionIds.put(functionImport.sourceId(), functionImport.function().id());
+				}
+			}
+			for (MacroDefinition macro : result) for (MacroScript script : macro.scripts()) {
+				remapReferences(script.steps(), macroIds, functionIds, 0);
+			}
+			for (MacroFunction function : importedFunctions) remapReferences(function.steps(), macroIds, functionIds, 0);
+			List<MacroVariableStore.Definition> importedGlobals = readGlobalVariables(
+				version >= 4 ? array(root, "globalVariables") : null);
+			return new ImportResult(List.copyOf(result), List.copyOf(importedFunctions),
+				List.copyOf(importedGlobals), null);
 		} catch (RuntimeException invalid) {
 			return failure("The clipboard does not contain valid macro data.");
 		}
 	}
 
 	private static ImportResult failure(String message) {
-		return new ImportResult(List.of(), message);
+		return new ImportResult(List.of(), List.of(), List.of(), message);
+	}
+
+	private static List<MacroVariableStore.Definition> readGlobalVariables(JsonArray source) {
+		List<MacroVariableStore.Definition> result = new ArrayList<>();
+		if (source == null) return result;
+		for (JsonElement entry : source) {
+			if (result.size() >= MacroVariableStore.MAX_VARIABLES) break;
+			if (entry == null || !entry.isJsonObject()) continue;
+			JsonObject object = entry.getAsJsonObject();
+			String id = string(object, "id", "");
+			String name = limited(string(object, "name", ""), 32);
+			if (id.isBlank() || id.length() > 64 || name.isBlank()) continue;
+			result.add(new MacroVariableStore.Definition(id, name,
+				valueType(string(object, "type", "TEXT")), false));
+		}
+		return result;
 	}
 
 	private static JsonObject writeMacro(MacroDefinition macro) {
 		JsonObject result = new JsonObject();
+		result.addProperty("id", macro.id());
 		result.addProperty("name", macro.name());
 		result.addProperty("enabled", macro.enabled());
 		if (macro.keybind().isBound()) {
@@ -91,12 +167,31 @@ public final class MacroTransfer {
 		JsonArray islands = new JsonArray();
 		for (Island island : macro.islands()) islands.add(island.name());
 		result.add("islands", islands);
-		JsonArray steps = new JsonArray();
-		for (MacroStep step : macro.steps()) {
-			if (steps.size() >= MAX_STEPS) break;
-			if (step != null) steps.add(writeStep(step, 0));
+		result.add("steps", MacroStepConfigCodec.encode(macro.steps()));
+		result.add("scripts", MacroScriptConfigCodec.encode(macro.scripts()));
+		result.addProperty("canvasPanX", macro.canvasPanX());
+		result.addProperty("canvasPanY", macro.canvasPanY());
+		result.addProperty("canvasZoom", macro.canvasZoom());
+		return result;
+	}
+
+	private static JsonObject writeFunction(MacroFunction function) {
+		JsonObject result = new JsonObject();
+		result.addProperty("id", function.id());
+		result.addProperty("name", function.name());
+		result.addProperty("canvasX", function.canvasX());
+		result.addProperty("canvasY", function.canvasY());
+		JsonArray parameters = new JsonArray();
+		for (MacroFunction.Parameter parameter : function.parameters()) {
+			if (parameters.size() >= 32) break;
+			JsonObject value = new JsonObject();
+			value.addProperty("name", parameter.name());
+			value.addProperty("type", parameter.type().name());
+			value.addProperty("defaultValue", parameter.defaultValue());
+			parameters.add(value);
 		}
-		result.add("steps", steps);
+		result.add("parameters", parameters);
+		result.add("steps", MacroStepConfigCodec.encode(function.steps()));
 		return result;
 	}
 
@@ -107,6 +202,19 @@ public final class MacroTransfer {
 		result.addProperty("delayMax", step.delayMax());
 		if (step instanceof MacroStep.Command value) result.addProperty("command", value.command());
 		if (step instanceof MacroStep.Chat value) result.addProperty("message", value.message());
+		if (step instanceof MacroStep.Title value) {
+			result.addProperty("text", value.text());
+			result.addProperty("font", value.font());
+			result.addProperty("scale", value.scale());
+			result.addProperty("textColor", value.textColor());
+			result.addProperty("showBackground", value.showBackground());
+			result.addProperty("backgroundColor", value.backgroundColor());
+			result.addProperty("backgroundOpacity", value.backgroundOpacity());
+			result.addProperty("fadeInMillis", value.fadeInMillis());
+			result.addProperty("holdMillis", value.holdMillis());
+			result.addProperty("fadeOutMillis", value.fadeOutMillis());
+		}
+		if (step instanceof MacroStep.Sound value) result.addProperty("soundId", value.soundId());
 		if (step instanceof MacroStep.Wait value) {
 			result.addProperty("minMillis", value.minMillis());
 			result.addProperty("maxMillis", value.maxMillis());
@@ -183,7 +291,7 @@ public final class MacroTransfer {
 			result.addProperty("name", limited(value.name(), MAX_TEXT_LENGTH));
 			result.addProperty("mustExist", value.mustExist());
 			result.addProperty("contains", value.contains());
-			result.addProperty("includePlayerInventory", value.includePlayerInventory());
+			result.addProperty("scope", value.scope().serializedName());
 		} else if (condition instanceof MacroCondition.Chat value) {
 			result.addProperty("type", "chat");
 			result.addProperty("text", limited(value.text(), MAX_TEXT_LENGTH));
@@ -214,7 +322,7 @@ public final class MacroTransfer {
 		return result;
 	}
 
-	private static MacroDefinition readMacro(JsonObject object, int id) {
+	private static MacroDefinition readMacro(JsonObject object, int id, int version) {
 		MacroDefinition result = new MacroDefinition(id);
 		result.setName(limited(string(object, "name", result.name()), 48));
 		result.setEnabled(booleanValue(object, "enabled", true));
@@ -229,17 +337,62 @@ public final class MacroTransfer {
 				// A bad shared key is safer as unbound than as an import failure.
 			}
 		}
-		JsonArray steps = array(object, "steps");
-		if (steps != null) {
-			for (JsonElement entry : steps) {
-				if (result.steps().size() >= MAX_STEPS) break;
-				if (entry.isJsonObject()) {
-					MacroStep step = readStep(entry.getAsJsonObject(), 0);
-					if (step != null) result.steps().add(step);
+		if (version >= 3 && array(object, "scripts") != null) {
+			result.restoreScripts(MacroScriptConfigCodec.decode(array(object, "scripts")));
+		} else {
+			JsonArray steps = array(object, "steps");
+			if (steps != null) {
+				for (JsonElement entry : steps) {
+					if (result.steps().size() >= MAX_STEPS) break;
+					if (entry.isJsonObject()) {
+						MacroStep step = readStep(entry.getAsJsonObject(), 0);
+						if (step != null) result.steps().add(step);
+					}
 				}
 			}
 		}
+		result.setCanvasView((float) decimal(object, "canvasPanX", 0),
+			(float) decimal(object, "canvasPanY", 0), (float) decimal(object, "canvasZoom", 1));
 		return result;
+	}
+
+	private static FunctionImport readFunction(JsonObject object) {
+		String sourceId = string(object, "id", "");
+		MacroFunction function = new MacroFunction();
+		function.setName(limited(string(object, "name", "My Block"), 48));
+		function.setCanvasPosition((float) decimal(object, "canvasX", 0), (float) decimal(object, "canvasY", 0));
+		JsonArray parameters = array(object, "parameters");
+		if (parameters != null) for (JsonElement entry : parameters) {
+			if (function.parameters().size() >= 32) break;
+			if (entry == null || !entry.isJsonObject()) continue;
+			JsonObject value = entry.getAsJsonObject();
+			function.parameters().add(new MacroFunction.Parameter(string(value, "name", "value"),
+				valueType(string(value, "type", "TEXT")), limited(string(value, "defaultValue", ""), 128)));
+		}
+		function.steps().addAll(MacroStepConfigCodec.decode(array(object, "steps")));
+		return new FunctionImport(sourceId, function);
+	}
+
+	private static void remapReferences(List<MacroStep> steps, Map<Integer, Integer> macroIds,
+		Map<String, String> functionIds, int depth) {
+		if (steps == null || depth > MAX_DEPTH) return;
+		for (MacroStep step : steps) {
+			if (step instanceof MacroStep.MacroCall call) call.setMacroId(macroIds.getOrDefault(call.macroId(), -1));
+			else if (step instanceof MacroStep.FunctionCall call) call.setFunctionId(functionIds.getOrDefault(call.functionId(), ""));
+			else if (step instanceof MacroStep.IfElse branch) {
+				remapReferences(branch.thenSteps(), macroIds, functionIds, depth + 1);
+				remapReferences(branch.elseSteps(), macroIds, functionIds, depth + 1);
+			} else if (step instanceof MacroStep.Repeat repeat) {
+				remapReferences(repeat.steps(), macroIds, functionIds, depth + 1);
+			} else if (step instanceof MacroStep.RepeatUntil repeatUntil) {
+				remapReferences(repeatUntil.steps(), macroIds, functionIds, depth + 1);
+			}
+		}
+	}
+
+	private static MacroValue.Type valueType(String raw) {
+		try { return MacroValue.Type.valueOf(raw == null ? "TEXT" : raw.toUpperCase(java.util.Locale.ROOT)); }
+		catch (IllegalArgumentException ignored) { return MacroValue.Type.TEXT; }
 	}
 
 	private static MacroStep readStep(JsonObject object, int depth) {
@@ -248,6 +401,8 @@ public final class MacroTransfer {
 		MacroStep result = switch (type) {
 			case "command" -> new MacroStep.Command(limited(string(object, "command", ""), MAX_TEXT_LENGTH));
 			case "chat" -> new MacroStep.Chat(limited(string(object, "message", ""), MAX_TEXT_LENGTH));
+			case "title" -> readTitle(object);
+			case "sound" -> new MacroStep.Sound(string(object, "soundId", "minecraft:entity.player.levelup"));
 			case "wait" -> new MacroStep.Wait(integer(object, "minMillis", 0), integer(object, "maxMillis", 0));
 			case "key" -> {
 				int legacy = integer(object, "holdMillis", 250);
@@ -272,6 +427,21 @@ public final class MacroTransfer {
 		};
 		if (result != null) result.setDelay(integer(object, "delayMin", 0), integer(object, "delayMax", 0));
 		return result;
+	}
+
+	private static MacroStep.Title readTitle(JsonObject object) {
+		MacroStep.Title title = new MacroStep.Title();
+		title.setText(limited(string(object, "text", "TITLE"), MAX_TEXT_LENGTH));
+		title.setFont(string(object, "font", "minecraft:default"));
+		title.setScale(decimal(object, "scale", 2.0f));
+		title.setTextColor(integer(object, "textColor", 0xFFFFFFFF));
+		title.setShowBackground(booleanValue(object, "showBackground", false));
+		title.setBackgroundColor(integer(object, "backgroundColor", 0xFF000000));
+		title.setBackgroundOpacity(integer(object, "backgroundOpacity", 160));
+		title.setFadeInMillis(integer(object, "fadeInMillis", 200));
+		title.setHoldMillis(integer(object, "holdMillis", 2_000));
+		title.setFadeOutMillis(integer(object, "fadeOutMillis", 300));
+		return title;
 	}
 
 	private static MacroStep.IfElse readIf(JsonObject object, int depth) {
@@ -316,7 +486,7 @@ public final class MacroTransfer {
 			case "slot" -> new MacroCondition.Slot(integer(object, "slotId", 0), booleanValue(object, "mustExist", true));
 			case "item" -> new MacroCondition.Item(limited(string(object, "name", ""), MAX_TEXT_LENGTH),
 				booleanValue(object, "mustExist", true), booleanValue(object, "contains", false),
-				booleanValue(object, "includePlayerInventory", true));
+				readItemScope(object, true));
 			case "chat" -> new MacroCondition.Chat(limited(string(object, "text", ""), MAX_TEXT_LENGTH),
 				booleanValue(object, "contains", false));
 			case "world" -> new MacroCondition.World(booleanValue(object, "mustBeInWorld", true));
@@ -325,6 +495,15 @@ public final class MacroTransfer {
 			case "not" -> new MacroCondition.Not(readCondition(object.get("child"), depth + 1));
 			default -> new MacroCondition.Always(true);
 		};
+	}
+
+	private static MacroCondition.ItemScope readItemScope(JsonObject object, boolean missingLegacyDefault) {
+		if (object.has("scope")) {
+			MacroCondition.ItemScope parsed = MacroCondition.ItemScope.fromSerialized(
+				string(object, "scope", ""), null);
+			if (parsed != null) return parsed;
+		}
+		return MacroCondition.ItemScope.fromLegacy(booleanValue(object, "includePlayerInventory", missingLegacyDefault));
 	}
 
 	private static List<MacroCondition> readConditions(JsonArray source, int depth) {
@@ -393,6 +572,12 @@ public final class MacroTransfer {
 		}
 	}
 
+	private static float decimal(JsonObject object, String name, float fallback) {
+		JsonElement value = object.get(name);
+		if (value == null || !value.isJsonPrimitive()) return fallback;
+		try { return value.getAsFloat(); } catch (RuntimeException ignored) { return fallback; }
+	}
+
 	private static boolean booleanValue(JsonObject object, String name, boolean fallback) {
 		JsonElement value = object.get(name);
 		if (value == null || !value.isJsonPrimitive()) return fallback;
@@ -408,10 +593,19 @@ public final class MacroTransfer {
 		return value.length() <= max ? value : value.substring(0, max);
 	}
 
-	public record ImportResult(List<MacroDefinition> macros, String error) {
+	private record FunctionImport(String sourceId, MacroFunction function) { }
+
+	public record ImportResult(List<MacroDefinition> macros, List<MacroFunction> functions,
+		List<MacroVariableStore.Definition> globalVariables, String error) {
 		public ImportResult {
 			macros = List.copyOf(macros == null ? List.of() : macros);
+			functions = List.copyOf(functions == null ? List.of() : functions);
+			globalVariables = List.copyOf(globalVariables == null ? List.of() : globalVariables);
 		}
+		public ImportResult(List<MacroDefinition> macros, List<MacroFunction> functions, String error) {
+			this(macros, functions, List.of(), error);
+		}
+		public ImportResult(List<MacroDefinition> macros, String error) { this(macros, List.of(), List.of(), error); }
 
 		public boolean success() {
 			return error == null && !macros.isEmpty();

@@ -12,25 +12,28 @@ import java.util.List;
 
 /** Draws the runtime menu slot id directly on the corresponding slot. */
 public final class SlotIdOverlay {
-	private static final int BADGE_HEIGHT = 9;
-	private static final int BADGE_PADDING = 2;
-	private static final int BADGE_COLOR = 0xB0000000;
-	private static final float SMALL_LABEL_SCALE = 0.66f;
+	public static final int PLAYER_INVENTORY_WIDTH = 176;
+	public static final int PLAYER_INVENTORY_HEIGHT = 166;
 	private static AbstractContainerMenu cachedMenu;
 	private static int cachedLeftPos;
 	private static int cachedTopPos;
-	private static List<Badge> cachedBadges = List.of();
+	private static Font cachedFont;
+	private static List<SlotIdBadgeLayout.Badge> cachedBadges = List.of();
 
 	private SlotIdOverlay() {
 	}
 
 	public static void render(AbstractContainerScreen<?> screen, GuiGraphicsExtractor graphics,
 		int leftPos, int topPos) {
-		Minecraft minecraft = Minecraft.getInstance();
-		Font font = minecraft.font;
-		for (Badge badge : badges(screen.getMenu(), leftPos, topPos, font)) {
+		renderMenu(screen.getMenu(), graphics, Minecraft.getInstance().font, leftPos, topPos);
+	}
+
+	/** Draws the same badges for any menu, including the stable player-inventory HUD preview. */
+	public static void renderMenu(AbstractContainerMenu menu, GuiGraphicsExtractor graphics,
+		Font font, int leftPos, int topPos) {
+		for (SlotIdBadgeLayout.Badge badge : badges(menu, leftPos, topPos, font)) {
 			graphics.fill(badge.x(), badge.y(), badge.x() + badge.width(),
-				badge.y() + BADGE_HEIGHT, BADGE_COLOR);
+				badge.y() + SlotIdBadgeLayout.BADGE_HEIGHT, SlotIdBadgeLayout.BADGE_COLOR);
 			if (badge.scale() == 1.0f) {
 				graphics.text(font, badge.label(), badge.textX(), badge.textY(), GuiTheme.TEXT_PRIMARY);
 				continue;
@@ -45,26 +48,23 @@ public final class SlotIdOverlay {
 		}
 	}
 
-	private static List<Badge> badges(AbstractContainerMenu menu, int leftPos, int topPos, Font font) {
-		if (menu == cachedMenu && leftPos == cachedLeftPos && topPos == cachedTopPos) return cachedBadges;
-
-		List<Badge> result = new ArrayList<>(menu.slots.size());
-		for (Slot slot : menu.slots) {
-			String label = Integer.toString(slot.index);
-			float scale = label.length() > 2 ? SMALL_LABEL_SCALE : 1.0f;
-			int textWidth = Math.round(font.width(label) * scale);
-			int width = Math.max(8, Math.min(15, textWidth + BADGE_PADDING));
-			int x = leftPos + slot.x + 1;
-			int y = topPos + slot.y + 2;
-			result.add(new Badge(x, y, width, label, scale, x + 1, y));
+	private static List<SlotIdBadgeLayout.Badge> badges(AbstractContainerMenu menu, int leftPos,
+		int topPos, Font font) {
+		if (menu == cachedMenu && leftPos == cachedLeftPos && topPos == cachedTopPos && font == cachedFont) {
+			return cachedBadges;
 		}
+
+		List<SlotIdBadgeLayout.SlotPosition> positions = new ArrayList<>(menu.slots.size());
+		for (Slot slot : menu.slots) {
+			positions.add(new SlotIdBadgeLayout.SlotPosition(slot.index, slot.x, slot.y));
+		}
+		List<SlotIdBadgeLayout.Badge> result = SlotIdBadgeLayout.layout(positions,
+			leftPos, topPos, font::width);
 		cachedMenu = menu;
 		cachedLeftPos = leftPos;
 		cachedTopPos = topPos;
-		cachedBadges = List.copyOf(result);
+		cachedFont = font;
+		cachedBadges = result;
 		return cachedBadges;
-	}
-
-	private record Badge(int x, int y, int width, String label, float scale, int textX, int textY) {
 	}
 }

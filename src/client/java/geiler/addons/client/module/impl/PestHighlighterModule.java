@@ -17,6 +17,7 @@ import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.render.WorldToScreen;
+import geiler.addons.client.render.ProjectedLabelRenderer;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -291,7 +292,6 @@ public final class PestHighlighterModule extends Module {
 		if (mc.level == null || mc.player == null || mc.options.hideGui) return;
 
 		Camera camera = mc.gameRenderer.getMainCamera();
-		Font font = mc.font;
 		float scale = labelSize.value();
 		for (Sighting sighting : sightings) {
 			ArmorStand entity = sighting.entity();
@@ -299,16 +299,7 @@ public final class PestHighlighterModule extends Module {
 			String label = "Pest: " + sighting.kind().displayName();
 			AABB bounds = entity.getBoundingBox();
 			Vec3 world = new Vec3(bounds.getCenter().x, bounds.maxY + LABEL_HEIGHT, bounds.getCenter().z);
-			float[] screen = WorldToScreen.project(camera, world);
-			if (screen == null) continue;
-
-			float halfWidth = font.width(label) * scale / 2;
-			float halfHeight = HUD_LABEL_HALF_HEIGHT * scale;
-			graphics.pose().pushMatrix();
-			graphics.pose().translate(screen[0] - halfWidth, screen[1] - halfHeight);
-			graphics.pose().scale(scale, scale);
-			graphics.text(font, label, 0, 0, nameColor.argb());
-			graphics.pose().popMatrix();
+			ProjectedLabelRenderer.draw(graphics, camera, mc.font, world, label, nameColor.argb(), scale);
 		}
 	}
 }

@@ -24,6 +24,11 @@ public final class GeilerAddonsCommand {
 					.executes(context -> DungeonStatsCommand.showUsage())
 					.then(ClientCommands.argument("name", StringArgumentType.string())
 						.executes(context -> DungeonStatsCommand.lookup(
+						StringArgumentType.getString(context, "name")))))
+				.then(ClientCommands.literal("pfretry")
+					.executes(context -> DungeonStatsCommand.showRetryUsage())
+					.then(ClientCommands.argument("name", StringArgumentType.word())
+						.executes(context -> DungeonStatsCommand.retryPartyMember(
 							StringArgumentType.getString(context, "name")))))));
 	}
 }

@@ -140,11 +140,16 @@ public final class ExperimentSolverEngine {
 	 * separate from {@link #onClick(int)}: normal menu clicks do not always produce an item diff.
 	 */
 	public ClickDecision confirmClick(int slotId) {
+		return confirmClick(displayIndex(), slotId);
+	}
+
+	/** Confirms only the sequence index that was validated before vanilla received the click. */
+	public ClickDecision confirmClick(int expectedSequenceIndex, int slotId) {
 		if (type == null) return new ClickDecision(slotId, false, false, false, false, "no experiment");
 		if (phase != ExperimentPhase.SOLVE || type == ExperimentType.SUPERPAIRS) {
 			return new ClickDecision(slotId, true, false, false, false, "not a sequence click");
 		}
-		if (!expectedSequenceSlot(slotId)) {
+		if (expectedSequenceIndex != displayIndex() || !expectedSequenceSlot(slotId)) {
 			return new ClickDecision(slotId, true, false, false, false, "unexpected slot");
 		}
 		if (!advanceSequenceClick(slotId)) {
@@ -172,7 +177,7 @@ public final class ExperimentSolverEngine {
 		Optional<ExperimentMilestone> milestone = ExperimentMilestone.forExperiment(type, tier,
 			configuration.serumsConsumed());
 		boolean reached = (phase == ExperimentPhase.SOLVE || phase == ExperimentPhase.ROUND_COMPLETE)
-			&& milestone.map(value -> value.reached(currentSequenceLength, completedRounds)).orElse(false);
+			&& milestone.map(value -> value.reached(currentSequenceLength, completedRounds, phase)).orElse(false);
 		return new SolverView(type, tier, phase, currentSequenceLength, completedRounds, steps,
 			authoritativeIndex, predictedIndex, visualIndex, current, next, nextNext,
 			superpairs.view(), milestone, reached);

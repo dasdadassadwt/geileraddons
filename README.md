@@ -184,6 +184,30 @@ Make as many highlights as you want, each with its own colours and its own text 
 
 Highlights are built in the settings panel itself: **Create Mob Highlight** adds an empty one, and each becomes its own foldable section you fill in. No separate screen to keep in step.
 
+Use **Manage Folders** to organize highlights into nested groups. Folders are independent from the
+Macros and Block ESP trees; renaming or moving one never changes another feature's folders.
+
+</details>
+
+<details>
+<summary><b>Block ESP</b> — highlight registered block types</summary>
+
+<br>
+
+Create up to 32 entries, each selecting exactly one registered block. **Choose Block…** filters
+both its readable name and technical registry ID, so you do not have to remember unusual block
+names. Each entry has independent **Box**, **Fill**, and **Outline** switches, depth check, label, tracer, island list, and
+**Connect Touching Blocks** option. Connected blocks of the same type share one exposed voxel
+shape, label, and tracer; face-adjacent blocks connect, while edge and corner contact does not.
+
+New entries start with every island off. Scans are centered on you and use the full effective render
+distance by default. Turn on **Use Custom Range** to give one entry its own radius (32 blocks by
+default); it is still limited by render distance. There is no match-count cap. Scanning advances in
+bounded, distance-ordered batches over loaded chunks only, skipping sections whose block palette
+cannot contain the selected type—no chunks are loaded and no network requests are made. The last
+complete highlight stays visible while a refresh runs, avoiding the clear-and-pop flicker of a full
+rescan. **Manage Folders** organizes entries in its own nested tree.
+
 </details>
 
 <details>
@@ -216,8 +240,12 @@ the node palette, a nested workflow tree, and a properties pane together; narrow
 between those panes. If/Else trees show their **Then** and **Else** branches, and Repeat nodes show
 their body. Select a branch or body before adding steps there.
 
-Actions include commands/chat, captured key presses or holds, slot-id clicks, item-name clicks, and
-Escape. Key nodes use a capture button and readable key name rather than an ID. Click Item supports
+Actions include commands/chat, captured key presses or holds, slot-id clicks, item-name clicks,
+Escape, **Title**, and **Sound**. A Title step displays centered text with a chosen game font and
+size, text color, optional background, and independent fade-in/hold/fade-out times. It does not
+pause the workflow, and a later Title step replaces the title already on screen. A Sound step
+chooses a registered game sound and plays it at its default volume and pitch. Key nodes use a
+capture button and readable key name rather than an ID. Click Item supports
 comma-separated names as alternatives, exact or partial matching, search scope, match number, mouse
 button, and shift-click. A Hold key samples a randomized duration between its minimum and maximum,
 separate from the node's pre-delay. Shift, Control, Alt, and Super can be captured as the key itself.
@@ -247,7 +275,37 @@ when **Dev → Debug** is enabled; log sessions are retained rather than deleted
 The **Enable Macro System** toggle is the master switch for all macro hotkeys and running
 workflows; each macro also has its own **Macro Enabled** toggle. **Share / Paste Macros** opens a
 multi-select manager that copies selected macros as a portable clipboard package and appends
- pasted packages as new macros without overwriting existing ones.
+packages as new macros without overwriting existing ones. New packages use transfer format v2;
+format v1 packages remain importable. **Manage Folders** provides a separate nested macro tree.
+Folder names may repeat because UI state is keyed by stable folder ID; deleting a non-empty folder
+promotes its entries and child folders to its parent instead of deleting them.
+
+</details>
+
+<details>
+<summary><b>Inventory Buttons</b> — run macros from the player inventory</summary>
+
+<br>
+
+Open **Visual → Inventory Buttons → Edit Layout** while in a world. The faint 18×18 grid follows
+the vanilla inventory slot lattice and only exposes fully visible cells outside the inventory and
+any open recipe book. Click an empty cell to choose an existing macro or create one; after editing a
+new macro, its button returns to that original cell. Select a button to edit its appearance, custom
+hover tooltip, and macro. Drag it or use **Move** and click a destination; **Delete** or
+Delete/Backspace removes it. Saved placements are not silently rearranged if a GUI size changes:
+invalid cells are marked in red, and **Reflow** explicitly moves them to the nearest free exterior
+cells while reporting any that could not fit.
+
+Buttons can use a registered item/block icon, short text, or a PNG selected from
+`.minecraft/config/geileraddons/inventory-button-icons/`. The editor shows a live icon preview and
+the hover tooltip; at runtime the tooltip also shows the macro name and any eligibility reason.
+Only the standard player inventory is supported. When not editing, an unassigned placement is
+hidden. If its macro is deleted, the placement remains so it can be rebound.
+
+Buttons store the macro's stable numeric ID and use the macro's enable switch, trigger context,
+island filter, and the Macro System master switch. Ineligible buttons stay visible but disabled,
+show the reason on hover, and consume clicks so an inventory slot underneath cannot be activated.
+Their layout is local and is not included in shared macro packages.
 
 </details>
 
@@ -313,6 +371,11 @@ In-world colours — waypoint states, solver directions, device highlights — s
   container slot indices used by macro slot-click steps.
 - **Move Elements**, at the bottom of the category list, opens a screen where you drag HUD panels into place. Positions are kept as a share of the screen, so they survive a resolution or GUI-scale change.
 - The panel scales to your screen and reopens wherever you left it.
+
+Macros, Mob Highlight, and Block ESP each have an independent nested folder tree. New and legacy
+entries belong to the root until moved. Deleting a populated folder promotes its entries and child
+folders to its parent; folder names can repeat because UI state uses stable IDs. Inventory Buttons
+are a spatial layout, not a multi-entry folder list.
 
 </details>
 

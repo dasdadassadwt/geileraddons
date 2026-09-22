@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.5.2] - 2026-09-22
+
+### Added
+
+- **Block ESP** — configurable block highlights with connected shapes, labels, tracers, island filters, and incremental loaded-chunk scanning.
+- **Inventory Buttons** — place macro buttons in the player inventory with custom icons, text, tooltips, and eligibility states.
+- **Garden Plot Borders** — render garden plot boundaries and projected labels.
+- **Automated Experiments** — add guarded automation support for supported experimentation-table games.
+- **Macro editor and runtime features** — add scratch-style editing, nested folders, variables, scripts, titles, sounds, world regions, and additional input controls.
+
+### Changed
+
+- Expanded macro transfer format to version 2 while retaining version 1 import compatibility.
+- Improved Click GUI motion, macro editing, HUD overlays, slot-id layout, and module keybind handling.
+- Added bounded request handling and stale-result protection for dungeon and party data.
+- Expanded offline coverage for macro execution, folders, rendering, Block ESP, Inventory Buttons, garden state, and party-finder reliability.
+
+### Fixed
+
+- Hardened party-finder statistics and lifecycle handling against repeated, stale, or incomplete results.
+- Improved experiment solver milestones, click gating, and automation safety.
+- Preserved safe client-side behavior when profile or eligibility data is unavailable.
+
 ## [1.5.1] - 2026-09-19
 
 ### Fixed

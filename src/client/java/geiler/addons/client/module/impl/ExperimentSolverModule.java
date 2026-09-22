@@ -49,11 +49,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The screen-facing half of the experimentation solver.
+	 * The screen-facing half of the experimentation solver.
  *
- * <p>The actual solver is deliberately not coupled to rendering or input. This adapter owns the
- * short-lived container snapshot needed to draw a custom surface, remembers Superpairs stacks
- * while Hypixel hides them, and translates an accepted custom hit back into vanilla's
+	 * <p>The shared controller owns observation and solver state. This adapter renders its immutable
+	 * view, draws the Superpairs memory maintained by the shared menu session, and translates an
+	 * accepted custom hit back into vanilla's
  * {@code slotClicked} call. Sequence progress advances only after that ordinary vanilla dispatch,
  * so the custom surface never predicts a click that the server has not accepted.</p>
  */
@@ -108,12 +108,7 @@ public final class ExperimentSolverModule extends Module {
 	private final ColorSetting nextNextNextColor;
 	private final ColorSetting discoveredColor;
 	private final ColorSetting unknownColor;
-	private final ExperimentSolverEngine engine = new ExperimentSolverEngine();
-
-	private Session session;
-	private SolverView solverView = SolverView.idle();
-	private boolean maxAlerted;
-	private boolean dispatchingCustomClick;
+	private long maxAlertedSessionGeneration = Long.MIN_VALUE;
 	private int superpairsFeedbackSlot = -1;
 	private long superpairsFeedbackStartedNanos;
 
@@ -218,8 +213,15 @@ public final class ExperimentSolverModule extends Module {
 
 	/** The pure engine shared with a future packet/render adapter. */
 	public ExperimentSolverEngine engine() {
-		engine.configure(configuration());
-		return engine;
+		return ExperimentController.INSTANCE.engine();
+	}
+
+	private SolverView solverView() {
+		return ExperimentController.INSTANCE.view();
+	}
+
+	private Session session() {
+		return ExperimentController.INSTANCE.session();
 	}
 
 	public ExperimentSolverEngine.Configuration configuration() {
@@ -262,48 +264,41 @@ public final class ExperimentSolverModule extends Module {
 
 	/** Called once per client tick, before the screen is drawn. */
 	public void tick() {
-		if (!isEnabled()) {
-			reset();
-			return;
-		}
-		Minecraft minecraft = Minecraft.getInstance();
-		if (minecraft.screen instanceof AbstractContainerScreen<?> screen && isSupported(screen)) {
-			observe(screen);
-			if (session.type == ExperimentType.ULTRASEQUENCER) {
-				solverView = engine.observe(session.snapshot(screen, false));
+		ExperimentController.INSTANCE.tick();
+		alertAtMaxClickMilestone();
+	}
+
+	private void alertAtMaxClickMilestone() {
+		Session activeSession = session();
+		if (!isEnabled() || activeSession == null || !supports(activeSession.type)) return;
+		long generation = ExperimentController.INSTANCE.sessionGeneration();
+		if (displayPhase() == Phase.MAX_CLICKS && maxAlertedSessionGeneration != generation) {
+			maxAlertedSessionGeneration = generation;
+			if (maxClickAlert.value() || completeSounds.value()) {
+				playSound(completeSound, completeSoundPitch, completeSoundVolume);
 			}
-		} else {
-			reset();
 		}
 	}
 
 	/** Resets remembered stacks when the container is closed or replaced. */
 	public void onScreenClosed() {
-		reset();
+		ExperimentController.INSTANCE.onScreenClosed();
+		superpairsFeedbackSlot = -1;
+		maxAlertedSessionGeneration = Long.MIN_VALUE;
 	}
 
 	/** Attach before the opening inventory packets can arrive. */
 	public void onScreenOpened(AbstractContainerScreen<?> screen) {
-		if (ownsScreen(screen)) observe(screen);
+		ExperimentController.INSTANCE.onScreenOpened(screen);
 	}
 
 	/** Called after a server menu mutation, before listeners are broadcast. */
 	public void onContainerUpdated(AbstractContainerMenu menu) {
-		if (session == null || session.attachedMenu != menu || !isEnabled()) return;
-		if (session.type == ExperimentType.ULTRASEQUENCER) {
-			List<String> colors = new ArrayList<>();
-			for (Slot slot : menu.slots) {
-				if (slot.index < 9 || slot.index > 44) continue;
-				String color = Session.ultrasequencerPaneColor(slot.getItem());
-				if (color != null) colors.add(color);
-			}
-			engine.markUltrasequencerDirty(colors);
-			solverView = engine.view();
-		}
+		ExperimentController.INSTANCE.onContainerUpdated(menu);
 	}
 
 	public boolean observesMenu(AbstractContainerMenu menu) {
-		return isEnabled() && session != null && session.attachedMenu == menu;
+		return ExperimentController.INSTANCE.observesMenu(menu);
 	}
 
 	/**
@@ -314,6 +309,7 @@ public final class ExperimentSolverModule extends Module {
 		int mouseX, int mouseY, float delta) {
 		if (!ownsScreen(screen)) return false;
 		observe(screen);
+		SolverView solverView = solverView();
 		int width = Math.max(1, Math.min(screen.width, Math.max(1, graphics.guiWidth())));
 		int height = Math.max(1, Math.min(screen.height, Math.max(1, graphics.guiHeight())));
 		Layout layout = layout(screen, width, height);
@@ -398,6 +394,8 @@ public final class ExperimentSolverModule extends Module {
 	}
 
 	private List<String> statusLines() {
+		Session session = session();
+		SolverView solverView = solverView();
 		if (session == null || solverView.type() == null) return List.of();
 		String typeName = solverView.type().displayName();
 		String phase = displayPhase().label;
@@ -494,10 +492,6 @@ public final class ExperimentSolverModule extends Module {
 			// preserved. The surface itself still covers every original puzzle slot.
 			return false;
 		}
-		// Experiment buttons are left-click controls. Consume other buttons inside the replacement
-		// surface so they cannot fall through to the hidden container slots.
-		if (event.button() != 0) return true;
-
 		SlotLayout hit = null;
 		for (SlotLayout candidate : layout.slotLayouts) {
 			if (candidate.contains(event.x(), event.y())) {
@@ -505,35 +499,29 @@ public final class ExperimentSolverModule extends Module {
 				break;
 			}
 		}
+		if (hit != null) AutoExperimentsModule.INSTANCE.pauseAfterManualInput(screen);
+		// Experiment buttons are left-click controls. Consume other buttons inside the replacement
+		// surface so they cannot fall through to the hidden container slots.
+		if (event.button() != 0) return true;
 		if (hit == null || !accepts(hit.visual)) return true;
 
-		// The outgoing operation below is exactly the ordinary PICKUP call and remains packet-neutral.
 		BoardSlot boardSlot = hit.visual.boardSlot;
-		var decision = engine.onClick(boardSlot.slot.index);
-		if (solverView.type() == ExperimentType.SUPERPAIRS
-			&& (!decision.expected() || !decision.visualStateChanged())) return true;
-		if (solverView.type() == ExperimentType.SUPERPAIRS) {
+		if (solverView().type() == ExperimentType.SUPERPAIRS) {
+			if (!ExperimentController.INSTANCE.dispatchSuperpairsClick(screen, boardSlot.slot.index,
+				event.button(), dispatcher)) return true;
 			superpairsFeedbackSlot = boardSlot.slot.index;
 			superpairsFeedbackStartedNanos = System.nanoTime();
+		} else {
+			if (!ExperimentController.INSTANCE.dispatchSequenceClick(screen, boardSlot.slot.index, dispatcher)) {
+				return true;
+			}
 		}
 		playClickSound();
-		dispatchingCustomClick = true;
-		try {
-			dispatcher.dispatch(boardSlot.slot, boardSlot.slot.index, event.button(), ContainerInput.PICKUP);
-		} finally {
-			dispatchingCustomClick = false;
-		}
-		if (solverView.type() != ExperimentType.SUPERPAIRS && decision.expected()) {
-			// A correct menu click is not required to mutate the visible ItemStack. Advance after
-			// the vanilla dispatch instead of waiting for a packet diff that may never arrive.
-			engine.confirmClick(boardSlot.slot.index);
-		}
-		// Expose the local cursor update before another container snapshot arrives.
-		solverView = engine.view();
 		return true;
 	}
 
 	private boolean accepts(SlotVisual visual) {
+		SolverView solverView = solverView();
 		if (solverView.phase() != ExperimentPhase.SOLVE) return false;
 		if (displayPhase() != Phase.SOLVE) return false;
 		if (!preventMisclicks.value()) return true;
@@ -545,58 +533,13 @@ public final class ExperimentSolverModule extends Module {
 	}
 
 	private void observe(AbstractContainerScreen<?> screen) {
-		String title = screen.getTitle().getString();
-		ExperimentType type = ExperimentType.fromTitle(title).orElse(null);
-		ExperimentTier tier = ExperimentTier.fromTitle(title).orElse(ExperimentTier.UNKNOWN);
-		int menuId = screen.getMenu().containerId;
-		if (session == null || session.type != type || session.tier != tier || session.menuId != menuId
-			|| session.attachedMenu != screen.getMenu()) {
-			if (session != null) session.close();
-			session = new Session(type, tier, menuId);
-			engine.reset();
-			solverView = SolverView.idle();
-			maxAlerted = false;
-		}
-		if (!session.observe(screen)) return;
-		engine.configure(configuration());
-		boolean superpairsChanged = session.type == ExperimentType.SUPERPAIRS
-			&& session.takeSuperpairsObservationDirty();
-		for (Session.SlotUpdate update : session.drainSlotUpdates()) {
-			if (session.type == ExperimentType.ULTRASEQUENCER) continue;
-			ChronomatronEvent event = session.type == ExperimentType.CHRONOMATRON
-				? update.chronomatronEvent() : null;
-			solverView = engine.observe(session.snapshot(screen, false, update), event);
-		}
-		if (session.type == ExperimentType.ULTRASEQUENCER && solverView.type() == null) {
-			// Establish the model before mutation callbacks; capture the memory only on a tick.
-			solverView = engine.observe(new ExperimentSnapshot(title, "", List.of()));
-		} else if (session.type != ExperimentType.ULTRASEQUENCER) {
-			if (session.type != ExperimentType.SUPERPAIRS || superpairsChanged || solverView.type() == null) {
-				solverView = engine.observe(session.snapshot(screen, false));
-			}
-		}
-		// Rebuild the render list after the queue has drained. Superpairs values are learned only from
-		// the last clicked slot's revealed stack, so a live frame cannot leak future card values into an
-		// older callback.
-		session.refreshRenderSlots(screen);
-		if (displayPhase() == Phase.MAX_CLICKS && !maxAlerted) {
-			maxAlerted = true;
-			if (maxClickAlert.value() || completeSounds.value()) {
-				playSound(completeSound, completeSoundPitch, completeSoundVolume);
-			}
-		}
-	}
-
-	private void reset() {
-		if (session != null) session.close();
-		session = null;
-		dispatchingCustomClick = false;
-		superpairsFeedbackSlot = -1;
-		solverView = engine.reset();
-		maxAlerted = false;
+		ExperimentController.INSTANCE.observeScreen(screen);
+		alertAtMaxClickMilestone();
 	}
 
 	private Phase displayPhase() {
+		Session session = session();
+		SolverView solverView = solverView();
 		if (session == null) return Phase.MEMORIZE;
 		boolean milestoneReached = (solverView.phase() == ExperimentPhase.SOLVE
 			|| solverView.phase() == ExperimentPhase.ROUND_COMPLETE) && solverView.milestoneReached();
@@ -674,7 +617,9 @@ public final class ExperimentSolverModule extends Module {
 
 	@Override
 	protected void onDisable() {
-		reset();
+		maxAlertedSessionGeneration = Long.MIN_VALUE;
+		superpairsFeedbackSlot = -1;
+		ExperimentController.INSTANCE.onOwnerDisabled();
 	}
 
 	public static boolean isRecognized(AbstractContainerScreen<?> screen) {
@@ -693,7 +638,7 @@ public final class ExperimentSolverModule extends Module {
 
 	/** Allows the mixin to distinguish our intentional vanilla dispatch from click-through input. */
 	public boolean isDispatchingCustomClick() {
-		return dispatchingCustomClick;
+		return ExperimentController.INSTANCE.isDispatchingCustomClick();
 	}
 
 	private static boolean isBoardSlot(ExperimentType type, ExperimentTier tier, Slot slot) {
@@ -702,6 +647,8 @@ public final class ExperimentSolverModule extends Module {
 	}
 
 	private List<SlotVisual> visibleSlotVisuals() {
+		Session session = session();
+		SolverView solverView = solverView();
 		if (session == null) return List.of();
 		if (solverView.type() == ExperimentType.SUPERPAIRS) {
 			Map<Integer, SuperpairsBoard.CardState> states = new LinkedHashMap<>();
@@ -761,6 +708,7 @@ public final class ExperimentSolverModule extends Module {
 	}
 
 	private Layout layout(AbstractContainerScreen<?> screen, int availableWidth, int availableHeight) {
+		Session session = session();
 		int width = Math.max(1, Math.min(screen.width, availableWidth));
 		int height = Math.max(1, Math.min(screen.height, availableHeight));
 		ExperimentType type = session == null ? ExperimentType.ULTRASEQUENCER : session.type;
@@ -849,7 +797,7 @@ public final class ExperimentSolverModule extends Module {
 		}
 	}
 
-	private static final class Session {
+	static final class Session {
 		final ExperimentType type;
 		final ExperimentTier tier;
 		final int menuId;
@@ -1250,7 +1198,7 @@ public final class ExperimentSolverModule extends Module {
 		}
 
 		/** Returns only non-black stained-glass-pane colors used for Ultrasequencer round edges. */
-		private static String ultrasequencerPaneColor(ItemStack stack) {
+		static String ultrasequencerPaneColor(ItemStack stack) {
 			if (stack == null || stack.isEmpty()) return null;
 			Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
 			if (id != null && id.getNamespace().equals("minecraft")) {
@@ -1326,14 +1274,14 @@ public final class ExperimentSolverModule extends Module {
 			}
 		}
 
-		private record SlotUpdate(Kind kind, int slotId, ItemStack stack, String status,
+		record SlotUpdate(Kind kind, int slotId, ItemStack stack, String status,
 			long sequence, Map<Integer, ItemStack> boardStacks) {
-			private enum Kind {
+			enum Kind {
 				BOARD,
 				STATUS
 			}
 
-			private SlotUpdate {
+			SlotUpdate {
 				if (kind == null) throw new IllegalArgumentException("kind must not be null");
 				stack = stack == null ? ItemStack.EMPTY : stack.copy();
 				status = status == null ? "" : status;
@@ -1348,7 +1296,7 @@ public final class ExperimentSolverModule extends Module {
 				boardStacks = Map.copyOf(copy);
 			}
 
-			private ChronomatronEvent chronomatronEvent() {
+			ChronomatronEvent chronomatronEvent() {
 				return kind == Kind.STATUS
 					? ChronomatronEvent.status(status)
 					: ChronomatronEvent.board(slotId, chronomatronValue(stack),

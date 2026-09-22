@@ -21,4 +21,10 @@ public interface AbstractContainerScreenInvoker {
 
 	@org.spongepowered.asm.mixin.gen.Accessor("topPos")
 	int geileraddons$getTopPos();
+
+	@org.spongepowered.asm.mixin.gen.Accessor("imageWidth")
+	int geileraddons$getImageWidth();
+
+	@org.spongepowered.asm.mixin.gen.Accessor("imageHeight")
+	int geileraddons$getImageHeight();
 }

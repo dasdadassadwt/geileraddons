@@ -91,6 +91,6 @@ public final class ClickGuiState {
 
 	/** Qualified by module so two modules can name a section the same thing. */
 	private static String key(Module module, SettingGroup group) {
-		return module.name() + "." + group.name();
+		return module.name() + "." + (group.stateKey() == null ? group.name() : group.stateKey());
 	}
 }

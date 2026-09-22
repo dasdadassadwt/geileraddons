@@ -33,11 +33,23 @@ public record ExperimentMilestone(ExperimentType type, ExperimentTier tier, int 
 	}
 
 	public boolean reached(int currentSequenceLength, int completedRounds) {
-		// Chronomatron reveals the next sequence before the player solves it. Its completed-round
-		// counter is therefore the authoritative boundary: a High game reaches maximum clicks when
-		// round ten starts, not while round nine is merely being displayed. The sequence length is
-		// only a fallback for adapters that cannot provide the counter yet.
-		if (completedRounds >= 0) return completedRounds >= completedRoundThreshold;
+		return reached(currentSequenceLength, completedRounds, ExperimentPhase.SOLVE);
+	}
+
+	public boolean reached(int currentSequenceLength, int completedRounds, ExperimentPhase phase) {
+		int effectiveCompletedRounds = completedRounds;
+		if (type == ExperimentType.CHRONOMATRON && phase == ExperimentPhase.ROUND_COMPLETE
+			&& completedRounds >= 0) {
+			// Chronomatron increments this counter when the following pattern begins. Count the
+			// just-finished round at its actual ROUND_COMPLETE boundary instead of waiting one stage.
+			effectiveCompletedRounds++;
+		}
+		if (effectiveCompletedRounds >= 0) {
+			return effectiveCompletedRounds >= completedRoundThreshold;
+		}
+		if (type == ExperimentType.CHRONOMATRON && phase == ExperimentPhase.ROUND_COMPLETE) {
+			return currentSequenceLength >= displayedSequenceLength;
+		}
 		return type == ExperimentType.ULTRASEQUENCER
 			? currentSequenceLength >= displayedSequenceLength
 			: currentSequenceLength > displayedSequenceLength;

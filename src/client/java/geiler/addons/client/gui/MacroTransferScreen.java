@@ -136,7 +136,7 @@ public final class MacroTransferScreen extends Screen {
 			status = "Select at least one macro first.";
 			return;
 		}
-		Minecraft.getInstance().keyboardHandler.setClipboard(MacroTransfer.encode(selected));
+		Minecraft.getInstance().keyboardHandler.setClipboard(MacrosModule.INSTANCE.exportEncoded(selected));
 		status = "Copied " + selected.size() + " macro(s) to the clipboard.";
 	}
 

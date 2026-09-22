@@ -31,9 +31,24 @@ public final class DungeonStatsCommand {
 		return 0;
 	}
 
+	public static int showRetryUsage() {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.gui != null) {
+			minecraft.gui.getChat().addClientSystemMessage(Component.literal(
+				"[PF] Usage: /ga pfretry <player-name>"));
+		}
+		return 0;
+	}
+
 	public static int lookup(String name) {
 		if (name == null || !PLAYER_NAME.matcher(name).matches()) return showUsage();
 		PartyFinderStatsModule.INSTANCE.lookupStats(name);
+		return 1;
+	}
+
+	public static int retryPartyMember(String name) {
+		if (name == null || !PLAYER_NAME.matcher(name).matches()) return showRetryUsage();
+		PartyFinderStatsModule.INSTANCE.retryPlayer(name);
 		return 1;
 	}
 

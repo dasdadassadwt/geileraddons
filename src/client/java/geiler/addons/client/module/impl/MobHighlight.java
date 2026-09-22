@@ -30,6 +30,7 @@ public final class MobHighlight {
 	private static final int MAX_TEXT_LENGTH = 48;
 
 	private final int id;
+	private String folderId;
 	private final BooleanSetting enabled = new BooleanSetting("Enabled", true);
 	private final BooleanSetting matchName = new BooleanSetting("Match Name", true);
 	private final TextSetting matchText = new TextSetting("Match Text", "", MAX_TEXT_LENGTH);
@@ -66,6 +67,9 @@ public final class MobHighlight {
 	public int id() {
 		return id;
 	}
+
+	public String folderId() { return folderId; }
+	public void setFolderId(String value) { folderId = value == null || value.isBlank() ? null : value; }
 
 	public BooleanSetting enabled() {
 		return enabled;
@@ -134,7 +138,7 @@ public final class MobHighlight {
 		String name = displayName.value().isBlank() ? DEFAULT_DISPLAY_NAME : displayName.value();
 		return SettingGroup.switched("#" + id + " " + name, enabled,
 				matchName, matchText, outlineColor, fillColor, depthCheck, scanInterval, displayName, delete)
-			.containing(islandGroup());
+			.containing(islandGroup()).keyed("mob-highlight-entry:" + id);
 	}
 
 	/**
@@ -145,7 +149,8 @@ public final class MobHighlight {
 	 * fold the moment the highlight was renamed.
 	 */
 	private SettingGroup islandGroup() {
-		return SettingGroup.folded("#" + id + " Islands", islands.values().toArray(new Setting[0]));
+		return SettingGroup.folded("#" + id + " Islands", islands.values().toArray(new Setting[0]))
+			.keyed("mob-highlight-islands:" + id);
 	}
 
 	List<Entity> matches() {

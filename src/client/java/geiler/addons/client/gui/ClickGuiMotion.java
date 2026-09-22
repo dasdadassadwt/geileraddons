@@ -71,6 +71,26 @@ public enum ClickGuiMotion {
 		return 1.0f - (float) Math.pow(1.0f - progress, 5.0);
 	}
 
+	/** Close-only quadratic ease-out; unlike the opening profile it has no spring or long tail. */
+	public float closeEase(float progress) {
+		progress = clamp(progress);
+		if (this == NONE) return 1.0f;
+		return 1.0f - (1.0f - progress) * (1.0f - progress);
+	}
+
+	/** Close progress computed against the unchanged lifecycle duration. */
+	public float closeProgress(long elapsedMillis) {
+		if (this == NONE) return 1.0f;
+		return closeEase(Math.max(0L, elapsedMillis) / (float) lifecycleMillis);
+	}
+
+	/** Monotonic panel scale for closing, kept separate from the expressive opening spring. */
+	public float closeScale(float progress) {
+		if (this == NONE) return 1.0f;
+		float remaining = 1.0f - clamp(progress);
+		return this == REDUCED ? 0.90f + 0.10f * remaining : 0.72f + 0.28f * remaining;
+	}
+
 	/** Small, bounded overshoot used only for the panel's scale and card entrance. */
 	public float spring(float progress) {
 		progress = clamp(progress);

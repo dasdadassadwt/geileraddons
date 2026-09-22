@@ -6,8 +6,11 @@ import geiler.addons.client.location.Island;
 import geiler.addons.client.macro.MacroCondition;
 import geiler.addons.client.macro.MacroDefinition;
 import geiler.addons.client.macro.MacroStep;
+import geiler.addons.client.macro.MacroTreeRules;
 import geiler.addons.client.module.ModuleKeybindManager;
 import geiler.addons.client.module.impl.VisualModule;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
@@ -33,8 +36,10 @@ public final class MacroEditorScreen extends Screen {
 	private static final int PALETTE_ROW_HEIGHT = 34;
 	private static final int CONTROL_HEIGHT = 18;
 	private static final int COMPACT_WIDTH = 900;
+	private static final int DRAG_THRESHOLD = 5;
 	private static final int MAX_CONDITION_DEPTH = 6;
 	private static final int MAX_COMPOUND_TERMS = 12;
+	private static final long CARET_BLINK_MILLIS = 500;
 
 	private final Screen parent;
 	private final MacroDefinition macro;
@@ -56,10 +61,12 @@ public final class MacroEditorScreen extends Screen {
 	private Rect helpPanelBounds;
 	private String focusedField;
 	private String fieldText = "";
+	private int fieldCursor;
 	private boolean fieldSelectAll;
 	private Consumer<String> focusedSetter;
 	private Layout lastLayout;
 	private PopupState popup;
+	private DragState dragState;
 	private final List<HitTarget> hitTargets = new ArrayList<>();
 
 	public MacroEditorScreen(Screen parent, MacroDefinition macro) {
@@ -94,6 +101,7 @@ public final class MacroEditorScreen extends Screen {
 		if (layout.tree != null) renderTree(graphics, layout.tree, mouseX, mouseY);
 		if (layout.properties != null) renderProperties(graphics, layout.properties, mouseX, mouseY);
 		renderFooter(graphics, layout, mouseX, mouseY);
+		renderDragPreview(graphics, mouseX, mouseY);
 		if (popup != null) renderPopup(graphics, layout, mouseX, mouseY);
 		if (showHelp) renderHelp(graphics, layout, mouseX, mouseY);
 	}
@@ -185,7 +193,7 @@ public final class MacroEditorScreen extends Screen {
 	}
 
 	private void renderPalette(GuiGraphicsExtractor graphics, Rect pane, int mouseX, int mouseY) {
-		renderPane(graphics, pane, "Node Palette", "Choose a node to add it to the selected position.");
+		renderPane(graphics, pane, "Node Palette", "Click to add; drag onto Workflow in the wide layout.");
 		Rect categoryButton = new Rect(pane.x + 8, pane.y + 38, pane.w - 16, 19);
 		button(graphics, "Category: " + category.label + "  ▾", categoryButton, mouseX, mouseY,
 			true, () -> openPopup(categoryButton, categoryOptions()), false, BUTTON_BG, BUTTON_HOVER, pane);
@@ -206,37 +214,58 @@ public final class MacroEditorScreen extends Screen {
 			graphics.text(font, node.label, bounds.x + 7, bounds.y + 5, TEXT_PRIMARY);
 			graphics.text(font, trimToWidth(font, node.hint, bounds.w - 14), bounds.x + 7,
 				bounds.y + 17, TEXT_MUTED);
-			registerHit(bounds, () -> addNode(node), viewport, null);
+			registerHit(bounds, () -> addNode(node), viewport, null,
+				lastLayout != null && !lastLayout.compact ? node : null, null);
 		}
 		graphics.disableScissor();
 		renderScrollbar(graphics, viewport, contentHeight, paletteScroll);
 	}
 
 	private void renderTree(GuiGraphicsExtractor graphics, Rect pane, int mouseX, int mouseY) {
-		renderPane(graphics, pane, "Workflow Tree", "Branches and loop bodies appear beneath their parent node.");
+		renderPane(graphics, pane, "Workflow Tree", "Drag nodes to reorder or move into child slots.");
 		Rect viewport = paneViewport(pane);
 		List<TreeRow> rows = treeRows();
 		int contentHeight = rows.size() * TREE_ROW_HEIGHT;
 		treeScroll = clamp(treeScroll, 0, Math.max(0, contentHeight - viewport.h));
+		DropTarget dropTarget = dragState != null && dragState.active
+			? findDropTarget(pane, dragState, mouseX, mouseY, rows) : null;
+		if (dragState != null && dragState.active) dragState.target = dropTarget;
 		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
 		for (int index = 0; index < rows.size(); index++) {
 			TreeRow row = rows.get(index);
 			int y = viewport.y + index * TREE_ROW_HEIGHT - treeScroll;
 			Rect bounds = new Rect(viewport.x + 2, y + 1, viewport.w - 7, TREE_ROW_HEIGHT - 2);
+			boolean sameDropRow = dropTarget != null && sameRow(dropTarget.row, row);
+			boolean branchDrop = sameDropRow && dropTarget.branch;
+			boolean nodeDrop = sameDropRow && !dropTarget.branch;
 			boolean selected = row.step == selectedStep
 				&& (row.branch ? row.insertionTarget == selectedBranch : selectedBranch == null);
 			boolean hovered = bounds.contains(mouseX, mouseY);
-			if (selected || hovered) {
-				int bg = selected ? CARD_BG_ENABLED : CARD_BG_HOVER;
+			if (selected || hovered || branchDrop) {
+				int bg = branchDrop && !dropTarget.valid ? DANGER_BG
+					: (selected || branchDrop ? CARD_BG_ENABLED : CARD_BG_HOVER);
+				int border = branchDrop ? (dropTarget.valid ? CARD_BORDER_ENABLED : TEXT_ERROR)
+					: (selected ? CARD_BORDER_ENABLED : CARD_BORDER);
 				roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
-					bg, bg, selected ? CARD_BORDER_ENABLED : CARD_BORDER);
+					bg, bg, border);
 			}
 			int indent = Math.min(120, row.depth * 13);
 			int textX = bounds.x + 6 + indent;
 			String text = row.branch ? row.label : row.number + "  " + stepSummary(row.step);
 			graphics.text(font, trimToWidth(font, text, bounds.x + bounds.w - textX - 5), textX,
 				bounds.y + 6, row.branch ? TEXT_WARN : (selected ? TEXT_ON_ACCENT : TEXT_PRIMARY));
-			registerHit(bounds, () -> selectTreeRow(row), viewport, null);
+			if (nodeDrop) {
+				int lineY = dropTarget.after ? bounds.y + bounds.h - 1 : bounds.y - 1;
+				graphics.fill(bounds.x + 3, lineY, bounds.x + bounds.w - 3, lineY + 2,
+					dropTarget.valid ? CARD_BORDER_ENABLED : TEXT_ERROR);
+			}
+			registerHit(bounds, () -> selectTreeRow(row), viewport, null, null, row);
+		}
+		if (dropTarget != null && dropTarget.row == null) {
+			int markerY = rows.isEmpty() ? viewport.y + 2
+				: clamp(viewport.y + contentHeight - treeScroll, viewport.y, viewport.y + viewport.h - 2);
+			graphics.fill(viewport.x + 4, markerY, viewport.x + viewport.w - 4, markerY + 2,
+				dropTarget.valid ? CARD_BORDER_ENABLED : TEXT_ERROR);
 		}
 		graphics.disableScissor();
 		renderScrollbar(graphics, viewport, contentHeight, treeScroll);
@@ -244,6 +273,66 @@ public final class MacroEditorScreen extends Screen {
 			graphics.centeredText(font, "Choose a node from the palette to begin.",
 				pane.x + pane.w / 2, viewport.y + 12, TEXT_MUTED);
 		}
+	}
+
+	private DropTarget findDropTarget(Rect pane, DragState source, int mouseX, int mouseY, List<TreeRow> rows) {
+		Rect viewport = paneViewport(pane);
+		if (!viewport.contains(mouseX, mouseY)) return null;
+		for (int index = 0; index < rows.size(); index++) {
+			TreeRow row = rows.get(index);
+			int rowY = viewport.y + index * TREE_ROW_HEIGHT - treeScroll;
+			Rect hit = new Rect(viewport.x + 2, rowY, viewport.w - 7, TREE_ROW_HEIGHT);
+			if (!hit.contains(mouseX, mouseY)) continue;
+			if (row.branch) {
+				return makeDropTarget(source, row.insertionTarget, row.insertionTarget.size(), row, true, false);
+			}
+			int rowIndex = row.owner.indexOf(row.step);
+			if (rowIndex < 0) return null;
+			boolean after = mouseY >= rowY + TREE_ROW_HEIGHT / 2;
+			return makeDropTarget(source, row.owner, rowIndex + (after ? 1 : 0), row, false, after);
+		}
+		if (rows.isEmpty()) return makeDropTarget(source, macro.steps(), 0, null, false, false);
+		int contentBottom = viewport.y + rows.size() * TREE_ROW_HEIGHT - treeScroll;
+		if (mouseY >= contentBottom) return makeDropTarget(source, macro.steps(), macro.steps().size(), null, false, true);
+		return null;
+	}
+
+	private DropTarget makeDropTarget(DragState source, List<MacroStep> owner, int index,
+		TreeRow row, boolean branch, boolean after) {
+		boolean valid;
+		if (source.paletteNode != null) {
+			valid = MacroTreeRules.canInsert(macro, newStep(source.paletteNode), owner);
+		} else {
+			valid = MacroTreeRules.canMove(macro, source.sourceOwner, source.step, owner, index);
+		}
+		return new DropTarget(owner, index, row, branch, after, valid);
+	}
+
+	private static boolean sameRow(TreeRow first, TreeRow second) {
+		return first != null && second != null && first.step == second.step && first.owner == second.owner
+			&& first.insertionTarget == second.insertionTarget && first.branch == second.branch;
+	}
+
+	private Rect visibleTreePane() {
+		if (lastLayout == null) return null;
+		if (!lastLayout.compact) return lastLayout.tree;
+		return compactPane == Pane.TREE ? lastLayout.compactPane : null;
+	}
+
+	private void renderDragPreview(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
+		if (dragState == null || !dragState.active) return;
+		String summary = dragState.paletteNode != null
+			? "Add " + dragState.paletteNode.label : "Move " + stepSummary(dragState.step);
+		int previewWidth = Math.min(210, Math.max(100, font.width(summary) + 14));
+		int previewHeight = 20;
+		int x = clamp(mouseX + 12, 4, Math.max(4, width - previewWidth - 4));
+		int y = clamp(mouseY + 12, 4, Math.max(4, height - previewHeight - 4));
+		int border = dragState.target == null ? CARD_BORDER
+			: (dragState.target.valid ? CARD_BORDER_ENABLED : TEXT_ERROR);
+		roundedRectBordered(graphics, x, y, previewWidth, previewHeight, RADIUS_SMALL,
+			CARD_BG_ENABLED, CARD_BG_ENABLED, border);
+		graphics.text(font, trimToWidth(font, summary, previewWidth - 12), x + 6, y + 6,
+			dragState.target != null && !dragState.target.valid ? TEXT_ERROR : TEXT_PRIMARY);
 	}
 
 	private void renderProperties(GuiGraphicsExtractor graphics, Rect pane, int mouseX, int mouseY) {
@@ -273,6 +362,32 @@ public final class MacroEditorScreen extends Screen {
 		} else if (step instanceof MacroStep.Chat chat) {
 			drawTextField(graphics, viewport, y, "Chat message", "chat", chat::message,
 				chat::setMessage, "Message sent through normal chat input");
+		} else if (step instanceof MacroStep.Title title) {
+			drawDescription(graphics, viewport, y, "Shows a centered title while the workflow continues immediately. A later title step replaces this one.");
+			drawTextField(graphics, viewport, y, "Title text", "title-text", title::text,
+				title::setText, "Text shown at screen center");
+			drawDropdownButton(graphics, viewport, y, "Font", title.font(), fontOptions(title));
+			drawNumberField(graphics, viewport, y, "Text size", "title-scale", () -> Float.toString(title.scale()),
+				value -> parseFloat(value, title::setScale), "Scale from 0.5× to 6×");
+			drawNumberField(graphics, viewport, y, "Hold (ms)", "title-hold", () -> Integer.toString(title.holdMillis()),
+				value -> parseInt(value, title::setHoldMillis), "Visible after fade-in and before fade-out");
+			drawNumberPair(graphics, viewport, y, "Fade in (ms)", "Fade out (ms)", "title-fade-in",
+				() -> Integer.toString(title.fadeInMillis()), value -> parseInt(value, title::setFadeInMillis),
+				"title-fade-out", () -> Integer.toString(title.fadeOutMillis()), value -> parseInt(value, title::setFadeOutMillis));
+			drawTextField(graphics, viewport, y, "Text color (#RRGGBB)", "title-text-color",
+				() -> colorText(title.textColor()), value -> parseHexColor(value, title::setTextColor), "Example: FFFFFF");
+			drawActionButton(graphics, viewport, y, "Background: " + onOff(title.showBackground()),
+				() -> { title.setShowBackground(!title.showBackground()); dirty(); });
+			if (title.showBackground()) {
+				drawTextField(graphics, viewport, y, "Background color (#RRGGBB)", "title-background-color",
+					() -> colorText(title.backgroundColor()), value -> parseHexColor(value, title::setBackgroundColor), "Example: 000000");
+				drawNumberField(graphics, viewport, y, "Background opacity (0–255)", "title-background-opacity",
+					() -> Integer.toString(title.backgroundOpacity()), value -> parseInt(value, title::setBackgroundOpacity),
+					"0 is transparent; 255 is opaque");
+			}
+		} else if (step instanceof MacroStep.Sound sound) {
+			drawDescription(graphics, viewport, y, "Plays one registered Minecraft sound at the game's standard UI volume and pitch, then continues.");
+			drawDropdownButton(graphics, viewport, y, "Sound event", sound.soundId(), soundOptions(sound));
 		} else if (step instanceof MacroStep.Wait wait) {
 			drawDescription(graphics, viewport, y, "Wait pauses the workflow for this randomized duration, then continues to the next node.");
 			drawNumberPair(graphics, viewport, y, "Minimum wait (ms)", "Maximum wait (ms)",
@@ -442,11 +557,56 @@ public final class MacroEditorScreen extends Screen {
 		roundedRectBordered(graphics, field.x, field.y, field.w, field.h, RADIUS_SMALL,
 			CARD_BG, CARD_BG, focused ? CARD_BORDER_ENABLED : CARD_BORDER);
 		String current = focused ? fieldText : value.get();
-		String shown = current == null || current.isEmpty() ? hint : current;
-		int color = current == null || current.isEmpty() ? TEXT_MUTED : TEXT_PRIMARY;
-		graphics.text(font, trimToWidth(font, shown, field.w - 12), field.x + 6, field.y + 5, color);
+		if (current == null) current = "";
+		if (current.isEmpty() && !focused) {
+			graphics.text(font, trimToWidth(font, hint, field.w - 12), field.x + 6, field.y + 5, TEXT_MUTED);
+		} else {
+			int cursor = focused ? clamp(fieldCursor, 0, current.length()) : current.length();
+			int visibleStart = visibleFieldStart(current, cursor, field.w - 12);
+			int visibleEnd = visibleFieldEnd(current, visibleStart, cursor, field.w - 12);
+			String shown = current.substring(visibleStart, visibleEnd);
+			graphics.text(font, shown, field.x + 6, field.y + 5, TEXT_PRIMARY);
+			if (focused && (System.currentTimeMillis() / CARET_BLINK_MILLIS) % 2 == 0) {
+				int caretX = field.x + 6 + font.width(current.substring(visibleStart, cursor));
+				graphics.fill(caretX, field.y + 4, caretX + 1, field.y + field.h - 4, TEXT_PRIMARY);
+			}
+		}
 		FieldBinding binding = new FieldBinding(id, current == null ? "" : current, setter);
 		registerHit(field, () -> { }, viewport, binding);
+	}
+
+	private int visibleFieldStart(String text, int cursor, int maxWidth) {
+		int start = cursor;
+		while (start > 0 && font.width(text.substring(start - Character.charCount(text.codePointBefore(start)), cursor)) <= maxWidth) {
+			start -= Character.charCount(text.codePointBefore(start));
+		}
+		return start;
+	}
+
+	private int visibleFieldEnd(String text, int start, int cursor, int maxWidth) {
+		int end = cursor;
+		while (end < text.length()) {
+			int next = end + Character.charCount(text.codePointAt(end));
+			if (font.width(text.substring(start, next)) > maxWidth) break;
+			end = next;
+		}
+		return end;
+	}
+
+	private int fieldCursorAt(String text, int cursor, Rect bounds, int mouseX) {
+		int maxWidth = Math.max(1, bounds.w - 12);
+		int start = visibleFieldStart(text, cursor, maxWidth);
+		int end = visibleFieldEnd(text, start, cursor, maxWidth);
+		int targetWidth = Math.max(0, mouseX - (bounds.x + 6));
+		int index = start;
+		while (index < end) {
+			int next = index + Character.charCount(text.codePointAt(index));
+			int left = font.width(text.substring(start, index));
+			int right = font.width(text.substring(start, next));
+			if (targetWidth < (left + right) / 2) return index;
+			index = next;
+		}
+		return end;
 	}
 
 	private void drawActionButton(GuiGraphicsExtractor graphics, Rect viewport, int[] y,
@@ -547,7 +707,7 @@ public final class MacroEditorScreen extends Screen {
 		HelpRecipe[] recipes = {
 			new HelpRecipe("Click every matching item, with a pause",
 				"1. Add Repeat Until and choose Item → Missing as its stop condition.",
-				"2. Enter names separated by commas, for example Confirm, Claim, Collect. Partial match checks each name.",
+				"2. Enter names separated by commas, choose a search area, and enable partial matching if needed.",
 				"3. Add Click Item to the loop body and set its randomized node delay to pace clicks. The first match is clicked each pass."),
 			new HelpRecipe("Choose between two actions",
 				"1. Add If / Else and build its condition. Use AND, OR or NOT to combine checks.",
@@ -642,9 +802,14 @@ public final class MacroEditorScreen extends Screen {
 	}
 
 	private void registerHit(Rect bounds, Runnable action, Rect clip, FieldBinding field) {
+		registerHit(bounds, action, clip, field, null, null);
+	}
+
+	private void registerHit(Rect bounds, Runnable action, Rect clip, FieldBinding field,
+		NodeType paletteNode, TreeRow treeRow) {
 		Rect hit = clip == null ? bounds : bounds.intersection(clip);
 		if (hit == null) return;
-		hitTargets.add(new HitTarget(hit, action, field));
+		hitTargets.add(new HitTarget(hit, action, field, paletteNode, treeRow));
 	}
 
 	private void openPopup(Rect anchor, List<PopupEntry> entries) {
@@ -681,6 +846,20 @@ public final class MacroEditorScreen extends Screen {
 		return options;
 	}
 
+	private List<PopupEntry> fontOptions(MacroStep.Title title) {
+		return List.of(
+			new PopupEntry("Minecraft Default", () -> { title.setFont("minecraft:default"); dirty(); }),
+			new PopupEntry("Uniform Unicode", () -> { title.setFont("minecraft:uniform"); dirty(); }));
+	}
+
+	private List<PopupEntry> soundOptions(MacroStep.Sound sound) {
+		List<Identifier> ids = new ArrayList<>(BuiltInRegistries.SOUND_EVENT.keySet());
+		ids.sort(Identifier::compareTo);
+		List<PopupEntry> options = new ArrayList<>(ids.size());
+		for (Identifier id : ids) options.add(new PopupEntry(id.toString(), () -> { sound.setSoundId(id.toString()); dirty(); }));
+		return options;
+	}
+
 	private void selectTreeRow(TreeRow row) {
 		commitFocusedField();
 		selectedStep = row.step;
@@ -705,10 +884,16 @@ public final class MacroEditorScreen extends Screen {
 	}
 
 	private void addNode(NodeType type) {
-		commitFocusedField();
 		List<MacroStep> target = insertionList == null ? macro.steps() : insertionList;
-		int index = clamp(insertionIndex, 0, target.size());
+		insertNode(type, target, insertionIndex);
+	}
+
+	private void insertNode(NodeType type, List<MacroStep> target, int requestedIndex) {
+		commitFocusedField();
+		if (target == null) return;
 		MacroStep step = newStep(type);
+		if (!MacroTreeRules.canInsert(macro, step, target)) return;
+		int index = clamp(requestedIndex, 0, target.size());
 		target.add(index, step);
 		selectedStep = step;
 		selectedOwner = target;
@@ -717,6 +902,23 @@ public final class MacroEditorScreen extends Screen {
 		insertionIndex = index + 1;
 		propertiesScroll = 0;
 		treeScroll = Integer.MAX_VALUE;
+		dirty();
+	}
+
+	private void moveDraggedNode(DragState source, DropTarget target) {
+		if (source == null || source.step == null || source.sourceOwner == null || target == null) return;
+		commitFocusedField();
+		int sourceIndex = source.sourceOwner.indexOf(source.step);
+		if (sourceIndex < 0) return;
+		int insertionIndex = clamp(target.index, 0, target.owner.size());
+		if (source.sourceOwner == target.owner && sourceIndex < insertionIndex) insertionIndex--;
+		if (!MacroTreeRules.move(macro, source.sourceOwner, source.step, target.owner, target.index)) return;
+		selectedStep = source.step;
+		selectedOwner = target.owner;
+		selectedBranch = null;
+		insertionList = target.owner;
+		insertionIndex = insertionIndex + 1;
+		propertiesScroll = 0;
 		dirty();
 	}
 
@@ -782,7 +984,7 @@ public final class MacroEditorScreen extends Screen {
 	}
 
 	private void appendTreeRows(List<MacroStep> steps, int depth, String prefix, List<TreeRow> rows, int nesting) {
-		if (nesting > 8 || steps == null) return;
+		if (nesting > MacroTreeRules.MAX_DEPTH || steps == null) return;
 		for (int i = 0; i < steps.size(); i++) {
 			MacroStep step = steps.get(i);
 			String number = prefix.isEmpty() ? Integer.toString(i + 1) : prefix + "." + (i + 1);
@@ -868,17 +1070,17 @@ public final class MacroEditorScreen extends Screen {
 		} else if (current instanceof MacroCondition.Item item) {
 			drawConditionToggle(graphics, viewport, y, x, w,
 				"Item must be: " + (item.mustExist() ? "Present" : "Missing"),
-				() -> setter.accept(new MacroCondition.Item(item.name(), !item.mustExist(), item.contains(), item.includePlayerInventory())));
+				() -> setter.accept(new MacroCondition.Item(item.name(), !item.mustExist(), item.contains(), item.scope())));
 			drawTextFieldAt(graphics, viewport, "Item names (comma-separated alternatives)", path + "-item-name", item::name,
-				value -> { setter.accept(new MacroCondition.Item(value, item.mustExist(), item.contains(), item.includePlayerInventory())); dirty(); },
+				value -> { setter.accept(new MacroCondition.Item(value, item.mustExist(), item.contains(), item.scope())); dirty(); },
 				"Example: Confirm, Claim, Collect", x, y[0], w);
 			y[0] += 34;
 			drawConditionToggle(graphics, viewport, y, x, w,
 				"Match: " + (item.contains() ? "Partial name" : "Exact name"),
-				() -> setter.accept(new MacroCondition.Item(item.name(), item.mustExist(), !item.contains(), item.includePlayerInventory())));
+				() -> setter.accept(new MacroCondition.Item(item.name(), item.mustExist(), !item.contains(), item.scope())));
 			drawConditionToggle(graphics, viewport, y, x, w,
-				"Search player inventory too: " + onOff(item.includePlayerInventory()),
-				() -> setter.accept(new MacroCondition.Item(item.name(), item.mustExist(), item.contains(), !item.includePlayerInventory())));
+				"Search area: " + scopeName(item.scope().serializedName()),
+				() -> setter.accept(new MacroCondition.Item(item.name(), item.mustExist(), item.contains(), nextItemScope(item.scope()))));
 		} else if (current instanceof MacroCondition.Screen screen) {
 			drawConditionToggle(graphics, viewport, y, x, w,
 				"Screen must be: " + (screen.mustBeOpen() ? "Open" : "Closed"),
@@ -958,6 +1160,8 @@ public final class MacroEditorScreen extends Screen {
 		return switch (type) {
 			case COMMAND -> new MacroStep.Command("");
 			case CHAT -> new MacroStep.Chat("");
+			case TITLE -> new MacroStep.Title();
+			case SOUND -> new MacroStep.Sound("minecraft:entity.player.levelup");
 			case KEY -> new MacroStep.Key("", false, 250);
 			case CLICK_SLOT -> new MacroStep.ClickSlot(0, 0, false);
 			case CLICK_ITEM -> new MacroStep.ClickItem("", true, "container", 0, 0, false);
@@ -1012,6 +1216,14 @@ public final class MacroEditorScreen extends Screen {
 		MacroStep result;
 		if (step instanceof MacroStep.Command command) result = new MacroStep.Command(command.command());
 		else if (step instanceof MacroStep.Chat chat) result = new MacroStep.Chat(chat.message());
+		else if (step instanceof MacroStep.Title title) {
+			MacroStep.Title duplicate = new MacroStep.Title();
+			duplicate.setText(title.text()); duplicate.setFont(title.font()); duplicate.setScale(title.scale());
+			duplicate.setTextColor(title.textColor()); duplicate.setShowBackground(title.showBackground());
+			duplicate.setBackgroundColor(title.backgroundColor()); duplicate.setBackgroundOpacity(title.backgroundOpacity());
+			duplicate.setFadeInMillis(title.fadeInMillis()); duplicate.setHoldMillis(title.holdMillis());
+			duplicate.setFadeOutMillis(title.fadeOutMillis()); result = duplicate;
+		} else if (step instanceof MacroStep.Sound sound) result = new MacroStep.Sound(sound.soundId());
 		else if (step instanceof MacroStep.Wait wait) result = new MacroStep.Wait(wait.minMillis(), wait.maxMillis());
 		else if (step instanceof MacroStep.Key key) result = new MacroStep.Key(key.key(), key.hold(),
 			key.holdMinMillis(), key.holdMaxMillis());
@@ -1042,6 +1254,8 @@ public final class MacroEditorScreen extends Screen {
 		if (step == null) return "";
 		if (step instanceof MacroStep.Command command) return "Command · " + emptyLabel(command.command(), "command text");
 		if (step instanceof MacroStep.Chat chat) return "Send Chat · " + emptyLabel(chat.message(), "message");
+		if (step instanceof MacroStep.Title title) return "Title · " + emptyLabel(title.text(), "title text");
+		if (step instanceof MacroStep.Sound sound) return "Sound · " + emptyLabel(sound.soundId(), "sound event");
 		if (step instanceof MacroStep.Wait wait) return "Wait · " + wait.minMillis() + "–" + wait.maxMillis() + " ms";
 		if (step instanceof MacroStep.Key key) return "Key · " + readableKey(key.key())
 			+ (key.hold() ? " (hold " + key.holdMinMillis() + "–" + key.holdMaxMillis() + " ms)" : " (tap)");
@@ -1060,7 +1274,8 @@ public final class MacroEditorScreen extends Screen {
 
 	private static String conditionBrief(MacroCondition condition) {
 		if (condition instanceof MacroCondition.Item item) return "item " + (item.mustExist() ? "present" : "missing")
-			+ " [" + emptyLabel(item.name(), "name") + "]" + (item.contains() ? " (partial)" : " (exact)");
+			+ " [" + emptyLabel(item.name(), "name") + "]" + (item.contains() ? " (partial)" : " (exact)")
+			+ " · " + scopeName(item.scope().serializedName());
 		if (condition instanceof MacroCondition.Screen screen) return "screen " + (screen.mustBeOpen() ? "open" : "closed");
 		if (condition instanceof MacroCondition.Slot slot) return "slot " + (slot.mustExist() ? "present" : "missing");
 		if (condition instanceof MacroCondition.Chat) return "chat text";
@@ -1115,6 +1330,14 @@ public final class MacroEditorScreen extends Screen {
 		};
 	}
 
+	private static MacroCondition.ItemScope nextItemScope(MacroCondition.ItemScope scope) {
+		return switch (scope == null ? MacroCondition.ItemScope.CONTAINER : scope) {
+			case CONTAINER -> MacroCondition.ItemScope.PLAYER_INVENTORY;
+			case PLAYER_INVENTORY -> MacroCondition.ItemScope.CONTAINER_AND_PLAYER;
+			case CONTAINER_AND_PLAYER -> MacroCondition.ItemScope.CONTAINER;
+		};
+	}
+
 	private static String onOff(boolean value) {
 		return value ? "On" : "Off";
 	}
@@ -1129,6 +1352,24 @@ public final class MacroEditorScreen extends Screen {
 		} catch (NumberFormatException ignored) {
 			// Preserve the last valid value while the user is editing an incomplete number.
 		}
+	}
+
+	private static void parseFloat(String value, Consumer<Float> action) {
+		try {
+			float parsed = Float.parseFloat(value == null ? "" : value.trim());
+			if (Float.isFinite(parsed)) action.accept(parsed);
+		} catch (NumberFormatException ignored) { }
+	}
+
+	private static String colorText(int argb) {
+		return String.format(Locale.ROOT, "%06X", argb & 0x00FFFFFF);
+	}
+
+	private static void parseHexColor(String value, Consumer<Integer> action) {
+		String hex = value == null ? "" : value.trim().replace("#", "");
+		if (hex.length() != 6) return;
+		try { action.accept(0xFF000000 | Integer.parseInt(hex, 16)); }
+		catch (NumberFormatException ignored) { }
 	}
 
 	private static String trimToWidth(Font font, String text, int maxWidth) {
@@ -1149,11 +1390,13 @@ public final class MacroEditorScreen extends Screen {
 		else ModuleKeybindManager.beginMacroBinding(macro);
 	}
 
-	private void focusField(FieldBinding binding) {
+	private void focusField(FieldBinding binding, Rect bounds, int mouseX) {
 		focusedField = binding.id;
 		fieldText = binding.value;
 		focusedSetter = binding.setter;
-		fieldSelectAll = true;
+		fieldCursor = fieldText.length();
+		fieldCursor = fieldCursorAt(fieldText, fieldCursor, bounds, mouseX);
+		fieldSelectAll = false;
 	}
 
 	private void commitFocusedField() {
@@ -1161,6 +1404,7 @@ public final class MacroEditorScreen extends Screen {
 		focusedSetter.accept(fieldText);
 		focusedField = null;
 		focusedSetter = null;
+		fieldCursor = 0;
 		fieldSelectAll = false;
 		dirty();
 	}
@@ -1168,6 +1412,7 @@ public final class MacroEditorScreen extends Screen {
 	private void cancelFocusedField() {
 		focusedField = null;
 		focusedSetter = null;
+		fieldCursor = 0;
 		fieldSelectAll = false;
 	}
 
@@ -1204,8 +1449,20 @@ public final class MacroEditorScreen extends Screen {
 			HitTarget target = hitTargets.get(i);
 			if (!target.bounds.contains(x, y)) continue;
 			if (target.field != null) {
+				if (target.field.id.equals(focusedField)) {
+					fieldSelectAll = false;
+					fieldCursor = fieldCursorAt(fieldText, fieldCursor, target.bounds, x);
+				} else {
+					commitFocusedField();
+					focusField(target.field, target.bounds, x);
+				}
+			} else if (target.paletteNode != null) {
 				commitFocusedField();
-				focusField(target.field);
+				dragState = new DragState(target.paletteNode, null, null, x, y);
+			} else if (target.treeRow != null && !target.treeRow.branch) {
+				commitFocusedField();
+				selectTreeRow(target.treeRow);
+				dragState = new DragState(null, target.treeRow.step, target.treeRow.owner, x, y);
 			} else {
 				commitFocusedField();
 				target.action.run();
@@ -1215,6 +1472,47 @@ public final class MacroEditorScreen extends Screen {
 		commitFocusedField();
 		if (lastLayout != null && lastLayout.panel.contains(x, y)) return true;
 		return super.mouseClicked(event, doubleClick);
+	}
+
+	@Override
+	public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
+		if (dragState == null || event.button() != 0) return super.mouseDragged(event, dragX, dragY);
+		int x = (int) event.x();
+		int y = (int) event.y();
+		lastMouseX = currentMouseX = x;
+		lastMouseY = currentMouseY = y;
+		if (!dragState.active) {
+			int deltaX = x - dragState.startX;
+			int deltaY = y - dragState.startY;
+			dragState.active = deltaX * deltaX + deltaY * deltaY >= DRAG_THRESHOLD * DRAG_THRESHOLD;
+		}
+		if (dragState.active) {
+			Rect pane = visibleTreePane();
+			dragState.target = pane == null ? null : findDropTarget(pane, dragState, x, y, treeRows());
+		}
+		return true;
+	}
+
+	@Override
+	public boolean mouseReleased(MouseButtonEvent event) {
+		if (dragState == null || event.button() != 0) return super.mouseReleased(event);
+		DragState released = dragState;
+		int x = (int) event.x();
+		int y = (int) event.y();
+		lastMouseX = currentMouseX = x;
+		lastMouseY = currentMouseY = y;
+		dragState = null;
+		if (!released.active) {
+			if (released.paletteNode != null) addNode(released.paletteNode);
+			return true;
+		}
+		Rect pane = visibleTreePane();
+		DropTarget target = pane == null ? null : findDropTarget(pane, released, x, y, treeRows());
+		if (target != null && target.valid) {
+			if (released.paletteNode != null) insertNode(released.paletteNode, target.owner, target.index);
+			else moveDraggedNode(released, target);
+		}
+		return true;
 	}
 
 	@Override
@@ -1256,10 +1554,13 @@ public final class MacroEditorScreen extends Screen {
 		if (focusedField == null || !event.isAllowedChatCharacter()) return super.charTyped(event);
 		if (fieldSelectAll) {
 			fieldText = "";
+			fieldCursor = 0;
 			fieldSelectAll = false;
 		}
-		if (fieldText.length() < 256) {
-			fieldText += event.codepointAsString();
+		String typed = event.codepointAsString();
+		if (fieldText.length() + typed.length() <= 256) {
+			fieldText = fieldText.substring(0, fieldCursor) + typed + fieldText.substring(fieldCursor);
+			fieldCursor += typed.length();
 			if (focusedSetter != null) focusedSetter.accept(fieldText);
 			dirty();
 		}
@@ -1276,16 +1577,62 @@ public final class MacroEditorScreen extends Screen {
 			if (event.key() == InputConstants.KEY_ESCAPE) popup = null;
 			return true;
 		}
+		if (dragState != null) {
+			if (event.key() == InputConstants.KEY_ESCAPE) dragState = null;
+			return true;
+		}
 		if (focusedField != null) {
 			if (event.key() == GLFW.GLFW_KEY_A && (event.modifiers() & InputConstants.MOD_CONTROL) != 0) {
 				fieldSelectAll = true;
 				return true;
 			}
 			if (event.key() == InputConstants.KEY_BACKSPACE) {
-				if (fieldSelectAll) { fieldText = ""; fieldSelectAll = false; }
-				else if (!fieldText.isEmpty()) fieldText = fieldText.substring(0, fieldText.length() - 1);
+				if (fieldSelectAll) {
+					fieldText = "";
+					fieldCursor = 0;
+					fieldSelectAll = false;
+				} else if (fieldCursor > 0) {
+					int previous = fieldCursor - Character.charCount(fieldText.codePointBefore(fieldCursor));
+					fieldText = fieldText.substring(0, previous) + fieldText.substring(fieldCursor);
+					fieldCursor = previous;
+				}
 				if (focusedSetter != null) focusedSetter.accept(fieldText);
 				dirty();
+				return true;
+			}
+			if (event.key() == GLFW.GLFW_KEY_DELETE) {
+				if (fieldSelectAll) {
+					fieldText = "";
+					fieldCursor = 0;
+					fieldSelectAll = false;
+				} else if (fieldCursor < fieldText.length()) {
+					int next = fieldCursor + Character.charCount(fieldText.codePointAt(fieldCursor));
+					fieldText = fieldText.substring(0, fieldCursor) + fieldText.substring(next);
+				}
+				if (focusedSetter != null) focusedSetter.accept(fieldText);
+				dirty();
+				return true;
+			}
+			if (event.key() == GLFW.GLFW_KEY_LEFT) {
+				if (fieldSelectAll) fieldCursor = 0;
+				else if (fieldCursor > 0) fieldCursor -= Character.charCount(fieldText.codePointBefore(fieldCursor));
+				fieldSelectAll = false;
+				return true;
+			}
+			if (event.key() == GLFW.GLFW_KEY_RIGHT) {
+				if (fieldSelectAll) fieldCursor = fieldText.length();
+				else if (fieldCursor < fieldText.length()) fieldCursor += Character.charCount(fieldText.codePointAt(fieldCursor));
+				fieldSelectAll = false;
+				return true;
+			}
+			if (event.key() == GLFW.GLFW_KEY_HOME) {
+				fieldCursor = 0;
+				fieldSelectAll = false;
+				return true;
+			}
+			if (event.key() == GLFW.GLFW_KEY_END) {
+				fieldCursor = fieldText.length();
+				fieldSelectAll = false;
 				return true;
 			}
 			if (event.key() == InputConstants.KEY_RETURN) { commitFocusedField(); return true; }
@@ -1304,6 +1651,7 @@ public final class MacroEditorScreen extends Screen {
 
 	@Override
 	public void onClose() {
+		dragState = null;
 		commitFocusedField();
 		if (ModuleKeybindManager.bindingMacro() == macro || ModuleKeybindManager.bindingKeyStep() != null) {
 			ModuleKeybindManager.cancelBinding();
@@ -1312,6 +1660,7 @@ public final class MacroEditorScreen extends Screen {
 	}
 
 	private void closeToParent() {
+		dragState = null;
 		commitFocusedField();
 		if (ModuleKeybindManager.bindingMacro() == macro || ModuleKeybindManager.bindingKeyStep() != null) {
 			ModuleKeybindManager.cancelBinding();
@@ -1322,6 +1671,7 @@ public final class MacroEditorScreen extends Screen {
 
 	@Override
 	public void removed() {
+		dragState = null;
 		if (ModuleKeybindManager.bindingMacro() == macro || ModuleKeybindManager.bindingKeyStep() != null) {
 			ModuleKeybindManager.cancelBinding();
 		}
@@ -1343,6 +1693,8 @@ public final class MacroEditorScreen extends Screen {
 	private enum NodeType {
 		COMMAND(NodeCategory.ACTIONS, "Command", "Run a client command"),
 		CHAT(NodeCategory.ACTIONS, "Send Chat", "Send a chat message"),
+		TITLE(NodeCategory.ACTIONS, "Title", "Show a styled centered title"),
+		SOUND(NodeCategory.ACTIONS, "Sound", "Play a registered sound event"),
 		KEY(NodeCategory.ACTIONS, "Press Key", "Capture a readable key"),
 		CLICK_SLOT(NodeCategory.ACTIONS, "Click Slot", "Click a container slot ID"),
 		CLICK_ITEM(NodeCategory.ACTIONS, "Click Item", "Find by exact or partial name"),
@@ -1379,10 +1731,32 @@ public final class MacroEditorScreen extends Screen {
 		List<MacroStep> insertionTarget, boolean branch, String label) {
 	}
 
+	private record DropTarget(List<MacroStep> owner, int index, TreeRow row, boolean branch,
+		boolean after, boolean valid) {
+	}
+
+	private static final class DragState {
+		private final NodeType paletteNode;
+		private final MacroStep step;
+		private final List<MacroStep> sourceOwner;
+		private final int startX;
+		private final int startY;
+		private boolean active;
+		private DropTarget target;
+
+		private DragState(NodeType paletteNode, MacroStep step, List<MacroStep> sourceOwner, int startX, int startY) {
+			this.paletteNode = paletteNode;
+			this.step = step;
+			this.sourceOwner = sourceOwner;
+			this.startX = startX;
+			this.startY = startY;
+		}
+	}
+
 	private record FieldBinding(String id, String value, Consumer<String> setter) {
 	}
 
-	private record HitTarget(Rect bounds, Runnable action, FieldBinding field) {
+	private record HitTarget(Rect bounds, Runnable action, FieldBinding field, NodeType paletteNode, TreeRow treeRow) {
 	}
 
 	private static final class HelpRecipe {

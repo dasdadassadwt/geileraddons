@@ -1,8 +1,10 @@
 package geiler.addons.client.module.impl;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import geiler.addons.client.collections.FolderTree;
 import geiler.addons.client.entity.ClientEntitySnapshot;
 import geiler.addons.client.config.ModConfig;
+import geiler.addons.client.gui.FolderManagerScreen;
 import geiler.addons.client.entity.Nameplates;
 import geiler.addons.client.location.HypixelModApi;
 import geiler.addons.client.location.Island;
@@ -14,6 +16,7 @@ import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.render.WorldToScreen;
+import geiler.addons.client.render.ProjectedLabelRenderer;
 import geiler.addons.client.tree.ChatText;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.minecraft.client.Camera;
@@ -59,21 +62,27 @@ public final class MobHighlightModule extends Module {
 
 	private final List<MobHighlight> highlights = new ArrayList<>();
 	private final ModuleAction create;
+	private final ModuleAction foldersAction;
+	private final FolderTree folders = new FolderTree();
 	private final NumberSetting labelSize;
 	private int nextId;
 	private ClientLevel lastLevel;
 
 	private MobHighlightModule() {
 		this(new ModuleAction("Create Mob Highlight", () -> INSTANCE.create()),
+			new ModuleAction("Manage Folders", "Organize highlights into nested folders.", () -> INSTANCE.openFolders()),
 			new NumberSetting("Label Size", 0.5f, 4.0f, 1.0f));
 	}
 
-	private MobHighlightModule(ModuleAction create, NumberSetting labelSize) {
+	private MobHighlightModule(ModuleAction create, ModuleAction foldersAction, NumberSetting labelSize) {
 		super("Mob Highlight", "Boxes mobs whose name or type matches your text.", Category.VISUAL,
-			create, labelSize);
+			create, foldersAction, labelSize);
 		this.create = create;
+		this.foldersAction = foldersAction;
 		this.labelSize = labelSize;
 	}
+
+	public FolderTree folders() { return folders; }
 
 	// ---- highlight list -----------------------------------------------------------------
 
@@ -119,12 +128,33 @@ public final class MobHighlightModule extends Module {
 	 */
 	@Override
 	public List<SettingGroup> groups() {
-		List<SettingGroup> groups = new ArrayList<>(highlights.size() + 1);
-		groups.add(new SettingGroup(null, create, labelSize));
-		for (MobHighlight highlight : highlights) {
-			groups.add(highlight.group());
-		}
+		List<SettingGroup> groups = new ArrayList<>(highlights.size() + folders.folders().size() + 1);
+		groups.add(new SettingGroup(null, create, foldersAction, labelSize));
+		for (FolderTree.Folder folder : folders.childrenOf(null)) groups.add(folderGroup(folder));
+		for (MobHighlight highlight : highlights) if (!folders.contains(highlight.folderId())) groups.add(highlight.group());
 		return groups;
+	}
+
+	private SettingGroup folderGroup(FolderTree.Folder folder) {
+		List<SettingGroup> children = new ArrayList<>();
+		for (FolderTree.Folder child : folders.childrenOf(folder.id())) children.add(folderGroup(child));
+		for (MobHighlight highlight : highlights) if (folder.id().equals(highlight.folderId())) children.add(highlight.group());
+		return new SettingGroup(folder.name(), null, false, List.of(), children, false,
+			"mob-highlight-folder:" + folder.id());
+	}
+
+	private void openFolders() {
+		Minecraft minecraft = Minecraft.getInstance();
+		minecraft.setScreen(new FolderManagerScreen(minecraft.screen, "Mob Highlight", folders,
+			() -> highlights.stream().map(highlight -> new FolderManagerScreen.Entry(
+				Integer.toString(highlight.id()), "#" + highlight.id() + " " + highlight.displayName().value(),
+				highlight.folderId())).toList(),
+			(entryId, folderId) -> {
+				try {
+					int id = Integer.parseInt(entryId);
+					for (MobHighlight highlight : highlights) if (highlight.id() == id) highlight.setFolderId(folderId);
+				} catch (NumberFormatException ignored) { }
+			}, ModConfig::markDirty));
 	}
 
 	// ---- scanning -----------------------------------------------------------------------
@@ -267,26 +297,16 @@ public final class MobHighlightModule extends Module {
 		if (mc.level == null || mc.player == null || mc.options.hideGui) return;
 
 		Camera camera = mc.gameRenderer.getMainCamera();
-		Font font = mc.font;
 		float scale = labelSize.value();
 		for (MobHighlight highlight : highlights) {
 			String label = highlight.displayName().value();
 			if (label.isBlank() || highlight.matches().isEmpty()) continue;
 			int color = highlight.outlineColor().argb();
-			// Measured at the scaled size so the label stays centred on the mob as it grows.
-			float halfWidth = font.width(label) * scale / 2;
-			float halfHeight = HUD_LABEL_HALF_HEIGHT * scale;
 			for (Entity entity : highlight.matches()) {
 				if (entity.isRemoved()) continue;
 				AABB box = entity.getBoundingBox();
 				Vec3 world = new Vec3(box.getCenter().x, box.maxY + LABEL_HEIGHT, box.getCenter().z);
-				float[] screen = WorldToScreen.project(camera, world);
-				if (screen == null) continue;
-				graphics.pose().pushMatrix();
-				graphics.pose().translate(screen[0] - halfWidth, screen[1] - halfHeight);
-				graphics.pose().scale(scale, scale);
-				graphics.text(font, label, 0, 0, color);
-				graphics.pose().popMatrix();
+				ProjectedLabelRenderer.draw(graphics, camera, mc.font, world, label, color, scale);
 			}
 		}
 	}

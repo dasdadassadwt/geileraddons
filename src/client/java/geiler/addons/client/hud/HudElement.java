@@ -15,8 +15,13 @@ public interface HudElement {
 
 	int height(Font font);
 
-	/** Whether this should draw on the live HUD; the Move Elements screen shows it either way. */
+	/** Whether this element is active; Move Elements shows its name when it is inactive. */
 	boolean visible();
+
+	/** Whether active content belongs on the live HUD; false is useful for editor-only previews. */
+	default boolean renderOnHud() {
+		return true;
+	}
 
 	void render(GuiGraphicsExtractor graphics, Font font, int x, int y);
 }

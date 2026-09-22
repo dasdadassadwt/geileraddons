@@ -17,15 +17,22 @@ import java.util.List;
  * @param debugOnly          whether this entire section is hidden while Dev Debug is off
  */
 public record SettingGroup(String name, BooleanSetting toggle, boolean collapsedByDefault,
-                           List<Setting> settings, List<SettingGroup> children, boolean debugOnly) {
+						   List<Setting> settings, List<SettingGroup> children, boolean debugOnly,
+						   String stateKey) {
 	public SettingGroup(String name, Setting... settings) {
-		this(name, null, false, List.of(settings), List.of(), false);
+		this(name, null, false, List.of(settings), List.of(), false, null);
 	}
 
 	/** Backwards-compatible constructor for ordinary groups. */
 	public SettingGroup(String name, BooleanSetting toggle, boolean collapsedByDefault,
 		List<Setting> settings, List<SettingGroup> children) {
-		this(name, toggle, collapsedByDefault, settings, children, false);
+		this(name, toggle, collapsedByDefault, settings, children, false, null);
+	}
+
+	/** Backwards-compatible constructor for groups that also control debug-only visibility. */
+	public SettingGroup(String name, BooleanSetting toggle, boolean collapsedByDefault,
+		List<Setting> settings, List<SettingGroup> children, boolean debugOnly) {
+		this(name, toggle, collapsedByDefault, settings, children, debugOnly, null);
 	}
 
 	/**
@@ -36,26 +43,31 @@ public record SettingGroup(String name, BooleanSetting toggle, boolean collapsed
 	 * that happens to open with a toggle - silently promoting that first row onto the header.
 	 */
 	public static SettingGroup switched(String name, BooleanSetting toggle, Setting... settings) {
-		return new SettingGroup(name, toggle, false, List.of(settings), List.of(), false);
+		return new SettingGroup(name, toggle, false, List.of(settings), List.of(), false, null);
 	}
 
 	/** A switched section that starts folded shut, useful for long repeated setting blocks. */
 	public static SettingGroup switchedFolded(String name, BooleanSetting toggle, Setting... settings) {
-		return new SettingGroup(name, toggle, true, List.of(settings), List.of(), false);
+		return new SettingGroup(name, toggle, true, List.of(settings), List.of(), false, null);
 	}
 
 	/** A section that starts folded shut, for one long enough to bury everything after it. */
 	public static SettingGroup folded(String name, Setting... settings) {
-		return new SettingGroup(name, null, true, List.of(settings), List.of(), false);
+		return new SettingGroup(name, null, true, List.of(settings), List.of(), false, null);
 	}
 
 	/** A group that disappears while the global Dev Debug switch is off. */
 	public static SettingGroup debug(String name, Setting... settings) {
-		return new SettingGroup(name, null, false, List.of(settings), List.of(), true);
+		return new SettingGroup(name, null, false, List.of(settings), List.of(), true, null);
 	}
 
 	/** This section with sub-sections nested inside it, which fold away when it does. */
 	public SettingGroup containing(SettingGroup... nested) {
-		return new SettingGroup(name, toggle, collapsedByDefault, settings, List.of(nested), debugOnly);
+		return new SettingGroup(name, toggle, collapsedByDefault, settings, List.of(nested), debugOnly, stateKey);
+	}
+
+	/** Stable identity for repeated/dynamic headings whose visible names can collide or change. */
+	public SettingGroup keyed(String key) {
+		return new SettingGroup(name, toggle, collapsedByDefault, settings, children, debugOnly, key);
 	}
 }

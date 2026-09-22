@@ -113,6 +113,10 @@ public final class AutoKickModule extends Module {
 			return;
 		}
 		String actionKey = actionKey(snapshot.generation(), floor, member);
+		if (manualFallbacks.contains(actionKey)) {
+			debug("Skipping %s because profile verification failed; an explicit stats retry is required", member.name());
+			return;
+		}
 		if (!handled.add(actionKey)) {
 			debug("Already evaluated %s for %s in party generation %d", member.name(), floor.displayName(), snapshot.generation());
 			return;
@@ -120,22 +124,29 @@ public final class AutoKickModule extends Module {
 
 		debug("Using %s policy for %s: mode=%s; checks=%s", floor.displayName(), member.name(),
 			policy.askBeforeKick.value() ? "ASK BEFORE KICK" : "AUTOMATIC", policy.describeChecks());
-		// Unknown profile fields are never failures. Remove the provisional handled marker and retry
-		// with a fresh profile for a bounded period before asking the user to decide manually.
+		// Unknown profile fields are never failures. Remove the provisional handled marker and
+		// retry a successful but incomplete profile for a bounded period.
 		handled.remove(actionKey);
 		Evaluation evaluation = policy.evaluate(member, snapshot, stats, floor);
 		debug("Evaluation for %s on %s: %s", member.name(), floor.displayName(),
-			evaluation.hasUnknown() ? "waiting for " + String.join(", ", evaluation.unknowns)
+			!stats.cacheable() || evaluation.hasUnknown()
+				? "waiting for " + String.join(", ", evaluation.unknowns.isEmpty()
+					? List.of("complete profile data") : evaluation.unknowns)
 				: evaluation.hasAction() ? String.join(", ", evaluation.failures) : "passed");
-		if (evaluation.hasUnknown()) {
-			scheduleProfileRetry(actionKey, floor, snapshot.generation(), member.name(), evaluation.unknowns, null);
+		boolean profileIncomplete = !stats.cacheable();
+		boolean hasUnknownData = profileIncomplete || evaluation.hasUnknown();
+		if (!AutoKickRules.canApplyAction(hasUnknownData, evaluation.hasAction())) {
+			if (hasUnknownData) {
+				List<String> unknowns = evaluation.unknowns.isEmpty()
+					? List.of("complete profile data") : evaluation.unknowns;
+				scheduleProfileRetry(actionKey, floor, snapshot.generation(), member.name(), unknowns, null);
+			} else {
+				profileRetries.remove(actionKey);
+				handled.add(actionKey);
+			}
 			return;
 		}
 		profileRetries.remove(actionKey);
-		if (!evaluation.hasAction()) {
-			handled.add(actionKey);
-			return;
-		}
 		handled.add(actionKey);
 		if (policy.askBeforeKick.value()) {
 			debug("Asking before kicking %s because manual confirmation is enabled for %s",
@@ -156,7 +167,7 @@ public final class AutoKickModule extends Module {
 		}
 	}
 
-	/** Starts the same bounded retry path when no profile object was returned at all. */
+	/** Reports unavailable profile data for manual recovery; an API failure is never auto-retried. */
 	public void onStatsUnavailable(DungeonFloor floor, long generation, String name, String error) {
 		if (floor == null || name == null || name.isBlank() || !isEnabled()) return;
 		PartySnapshot snapshot = PartyListBackend.snapshot();
@@ -167,7 +178,23 @@ public final class AutoKickModule extends Module {
 		FloorPolicy policy = policies.get(floor);
 		if (policy == null || !policy.autoKick.value()) return;
 		String key = actionKey(generation, floor, member);
-		scheduleProfileRetry(key, floor, generation, name, List.of("profile data"), error);
+		ProfileRetry unavailable = new ProfileRetry(key, floor, generation, name, System.currentTimeMillis());
+		unavailable.unknowns = List.of("profile data");
+		unavailable.lastError = error;
+		profileRetries.remove(key);
+		if (manualFallbacks.add(key)) queueManualFallback(unavailable);
+	}
+
+	/** Allows an explicit user retry to resume evaluation after an unavailable/incomplete fallback. */
+	public void onExplicitStatsRetryStarted(long generation, String name) {
+		if (name == null || name.isBlank()) return;
+		syncGeneration(generation);
+		String normalized = name.toLowerCase(Locale.ROOT);
+		profileRetries.entrySet().removeIf(entry -> entry.getValue().generation == generation
+			&& entry.getValue().name.equalsIgnoreCase(name));
+		String nameSegment = ":" + normalized + ":";
+		manualFallbacks.removeIf(key -> key.startsWith(generation + ":") && key.contains(nameSegment));
+		handled.removeIf(key -> key.startsWith(generation + ":") && key.contains(nameSegment));
 	}
 
 	public void tick() {
@@ -258,6 +285,8 @@ public final class AutoKickModule extends Module {
 				if (!result.available()) {
 					retry.lastError = result.error();
 					debug("Profile retry %d for %s failed: %s", retry.attempts, retry.name, retry.lastError);
+					profileRetries.remove(retry.key);
+					if (manualFallbacks.add(retry.key)) queueManualFallback(retry);
 					return;
 				}
 				onStats(retry.floor, retry.generation, result.stats());
@@ -286,10 +315,14 @@ public final class AutoKickModule extends Module {
 		String suffix = retry.lastError == null || retry.lastError.isBlank() ? "" : " (" + retry.lastError + ")";
 		Component message = Component.literal("[Auto Kick] ").withStyle(ChatFormatting.YELLOW)
 			.append(Component.literal(retry.name + " could not be verified after "
-				+ Math.round(profileRetryWindowMillis() / 1000.0) + "s; automatic kick skipped. "
-				+ "Missing: " + reason + suffix + ". Choose Kick or manually ban/ignore them: ")
+				+ Math.round(profileRetryWindowMillis() / 1000.0) + "s; no kick was issued. "
+				+ "Missing: " + reason + suffix + ". Retry stats manually: ")
 				.withStyle(ChatFormatting.GRAY))
-			.append(kickAction(retry.name));
+			.append(Component.literal("[Retry Stats]").withStyle(style -> style.withColor(ChatFormatting.YELLOW)
+				.withUnderlined(true)
+				.withClickEvent(new ClickEvent.RunCommand(PartyFinderStatsModule.retryCommand(retry.name)))
+				.withHoverEvent(new HoverEvent.ShowText(Component.literal(
+					"Retry dungeon stats for " + retry.name)))));
 		queueNotice(message);
 	}
 

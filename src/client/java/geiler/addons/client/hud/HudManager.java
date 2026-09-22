@@ -50,7 +50,7 @@ public final class HudManager {
 		position[1] = clamp(y / (float) travel(screenHeight, element.height(font)));
 	}
 
-	/** Draws every visible element. Skipped while the Move Elements screen has its own copies up. */
+	/** Draws visible live-HUD elements; skipped while Move Elements has its own previews up. */
 	public static void render(GuiGraphicsExtractor graphics) {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.options.hideGui || mc.screen instanceof MoveUiScreen) return;
@@ -63,7 +63,7 @@ public final class HudManager {
 		// wider than a tiny viewport. Keep every custom HUD element inside the framebuffer as well.
 		graphics.enableScissor(0, 0, width, height);
 		for (HudElement element : elements) {
-			if (!element.visible()) continue;
+			if (!element.renderOnHud() || !element.visible()) continue;
 			element.render(graphics, font, x(element, font, width), y(element, font, height));
 		}
 		graphics.disableScissor();

@@ -5,6 +5,7 @@ import geiler.addons.client.config.ModConfig;
 import geiler.addons.client.macro.MacroDefinition;
 import geiler.addons.client.macro.MacroRunner;
 import geiler.addons.client.macro.MacroStep;
+import geiler.addons.client.macro.MacroScript;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.input.KeyEvent;
 import org.lwjgl.glfw.GLFW;
@@ -16,6 +17,7 @@ public final class ModuleKeybindManager {
 	private static Module bindingModule;
 	private static MacroDefinition bindingMacro;
 	private static MacroStep.Key bindingKeyStep;
+	private static MacroScript bindingScript;
 	private static ModuleKeybind pendingBind;
 
 	private ModuleKeybindManager() {
@@ -33,6 +35,8 @@ public final class ModuleKeybindManager {
 		return bindingKeyStep;
 	}
 
+	public static MacroScript bindingScript() { return bindingScript; }
+
 	public static boolean isBinding(Module module) {
 		return bindingModule == module;
 	}
@@ -41,6 +45,7 @@ public final class ModuleKeybindManager {
 		if (module == null || !ModuleManager.modules().contains(module)) return;
 		bindingMacro = null;
 		bindingKeyStep = null;
+		bindingScript = null;
 		bindingModule = module;
 		pendingBind = null;
 	}
@@ -49,6 +54,7 @@ public final class ModuleKeybindManager {
 		bindingModule = null;
 		bindingMacro = null;
 		bindingKeyStep = null;
+		bindingScript = null;
 		pendingBind = null;
 	}
 
@@ -56,7 +62,17 @@ public final class ModuleKeybindManager {
 		if (macro == null) return;
 		bindingModule = null;
 		bindingKeyStep = null;
+		bindingScript = null;
 		bindingMacro = macro;
+		pendingBind = null;
+	}
+
+	public static void beginScriptBinding(MacroScript script) {
+		if (script == null || script.trigger() != MacroScript.Trigger.KEY_PRESS) return;
+		bindingModule = null;
+		bindingMacro = null;
+		bindingKeyStep = null;
+		bindingScript = script;
 		pendingBind = null;
 	}
 
@@ -64,6 +80,7 @@ public final class ModuleKeybindManager {
 		if (keyStep == null) return;
 		bindingModule = null;
 		bindingMacro = null;
+		bindingScript = null;
 		bindingKeyStep = keyStep;
 		pendingBind = null;
 	}
@@ -84,6 +101,26 @@ public final class ModuleKeybindManager {
 			if (action == InputConstants.RELEASE && pendingBind != null
 				&& InputConstants.getKey(event).equals(pendingBind.key())) {
 				bindingKeyStep.setKey(pendingBind.key().getName());
+				ModConfig.markDirty();
+				cancelBinding();
+				return true;
+			}
+			return true;
+		}
+		if (bindingScript != null) {
+			if (action == InputConstants.PRESS && isEscape(event)) {
+				bindingScript.setKeybind(ModuleKeybind.NONE);
+				ModConfig.markDirty();
+				cancelBinding();
+				return true;
+			}
+			if (action == InputConstants.PRESS && isUsable(event)) {
+				pendingBind = ModuleKeybind.from(event);
+				return true;
+			}
+			if (action == InputConstants.RELEASE && pendingBind != null
+				&& InputConstants.getKey(event).equals(pendingBind.key())) {
+				bindingScript.setKeybind(pendingBind);
 				ModConfig.markDirty();
 				cancelBinding();
 				return true;

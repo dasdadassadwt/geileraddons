@@ -15,6 +15,7 @@ import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.render.WorldToScreen;
+import geiler.addons.client.render.ProjectedLabelRenderer;
 import geiler.addons.client.tiki.TikiSolver;
 import geiler.addons.client.tiki.TikiStacks;
 import geiler.addons.client.tree.ChatText;
@@ -761,18 +762,10 @@ public final class TikiHelperModule extends Module {
 		if (mc.level == null || mc.player == null || mc.options.hideGui) return;
 
 		Camera camera = mc.gameRenderer.getMainCamera();
-		Font font = mc.font;
 		float scale = textSize.value();
 		eachSolverLabel((index, text, color, height, verticalOffset) -> {
 			Vec3 world = new Vec3(slotBase.getX() + 0.5, slotBase.getY() + index + LABEL_ANCHOR + verticalOffset, slotBase.getZ() + 0.5);
-			float[] screen = WorldToScreen.project(camera, world);
-			if (screen == null) return;
-			// Measured at the scaled size so the label stays centred on the head as it grows.
-			graphics.pose().pushMatrix();
-			graphics.pose().translate(screen[0] - font.width(text) * scale / 2, screen[1] - HUD_LABEL_HALF_HEIGHT * scale);
-			graphics.pose().scale(scale, scale);
-			graphics.text(font, text, 0, 0, color);
-			graphics.pose().popMatrix();
+			ProjectedLabelRenderer.draw(graphics, camera, mc.font, world, text, color, scale);
 		});
 	}
 
@@ -997,7 +990,14 @@ public final class TikiHelperModule extends Module {
 		}
 
 		String label() {
-			return rotation >= 0 ? String.valueOf(rotation) : facing;
+			if (rotation >= 0) return String.valueOf(rotation);
+			return switch (facing.toLowerCase(java.util.Locale.ROOT)) {
+				case "north" -> "N";
+				case "east" -> "E";
+				case "south" -> "S";
+				case "west" -> "W";
+				default -> "?";
+			};
 		}
 
 		@Override

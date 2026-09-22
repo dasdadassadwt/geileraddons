@@ -35,6 +35,7 @@ public final class PartyListBackend {
 	private static long tick;
 	private static long lastListMessageTick = Long.MIN_VALUE;
 	private static boolean listMessageDirty;
+	private static boolean stableListObserved;
 	private static ClientLevel lastLevel;
 
 	private PartyListBackend() {
@@ -75,16 +76,14 @@ public final class PartyListBackend {
 			GeilerAddons.LOGGER.debug("[Party List] Added {} from party join", joined.group(1));
 			return;
 		}
-		Matcher left = LEFT.matcher(message);
-		if (left.matches()) {
-			removeMember(left.group(1));
-			GeilerAddons.LOGGER.debug("[Party List] Removed {} because they left", left.group(1));
-			return;
-		}
-		Matcher removed = REMOVED.matcher(message);
-		if (removed.matches()) {
-			removeMember(removed.group(1));
-			GeilerAddons.LOGGER.debug("[Party List] Removed {} because they were kicked", removed.group(1));
+		String departedMember = departedMemberName(message);
+		if (departedMember != null) {
+			removeMember(departedMember);
+			if (REMOVED.matcher(message).matches()) {
+				GeilerAddons.LOGGER.debug("[Party List] Removed {} because they were kicked", departedMember);
+			} else {
+				GeilerAddons.LOGGER.debug("[Party List] Removed {} because they left", departedMember);
+			}
 			return;
 		}
 
@@ -125,6 +124,15 @@ public final class PartyListBackend {
 		}
 	}
 
+	/** Returns the player named by a confirmed party-leave or kick chat message. */
+	public static String departedMemberName(String rawMessage) {
+		String message = ChatText.plain(rawMessage == null ? "" : rawMessage).trim();
+		Matcher left = LEFT.matcher(message);
+		if (left.matches()) return left.group(1);
+		Matcher removed = REMOVED.matcher(message);
+		return removed.matches() ? removed.group(1) : null;
+	}
+
 	public static void tick() {
 		ClientLevel level = Minecraft.getInstance().level;
 		if (level != lastLevel) {
@@ -143,10 +151,16 @@ public final class PartyListBackend {
 		listMessageDirty = false;
 		listMetadata = Map.of();
 		if (MEMBERS.isEmpty()) {
-			inParty = false;
-			leaderName = null;
+			clear();
+		} else {
+			stableListObserved = true;
 		}
 		return true;
+	}
+
+	/** True after a complete list snapshot has been observed in the current party session. */
+	public static boolean hasStableList() {
+		return stableListObserved;
 	}
 
 	public static PartySnapshot snapshot() {
@@ -189,6 +203,7 @@ public final class PartyListBackend {
 		inParty = false;
 		generation++;
 		listMessageDirty = false;
+		stableListObserved = false;
 		listMetadata = Map.of();
 	}
 
@@ -198,6 +213,7 @@ public final class PartyListBackend {
 		MEMBERS.clear();
 		leaderName = null;
 		inParty = true;
+		stableListObserved = false;
 		markListMessage();
 	}
 
@@ -218,7 +234,9 @@ public final class PartyListBackend {
 		if (name == null) return;
 		MEMBERS.remove(key(name));
 		if (leaderName != null && leaderName.equalsIgnoreCase(name)) leaderName = null;
-		if (MEMBERS.isEmpty()) clear();
+		inParty = true;
+		// An empty tracked roster can mean the local player is the only remaining member. The
+		// explicit leave/disband messages above, not chat-delta churn, end a party session.
 	}
 
 	private static void thisLeader(String name) {

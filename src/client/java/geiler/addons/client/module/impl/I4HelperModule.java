@@ -248,6 +248,16 @@ public final class I4HelperModule extends Module {
 			poseStack.translate(pos.getX() - camPos.x, pos.getY() - camPos.y, pos.getZ() - camPos.z);
 			EspRenderer.renderBox(poseStack, bufferSource, 0, 0, 0, 1, 1, 1, color, color, 2.0f);
 			poseStack.popPose();
+			if (highlighted[i] == ACTIVE) {
+				// The active block gets a distinct shape so its state stays clear for colour-blind players.
+				double x = pos.getX() - camPos.x;
+				double y = pos.getY() + 1.015 - camPos.y;
+				double z = pos.getZ() - camPos.z;
+				EspRenderer.renderLine(poseStack, bufferSource, x + 0.18, y, z + 0.18,
+					x + 0.82, y, z + 0.82, 0xFFFFFFFF, 2.0f);
+				EspRenderer.renderLine(poseStack, bufferSource, x + 0.18, y, z + 0.82,
+					x + 0.82, y, z + 0.18, 0xFFFFFFFF, 2.0f);
+			}
 		}
 
 		// Yellow: the exact aim spot(s) for the current emerald target.

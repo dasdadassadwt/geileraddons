@@ -15,6 +15,7 @@ import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.render.EspRenderer;
 import geiler.addons.client.render.GeilerAddonsRenderTypes;
 import geiler.addons.client.render.WorldToScreen;
+import geiler.addons.client.render.ProjectedLabelRenderer;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Camera;
@@ -342,7 +343,6 @@ public final class SparklingCritterModule extends Module {
 		if (mc.level == null || mc.player == null || mc.options.hideGui) return;
 
 		Camera camera = mc.gameRenderer.getMainCamera();
-		Font font = mc.font;
 		float scale = textSize.value();
 		int argb = color.argb();
 
@@ -351,17 +351,7 @@ public final class SparklingCritterModule extends Module {
 			String label = "Sparkling " + sighting.species;
 			AABB box = sighting.body.getBoundingBox();
 			Vec3 world = new Vec3(box.getCenter().x, box.maxY + LABEL_HEIGHT, box.getCenter().z);
-			float[] screen = WorldToScreen.project(camera, world);
-			if (screen == null) continue;
-
-			// Measured at the scaled size so the label stays centred on the critter as it grows.
-			float halfWidth = font.width(label) * scale / 2;
-			float halfHeight = HUD_LABEL_HALF_HEIGHT * scale;
-			graphics.pose().pushMatrix();
-			graphics.pose().translate(screen[0] - halfWidth, screen[1] - halfHeight);
-			graphics.pose().scale(scale, scale);
-			graphics.text(font, label, 0, 0, argb);
-			graphics.pose().popMatrix();
+			ProjectedLabelRenderer.draw(graphics, camera, mc.font, world, label, argb, scale);
 		}
 	}
 }

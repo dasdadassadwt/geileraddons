@@ -5,13 +5,18 @@
 	"client": [
 		"AbstractContainerMenuMixin",
 		"AbstractContainerScreenMixin",
+		"AbstractRecipeBookScreenMixin",
 		"AbstractContainerScreenInvoker",
+		"AbstractRecipeBookScreenAccessor",
+		"RecipeBookComponentInvoker",
+		"InventoryScreenMixin",
 		"ContainerScreenMixin",
 		"ScreenMixin",
 		"ClientPacketListenerMixin",
 		"MinecraftMixin",
 		"KeyboardHandlerMixin",
-		"InputConstantsMixin"
+		"InputConstantsMixin",
+		"KeyMappingInputBlockMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

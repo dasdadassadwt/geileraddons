@@ -2,11 +2,17 @@ package geiler.addons.client.mixin;
 
 import geiler.addons.client.module.impl.PartyFinderStatsModule;
 import geiler.addons.client.module.impl.ExperimentSolverModule;
+import geiler.addons.client.module.impl.AutoExperimentsModule;
 import geiler.addons.client.module.impl.SlotIdsModule;
 import geiler.addons.client.gui.SlotIdOverlay;
+import geiler.addons.client.gui.InventoryButtonOverlay;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.Slot;
 import org.spongepowered.asm.mixin.Mixin;
@@ -22,6 +28,23 @@ public abstract class AbstractContainerScreenMixin {
 	protected int leftPos;
 	@org.spongepowered.asm.mixin.Shadow
 	protected int topPos;
+
+	@Inject(method = "keyPressed", at = @At("HEAD"), cancellable = true)
+	private void geileraddons$handleInventoryButtonKeys(KeyEvent event, CallbackInfoReturnable<Boolean> cir) {
+		if (InventoryButtonOverlay.keyPressed((AbstractContainerScreen<?>) (Object) this, event)) {
+			cir.setReturnValue(true);
+		}
+	}
+
+	@Inject(method = "onClose", at = @At("HEAD"), cancellable = true)
+	private void geileraddons$returnFromInventoryButtonEditor(CallbackInfo ci) {
+		if (!((Object) this instanceof InventoryScreen inventoryScreen)) return;
+		Screen parent = InventoryButtonOverlay.consumeEditorReturnScreen(inventoryScreen);
+		if (parent == null) return;
+		InventoryButtonOverlay.stopEditing();
+		Minecraft.getInstance().setScreen(parent);
+		ci.cancel();
+	}
 
 	@Inject(method = "init", at = @At("HEAD"))
 	private void geileraddons$attachExperimentListener(CallbackInfo ci) {
@@ -95,8 +118,16 @@ public abstract class AbstractContainerScreenMixin {
 	private void geileraddons$blockExperimentClickThrough(Slot slot, int slotId, int button,
 		ContainerInput input, CallbackInfo ci) {
 		AbstractContainerScreen<?> screen = (AbstractContainerScreen<?>) (Object) this;
-		if (slotId >= 0 && ExperimentSolverModule.INSTANCE.ownsScreen(screen)
-			&& !ExperimentSolverModule.INSTANCE.isDispatchingCustomClick()) {
+		if (slotId < 0) return;
+		if (ExperimentSolverModule.INSTANCE.ownsScreen(screen)) {
+			if (!ExperimentSolverModule.INSTANCE.isDispatchingCustomClick()) ci.cancel();
+			return;
+		}
+		if (AutoExperimentsModule.INSTANCE.handleVanillaSlotClick(screen, slot, slotId, button, input,
+			(dispatchSlot, dispatchSlotId, dispatchButton, dispatchInput) -> {
+				((AbstractContainerScreenInvoker) (Object) screen).geileraddons$invokeSlotClicked(
+					dispatchSlot, dispatchSlotId, dispatchButton, dispatchInput);
+			})) {
 			ci.cancel();
 		}
 	}

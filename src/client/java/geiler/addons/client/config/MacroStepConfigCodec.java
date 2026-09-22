@@ -5,7 +5,9 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.macro.MacroCondition;
+import geiler.addons.client.macro.MacroValue;
 import geiler.addons.client.macro.MacroStep;
+import geiler.addons.client.macro.MacroTreeRules;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,7 +15,7 @@ import java.util.Locale;
 
 /** Converts workflow nodes to and from the macro portion of the user config. */
 public final class MacroStepConfigCodec {
-	private static final int MAX_DEPTH = 8;
+	private static final int MAX_DEPTH = MacroTreeRules.MAX_DEPTH;
 	private static final int MAX_STEPS = 512;
 
 	private MacroStepConfigCodec() {
@@ -53,6 +55,19 @@ public final class MacroStepConfigCodec {
 		result.addProperty("delayMax", step.delayMax());
 		if (step instanceof MacroStep.Command value) result.addProperty("command", value.command());
 		if (step instanceof MacroStep.Chat value) result.addProperty("message", value.message());
+		if (step instanceof MacroStep.Title value) {
+			result.addProperty("text", value.text());
+			result.addProperty("font", value.font());
+			result.addProperty("scale", value.scale());
+			result.addProperty("textColor", value.textColor());
+			result.addProperty("showBackground", value.showBackground());
+			result.addProperty("backgroundColor", value.backgroundColor());
+			result.addProperty("backgroundOpacity", value.backgroundOpacity());
+			result.addProperty("fadeInMillis", value.fadeInMillis());
+			result.addProperty("holdMillis", value.holdMillis());
+			result.addProperty("fadeOutMillis", value.fadeOutMillis());
+		}
+		if (step instanceof MacroStep.Sound value) result.addProperty("soundId", value.soundId());
 		if (step instanceof MacroStep.Wait value) {
 			result.addProperty("minMillis", value.minMillis());
 			result.addProperty("maxMillis", value.maxMillis());
@@ -76,6 +91,31 @@ public final class MacroStepConfigCodec {
 			result.addProperty("button", value.button());
 			result.addProperty("shift", value.shift());
 		}
+		if (step instanceof MacroStep.SelectHotbarSlot value) result.addProperty("slot", value.slot());
+		if (step instanceof MacroStep.MouseButton value) {
+			result.addProperty("button", value.button().name());
+			result.addProperty("hold", value.hold());
+			result.addProperty("holdMillis", value.holdMillis());
+		}
+		if (step instanceof MacroStep.BlockPlayerInput value) result.addProperty("durationMillis", value.durationMillis());
+		if (step instanceof MacroStep.SetVariable value) {
+			result.addProperty("name", value.name());
+			result.addProperty("valueType", value.valueType().name());
+			if (value.globalVariableId() != null) result.addProperty("globalVariableId", value.globalVariableId());
+			result.add("value", writeValue(value.value()));
+		}
+		if (step instanceof MacroStep.ChangeVariable value) {
+			result.addProperty("name", value.name());
+			result.addProperty("amount", value.amount());
+			if (value.globalVariableId() != null) result.addProperty("globalVariableId", value.globalVariableId());
+		}
+		if (step instanceof MacroStep.FunctionCall value) {
+			result.addProperty("functionId", value.functionId());
+			JsonArray arguments = new JsonArray();
+			for (MacroValue argument : value.arguments()) arguments.add(writeValue(argument));
+			result.add("arguments", arguments);
+		}
+		if (step instanceof MacroStep.MacroCall value) result.addProperty("macroId", value.macroId());
 		if (step instanceof MacroStep.WorldSwitch value) result.addProperty("island", value.target().name());
 		if (step instanceof MacroStep.WaitUntil value) result.add("condition", writeCondition(value.condition(), depth + 1));
 		if (step instanceof MacroStep.IfElse value) {
@@ -119,7 +159,7 @@ public final class MacroStepConfigCodec {
 			result.addProperty("name", value.name());
 			result.addProperty("mustExist", value.mustExist());
 			result.addProperty("contains", value.contains());
-			result.addProperty("includePlayerInventory", value.includePlayerInventory());
+			result.addProperty("scope", value.scope().serializedName());
 		} else if (condition instanceof MacroCondition.Chat value) {
 			result.addProperty("type", "chat");
 			result.addProperty("text", value.text());
@@ -136,6 +176,12 @@ public final class MacroStepConfigCodec {
 		} else if (condition instanceof MacroCondition.Not value) {
 			result.addProperty("type", "not");
 			result.add("child", writeCondition(value.child(), depth + 1));
+		} else if (condition instanceof MacroCondition.Variable value) {
+			result.addProperty("type", "variable");
+			result.addProperty("name", value.name());
+			if (value.globalVariableId() != null) result.addProperty("globalVariableId", value.globalVariableId());
+			result.addProperty("operator", value.operator().name());
+			result.add("value", writeValue(value.value()));
 		}
 		return result;
 	}
@@ -155,6 +201,8 @@ public final class MacroStepConfigCodec {
 		MacroStep result = switch (string(object, "type", "")) {
 			case "command" -> new MacroStep.Command(string(object, "command", ""));
 			case "chat" -> new MacroStep.Chat(string(object, "message", ""));
+			case "title" -> readTitle(object);
+			case "sound" -> new MacroStep.Sound(string(object, "soundId", "minecraft:entity.player.levelup"));
 			case "wait" -> {
 				int min = integer(object, "minMillis", 0);
 				yield new MacroStep.Wait(min, integer(object, "maxMillis", min));
@@ -172,6 +220,16 @@ public final class MacroStepConfigCodec {
 				bool(object, "contains", false), string(object, "scope", "container"),
 				integer(object, "occurrence", 0), integer(object, "button", 0), bool(object, "shift", false));
 			case "close_screen" -> new MacroStep.CloseScreen();
+			case "select_hotbar_slot" -> new MacroStep.SelectHotbarSlot(integer(object, "slot", 1));
+			case "mouse_button" -> readMouseButton(object);
+			case "block_player_input" -> new MacroStep.BlockPlayerInput(integer(object, "durationMillis", 1_000));
+			case "start_block_player_input" -> new MacroStep.StartBlockPlayerInput();
+			case "stop_block_player_input" -> new MacroStep.StopBlockPlayerInput();
+			case "set_variable" -> readSetVariable(object);
+			case "change_variable" -> new MacroStep.ChangeVariable(string(object, "name", "value"),
+				decimal(object, "amount", 1), string(object, "globalVariableId", null));
+			case "function_call" -> readFunctionCall(object);
+			case "macro_call" -> new MacroStep.MacroCall(integer(object, "macroId", 0));
 			case "world_switch" -> new MacroStep.WorldSwitch(selectableIsland(string(object, "island", Island.HUB.name())));
 			case "wait_until" -> new MacroStep.WaitUntil(readCondition(object.get("condition"), depth + 1));
 			case "if" -> readIf(object, depth + 1);
@@ -181,6 +239,21 @@ public final class MacroStepConfigCodec {
 		};
 		if (result != null) result.setDelay(integer(object, "delayMin", 0), integer(object, "delayMax", 0));
 		return result;
+	}
+
+	private static MacroStep.Title readTitle(JsonObject object) {
+		MacroStep.Title title = new MacroStep.Title();
+		title.setText(string(object, "text", "TITLE"));
+		title.setFont(string(object, "font", "minecraft:default"));
+		title.setScale(decimal(object, "scale", 2.0f));
+		title.setTextColor(integer(object, "textColor", 0xFFFFFFFF));
+		title.setShowBackground(bool(object, "showBackground", false));
+		title.setBackgroundColor(integer(object, "backgroundColor", 0xFF000000));
+		title.setBackgroundOpacity(integer(object, "backgroundOpacity", 160));
+		title.setFadeInMillis(integer(object, "fadeInMillis", 200));
+		title.setHoldMillis(integer(object, "holdMillis", 2_000));
+		title.setFadeOutMillis(integer(object, "fadeOutMillis", 300));
+		return title;
 	}
 
 	private static MacroStep.IfElse readIf(JsonObject object, int depth) {
@@ -224,14 +297,83 @@ public final class MacroStepConfigCodec {
 				bool(object, "mustBeOpen", true), bool(object, "contains", false));
 			case "slot" -> new MacroCondition.Slot(integer(object, "slotId", 0), bool(object, "mustExist", true));
 			case "item" -> new MacroCondition.Item(string(object, "name", ""), bool(object, "mustExist", true),
-				bool(object, "contains", false), bool(object, "includePlayerInventory", false));
+				bool(object, "contains", false), readItemScope(object, false));
 			case "chat" -> new MacroCondition.Chat(string(object, "text", ""), bool(object, "contains", false));
 			case "world" -> new MacroCondition.World(bool(object, "mustBeInWorld", true));
 			case "all" -> new MacroCondition.All(readConditions(array(object, "children"), depth + 1));
 			case "any" -> new MacroCondition.Any(readConditions(array(object, "children"), depth + 1));
 			case "not" -> new MacroCondition.Not(readCondition(object.get("child"), depth + 1));
+			case "variable" -> new MacroCondition.Variable(string(object, "name", "value"),
+				variableOperator(string(object, "operator", "EQUALS")), readValue(object.get("value")),
+				string(object, "globalVariableId", null));
 			default -> new MacroCondition.Always(true);
 		};
+	}
+
+	private static JsonObject writeValue(MacroValue value) {
+		JsonObject result = new JsonObject();
+		if (value == null) value = MacroValue.literal(MacroValue.Type.TEXT, "");
+		result.addProperty("type", value.type().name());
+		result.addProperty("variable", value.variableReference());
+		result.addProperty("scope", value.scope().name());
+		result.addProperty("value", value.value());
+		return result;
+	}
+
+	private static MacroValue readValue(JsonElement element) {
+		if (element == null || !element.isJsonObject()) return MacroValue.literal(MacroValue.Type.TEXT, "");
+		JsonObject object = element.getAsJsonObject();
+		boolean variable = bool(object, "variable", false);
+		return new MacroValue(valueType(string(object, "type", "TEXT")), variable,
+			string(object, "value", ""), valueScope(string(object, "scope", variable ? "LOCAL" : "NONE")));
+	}
+
+	private static MacroStep readSetVariable(JsonObject object) {
+		MacroValue value = readValue(object.get("value"));
+		MacroValue.Type type = valueType(string(object, "valueType", value.type().name()));
+		return new MacroStep.SetVariable(string(object, "name", "value"), type, value,
+			string(object, "globalVariableId", null));
+	}
+
+	private static MacroStep readFunctionCall(JsonObject object) {
+		MacroStep.FunctionCall result = new MacroStep.FunctionCall(string(object, "functionId", ""));
+		JsonArray arguments = array(object, "arguments");
+		if (arguments != null) for (JsonElement value : arguments) {
+			if (result.arguments().size() >= 32) break;
+			result.arguments().add(readValue(value));
+		}
+		return result;
+	}
+
+	private static MacroStep readMouseButton(JsonObject object) {
+		MacroStep.MouseButton.Button button;
+		try { button = MacroStep.MouseButton.Button.valueOf(string(object, "button", "LEFT")); }
+		catch (IllegalArgumentException ignored) { button = MacroStep.MouseButton.Button.LEFT; }
+		return new MacroStep.MouseButton(button, bool(object, "hold", false), integer(object, "holdMillis", 250));
+	}
+
+	private static MacroValue.Type valueType(String value) {
+		try { return MacroValue.Type.valueOf(value == null ? "TEXT" : value.toUpperCase(Locale.ROOT)); }
+		catch (IllegalArgumentException ignored) { return MacroValue.Type.TEXT; }
+	}
+
+	private static MacroValue.Scope valueScope(String value) {
+		try { return MacroValue.Scope.valueOf(value == null ? "NONE" : value.toUpperCase(Locale.ROOT)); }
+		catch (IllegalArgumentException ignored) { return MacroValue.Scope.LOCAL; }
+	}
+
+	private static MacroCondition.Variable.Operator variableOperator(String value) {
+		try { return MacroCondition.Variable.Operator.valueOf(value == null ? "EQUALS" : value.toUpperCase(Locale.ROOT)); }
+		catch (IllegalArgumentException ignored) { return MacroCondition.Variable.Operator.EQUALS; }
+	}
+
+	private static MacroCondition.ItemScope readItemScope(JsonObject object, boolean missingLegacyDefault) {
+		if (object.has("scope")) {
+			MacroCondition.ItemScope parsed = MacroCondition.ItemScope.fromSerialized(
+				string(object, "scope", ""), null);
+			if (parsed != null) return parsed;
+		}
+		return MacroCondition.ItemScope.fromLegacy(bool(object, "includePlayerInventory", missingLegacyDefault));
 	}
 
 	private static List<MacroCondition> readConditions(JsonArray source, int depth) {
@@ -272,6 +414,18 @@ public final class MacroStepConfigCodec {
 		JsonElement value = object.get(name);
 		if (value == null || !value.isJsonPrimitive()) return fallback;
 		try { return value.getAsInt(); } catch (RuntimeException ignored) { return fallback; }
+	}
+
+	private static double decimal(JsonObject object, String name, double fallback) {
+		JsonElement value = object.get(name);
+		if (value == null || !value.isJsonPrimitive()) return fallback;
+		try { return value.getAsDouble(); } catch (RuntimeException ignored) { return fallback; }
+	}
+
+	private static float decimal(JsonObject object, String name, float fallback) {
+		JsonElement value = object.get(name);
+		if (value == null || !value.isJsonPrimitive()) return fallback;
+		try { return value.getAsFloat(); } catch (RuntimeException ignored) { return fallback; }
 	}
 
 	private static boolean bool(JsonObject object, String name, boolean fallback) {
