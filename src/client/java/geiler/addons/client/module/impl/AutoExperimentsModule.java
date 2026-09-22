@@ -1,5 +1,6 @@
 package geiler.addons.client.module.impl;
 
+import geiler.addons.client.config.GeilerAddonsLog;
 import geiler.addons.client.enchanting.AutoExperimentAutomation;
 import geiler.addons.client.enchanting.AutoExperimentDelayRange;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
@@ -32,7 +33,9 @@ public final class AutoExperimentsModule extends Module {
 	private final NumberSetting firstClickDelay;
 	private final NumberSetting minimumClickDelay;
 	private final NumberSetting maximumClickDelay;
+	private final BooleanSetting debug;
 	private final AutoExperimentAutomation automation = new AutoExperimentAutomation();
+	private String reportedDecision = "";
 
 	private AutoExperimentsModule() {
 		this(new Settings());
@@ -41,15 +44,18 @@ public final class AutoExperimentsModule extends Module {
 	private AutoExperimentsModule(Settings settings) {
 		super("Auto Experiments", "Automatically solves Chronomatron and Ultrasequencer.",
 			Category.ENCHANTING, settings.chronomatron, settings.ultrasequencer,
-			settings.firstClickDelay, settings.minimumClickDelay, settings.maximumClickDelay);
+			settings.firstClickDelay, settings.minimumClickDelay, settings.maximumClickDelay,
+			settings.debug);
 		chronomatron = settings.chronomatron;
 		ultrasequencer = settings.ultrasequencer;
 		firstClickDelay = settings.firstClickDelay;
 		minimumClickDelay = settings.minimumClickDelay;
 		maximumClickDelay = settings.maximumClickDelay;
+		debug = settings.debug;
 		group(
 			new SettingGroup("Experiments", chronomatron, ultrasequencer),
-			new SettingGroup("Timing", firstClickDelay, minimumClickDelay, maximumClickDelay)
+			new SettingGroup("Timing", firstClickDelay, minimumClickDelay, maximumClickDelay),
+			SettingGroup.debug("Diagnostics", debug)
 		);
 	}
 
@@ -61,6 +67,7 @@ public final class AutoExperimentsModule extends Module {
 			AutoExperimentDelayRange.DEFAULT_MINIMUM_MILLIS, true);
 		final NumberSetting maximumClickDelay = new NumberSetting("Maximum Click Delay (ms)", 0, 2000,
 			AutoExperimentDelayRange.DEFAULT_MAXIMUM_MILLIS, true);
+		final BooleanSetting debug = BooleanSetting.debug("Debug Automation", false);
 	}
 
 	public boolean supports(ExperimentType type) {
@@ -95,6 +102,7 @@ public final class AutoExperimentsModule extends Module {
 	public void tick() {
 		if (!isEnabled()) {
 			automation.reset();
+			reportInactive();
 			return;
 		}
 		Minecraft minecraft = Minecraft.getInstance();
@@ -106,9 +114,13 @@ public final class AutoExperimentsModule extends Module {
 		AutoExperimentAutomation.Decision decision = automation.tick(snapshot, System.nanoTime(),
 			firstDelayNanos);
 		applyDecision(screen, menu, decision);
-		if (decision.action() != AutoExperimentAutomation.Action.CLICK || screen == null) return;
+		if (decision.action() != AutoExperimentAutomation.Action.CLICK || screen == null) {
+			reportDecision(screen, snapshot, decision, "none", "");
+			return;
+		}
 
 		boolean dispatched = false;
+		String failure = "";
 		try {
 			dispatched = ExperimentController.INSTANCE.dispatchAutoSequenceClick(screen,
 				decision.sequenceIndex(), decision.slotId(),
@@ -117,6 +129,8 @@ public final class AutoExperimentsModule extends Module {
 		} catch (RuntimeException exception) {
 			// The click gate has already prevented confirmation if vanilla dispatch failed. Do not retry.
 			dispatched = false;
+			failure = exception.getClass().getSimpleName()
+				+ (exception.getMessage() == null ? "" : ": " + exception.getMessage());
 		}
 		AutoExperimentDelayRange delayRange = new AutoExperimentDelayRange(minimumClickDelay.intValue(),
 			maximumClickDelay.intValue());
@@ -126,6 +140,77 @@ public final class AutoExperimentsModule extends Module {
 			snapshot((Minecraft.getInstance().screen instanceof AbstractContainerScreen<?> current)
 				? current : null), System.nanoTime(), betweenClickDelayNanos);
 		applyDecision(screen, menu, result);
+		reportDecision(screen, snapshot, result, dispatched ? "dispatched" : "rejected", failure);
+	}
+
+	/** True while the automation diagnostics are switched on; the controller reuses this gate. */
+	boolean debugAutomation() {
+		return debug.value();
+	}
+
+	/**
+	 * Records why automation is not switching on. This is the one line that distinguishes "the module
+	 * is off" from "the screen was not recognised" from "Auto is not enabled for this experiment", so
+	 * it is written even before the early return that would otherwise hide the reason.
+	 */
+	private void reportInactive() {
+		if (!debug.value()) {
+			reportedDecision = "";
+			return;
+		}
+		Minecraft minecraft = Minecraft.getInstance();
+		AbstractContainerScreen<?> screen = minecraft.screen instanceof AbstractContainerScreen<?> container
+			? container : null;
+		String title = screen == null ? "" : screen.getTitle().getString();
+		ExperimentType type = ExperimentType.fromTitle(title).orElse(null);
+		if (type == null) {
+			reportedDecision = "";
+			return;
+		}
+		String fingerprint = "inactive|" + title + "|" + type;
+		if (fingerprint.equals(reportedDecision)) return;
+		reportedDecision = fingerprint;
+		writeDiagnostic("auto inactive: module disabled, screen=" + title
+			+ ", type=" + type + ", supports=" + supports(type));
+	}
+
+	/** Writes one diagnostic line whenever the automation decision actually changes. */
+	private void reportDecision(AbstractContainerScreen<?> screen,
+		AutoExperimentAutomation.Snapshot snapshot, AutoExperimentAutomation.Decision decision,
+		String dispatch, String failure) {
+		if (!debug.value() || screen == null || snapshot.type() == null) {
+			reportedDecision = "";
+			return;
+		}
+		ExperimentController controller = ExperimentController.INSTANCE;
+		SolverView view = controller.view();
+		String fingerprint = String.join("|",
+			snapshot.type().name(), String.valueOf(snapshot.tier()),
+			String.valueOf(snapshot.contextValid()), String.valueOf(snapshot.gameEnabled()),
+			String.valueOf(controller.isAutoEligibleScreen(screen)),
+			String.valueOf(controller.hasActiveOwner(snapshot.type())),
+			String.valueOf(controller.sessionGeneration()),
+			String.valueOf(view.phase()),
+			snapshot.currentIndex() + "/" + snapshot.sequenceLength(),
+			String.valueOf(snapshot.expectedSlotId()),
+			decision.action().name(), dispatch, failure);
+		if (fingerprint.equals(reportedDecision)) return;
+		reportedDecision = fingerprint;
+		writeDiagnostic("auto: screen=" + screen.getTitle().getString()
+			+ ", type=" + snapshot.type() + ", tier=" + snapshot.tier()
+			+ ", enabled=" + isEnabled() + ", supports=" + supports(snapshot.type())
+			+ ", eligible=" + controller.isAutoEligibleScreen(screen)
+			+ ", owner=" + controller.hasActiveOwner(snapshot.type())
+			+ ", generation=" + controller.sessionGeneration()
+			+ ", engine=" + view.phase() + " " + snapshot.currentIndex()
+			+ "/" + snapshot.sequenceLength() + " expected=" + snapshot.expectedSlotId()
+			+ ", decision=" + decision.action() + ", dispatch=" + dispatch
+			+ (failure.isEmpty() ? "" : ", failure=" + failure)
+			+ (decision.explanation().isBlank() ? "" : ", reason=" + decision.explanation()));
+	}
+
+	private void writeDiagnostic(String line) {
+		GeilerAddonsLog.write(Category.ENCHANTING, name(), 0L, line);
 	}
 
 	/** Cancels a queued click and pauses until the user toggles the module off and on. */

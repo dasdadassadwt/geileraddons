@@ -1377,6 +1377,40 @@ public final class OfflineChecks {
 			"the next memory notice replaces the finished round");
 		assertEquals(1, paneChurn.view().completedRounds(),
 			"the finished round is counted exactly once");
+
+		// Regression: the phase transition used to depend on the exact status spelling. If Hypixel
+		// trims, reformats or slightly rewords either notice, the model stayed in WAIT forever while
+		// the Solver kept rendering the solution, so Auto never queued a click.
+		for (String rememberNotice : List.of("Remember the pattern!", "Remember the pattern",
+			"\u00A7eRemember the pattern!")) {
+			ExperimentSolverEngine relaxed = relaxedUltraEngine(rememberNotice, "Timer: 1.0s");
+			assertSame(ExperimentPhase.SOLVE, relaxed.view().phase(),
+				"Ultrasequencer accepts the memory notice " + rememberNotice);
+			assertEquals(30, relaxed.view().current().orElseThrow().slotIds().get(0),
+				"the remembered first slot stays resolvable for " + rememberNotice);
+		}
+		for (String timerNotice : List.of("Timer: 1.0s", "Timer:1.0s", "\u00A7eTimer: 1.0s")) {
+			ExperimentSolverEngine relaxed = relaxedUltraEngine("Remember the pattern!", timerNotice);
+			assertSame(ExperimentPhase.SOLVE, relaxed.view().phase(),
+				"Ultrasequencer accepts the solve notice " + timerNotice);
+		}
+		ExperimentSolverEngine unreadable = relaxedUltraEngine("Remember the pattern!", "Server syncing");
+		assertSame(ExperimentPhase.WAITING, unreadable.view().phase(),
+			"an unrecognised status still cannot open the solve");
+		assertFalse(unreadable.view().milestoneReached(),
+			"an unreadable solve status never reports a reached milestone");
+	}
+
+	/** Builds one Ultrasequencer round from the two status notices under test. */
+	private static ExperimentSolverEngine relaxedUltraEngine(String rememberNotice, String solveNotice) {
+		ExperimentSolverEngine engine = new ExperimentSolverEngine();
+		String title = "Ultrasequencer (High)";
+		List<ExperimentCell> cells = List.of(ExperimentCell.number(30, 1),
+			ExperimentCell.number(31, 2));
+		engine.markUltrasequencerDirty(List.of("gray"));
+		engine.observe(new ExperimentSnapshot(title, rememberNotice, cells, "gray", 300));
+		engine.observe(new ExperimentSnapshot(title, solveNotice, cells, "gray", 301));
+		return engine;
 	}
 
 	private static AutoExperimentAutomation.Snapshot autoSnapshot(Object screen, Object menu,

@@ -1,5 +1,6 @@
 package geiler.addons.client.module.impl;
 
+import geiler.addons.client.config.GeilerAddonsLog;
 import geiler.addons.client.enchanting.ChronomatronEvent;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
 import geiler.addons.client.enchanting.ExperimentClickGate;
@@ -9,6 +10,7 @@ import geiler.addons.client.enchanting.ExperimentSolverEngine;
 import geiler.addons.client.enchanting.ExperimentTier;
 import geiler.addons.client.enchanting.ExperimentType;
 import geiler.addons.client.enchanting.SolverView;
+import geiler.addons.client.module.Category;
 import geiler.addons.client.module.impl.ExperimentSolverModule.Session;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -35,6 +37,8 @@ public final class ExperimentController {
 	private Session session;
 	private SolverView view = SolverView.idle();
 	private long sessionGeneration;
+	/** Last dispatch rejection already reported, so a held mouse button cannot flood the log. */
+	private String reportedRejection = "";
 
 	private ExperimentController() {
 	}
@@ -130,23 +134,68 @@ public final class ExperimentController {
 
 	private boolean dispatchSequenceClick(AbstractContainerScreen<?> screen, int expectedSequenceIndex,
 		int slotId, ExperimentSolverModule.SlotClickDispatcher dispatcher) {
-		if (screen == null || dispatcher == null || slotId < 0) return false;
+		if (screen == null || dispatcher == null || slotId < 0) {
+			logDispatchRejection("invalid request");
+			return false;
+		}
 		Minecraft minecraft = Minecraft.getInstance();
-		if (!minecraft.isSameThread() || minecraft.screen != screen || !isEligibleScreen(screen)) return false;
+		if (!minecraft.isSameThread()) {
+			logDispatchRejection("not on the client thread");
+			return false;
+		}
+		if (minecraft.screen != screen) {
+			logDispatchRejection("screen replaced");
+			return false;
+		}
+		if (!isEligibleScreen(screen)) {
+			logDispatchRejection("no active experiment owner");
+			return false;
+		}
 		observe(screen);
-		if (!isCurrentSession(screen) || !hasActiveOwner(session.type)
-			|| (session.type != ExperimentType.CHRONOMATRON
-				&& session.type != ExperimentType.ULTRASEQUENCER)) return false;
+		if (!isCurrentSession(screen)) {
+			logDispatchRejection("session replaced");
+			return false;
+		}
+		if (!hasActiveOwner(session.type)) {
+			logDispatchRejection("module disabled during dispatch");
+			return false;
+		}
+		if (session.type != ExperimentType.CHRONOMATRON
+			&& session.type != ExperimentType.ULTRASEQUENCER) {
+			logDispatchRejection("experiment is not a sequence game");
+			return false;
+		}
 		Slot slot = boardSlot(screen.getMenu(), session.type, session.tier, slotId);
-		if (slot == null) return false;
+		if (slot == null) {
+			logDispatchRejection("slot " + slotId + " is not a live board slot");
+			return false;
+		}
 		engine.configure(ExperimentSolverModule.INSTANCE.configuration());
 		int dispatchSequenceIndex = expectedSequenceIndex >= 0 ? expectedSequenceIndex
 			: view.current().map(step -> step.index()).orElse(-1);
 		boolean success = clickGate.dispatchSequenceClick(engine, dispatchSequenceIndex, slotId,
 			isCurrentSession(screen) && hasActiveOwner(session.type),
 			id -> dispatcher.dispatch(slot, id, 0, ContainerInput.PICKUP));
-		if (success) view = engine.view();
+		if (success) {
+			view = engine.view();
+		} else {
+			logDispatchRejection("click gate rejected index " + dispatchSequenceIndex + " slot " + slotId
+				+ " at " + view.phase() + " index " + view.visualIndex()
+				+ "/" + view.sequence().size());
+		}
 		return success;
+	}
+
+	/** Records the first gate that refused an automated click; silent rejections are undiagnosable. */
+	private void logDispatchRejection(String reason) {
+		if (!AutoExperimentsModule.INSTANCE.debugAutomation()) {
+			reportedRejection = "";
+			return;
+		}
+		if (reason.equals(reportedRejection)) return;
+		reportedRejection = reason;
+		GeilerAddonsLog.write(Category.ENCHANTING, AutoExperimentsModule.INSTANCE.name(), 0L,
+			"dispatch rejected: " + reason);
 	}
 
 	/** Automation entry point with a fresh master/per-experiment toggle check at dispatch time. */
@@ -181,7 +230,8 @@ public final class ExperimentController {
 		return type != null && hasActiveOwner(type);
 	}
 
-	private boolean hasActiveOwner(ExperimentType type) {
+	/** Whether any module currently owns this experiment; also reported by the Auto diagnostics. */
+	boolean hasActiveOwner(ExperimentType type) {
 		if (type == null) return false;
 		ExperimentSolverModule solver = ExperimentSolverModule.INSTANCE;
 		AutoExperimentsModule automatic = AutoExperimentsModule.INSTANCE;

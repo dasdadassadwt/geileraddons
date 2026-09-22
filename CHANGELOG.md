@@ -33,6 +33,9 @@
 - **Auto Experiments — Ultrasequencer** now replays every click of a round. The board repaints its
   pane colours inside one round, and that repaint was treated as the round boundary, which dropped
   the rest of the sequence even though the Solver kept showing it.
+- **Auto Experiments — Ultrasequencer** no longer depends on the exact spelling of the two server
+  notices. A trimmed, reworded or reformatted "Remember the pattern" or solve timer still starts the
+  round instead of leaving automation idle while the Solver shows the solution.
 - Garden plot borders no longer follow the player's height, so a border stays where it was placed.
 
 ## [1.5.2] - 2026-09-22

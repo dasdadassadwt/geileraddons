@@ -39,15 +39,15 @@ public final class UltrasequencerModel {
 		String instruction = status == null ? "" : status;
 		switch (state) {
 			case REMEMBER -> {
-				if (!instruction.equals("Remember the pattern!")) return;
+				if (!isRememberNotice(instruction)) return;
 				capture(cells);
 			}
 			case WAIT -> {
-				if (instruction.startsWith("Timer: ")) state = State.SHOW;
+				if (isTimerNotice(instruction)) state = State.SHOW;
 			}
 			case END -> {
-				if (instruction.startsWith("Timer: ")) return;
-				if (instruction.equals("Remember the pattern!")) {
+				if (isTimerNotice(instruction)) return;
+				if (isRememberNotice(instruction)) {
 					beginNextRound();
 					capture(cells);
 				} else reset();
@@ -56,12 +56,26 @@ public final class UltrasequencerModel {
 				// The server can start the next round before this model ever observed the pane
 				// boundary. A fresh memory notice is the one authoritative round reset, and it also
 				// prevents a finished round from ever being replayed.
-				if (instruction.equals("Remember the pattern!")) {
+				if (isRememberNotice(instruction)) {
 					beginNextRound();
 					capture(cells);
 				}
 			}
 		}
+	}
+
+	/**
+	 * Whether the status item announces the next round's numbers. The literal wording is checked
+	 * first and the shared tolerant matcher second, so trailing punctuation, formatting or wording
+	 * changes cannot leave the model waiting for a timer that never comes.
+	 */
+	private static boolean isRememberNotice(String instruction) {
+		return instruction.equals("Remember the pattern!") || ExperimentPhase.isRememberStatus(instruction);
+	}
+
+	/** Whether the status item opened the solve. The literal prefix stays the fast path. */
+	private static boolean isTimerNotice(String instruction) {
+		return instruction.startsWith("Timer: ") || ExperimentPhase.isTimerStatus(instruction);
 	}
 
 	private void capture(List<ExperimentCell> cells) {

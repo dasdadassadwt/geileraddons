@@ -10,6 +10,34 @@ something the player cannot work around.
 
 ## Open
 
+### BUG-004 — Auto Experiments does not activate on the Ultrasequencer
+
+- **Area:** Enchanting → Auto Experiments with the Solver enabled and working. **Severity:** high
+  (the automation does nothing at all).
+- **Observed:** the Solver recognises the board and renders the solution, but Auto Experiments never
+  dispatches a click — no chat notice, no click, nothing in the diagnostic log.
+- **Expected:** Auto dispatches a click for the first remembered slot once the solve opens.
+- **Status:** open, instrumented. Static analysis ruled out the click path itself (recognition,
+  session/menu identity, and the view-derived expected slot all check out, and the offline suite
+  reproduces a working `SOLVE` → `CLICK` → gate → vanilla chain). What remains are six silent exits
+  that leave no trace: the module being off, `supports(ULTRASEQUENCER)` being off, the snapshot's
+  early `!isAutoEligibleScreen` return, the model never reaching `SHOW` because the real status text
+  does not match the expected wording, a `dispatchSequenceClick` early return, and the swallowed
+  `RuntimeException` around the vanilla invoker.
+- **Instrumentation:** **Dev Debug** plus **Auto Experiments → Diagnostics → Debug Automation** now
+  writes one `Auto Experiments.log` line per changed decision (type, tier, enabled, supports,
+  eligible, owner, session generation, engine phase, index/length, expected slot, decision, dispatch
+  result, failure) and one `dispatch rejected: <gate>` line naming the first failed gate in
+  `ExperimentController`. A stale build is also possible: the last recorded dev run loaded
+  `geileraddons 1.5.1` while the tree is `1.5.2`, so the previous fix may never have been under test.
+- **Also changed:** the Ultrasequencer phase transition now accepts the tolerant status matchers, so
+  a slightly reworded or reformatted notice can no longer leave the model waiting for a timer.
+- **Repro:** enable the Solver and Auto Experiments, run one Ultrasequencer round, and read
+  `logs/geileraddons/<session>/Enchanting/Auto Experiments.log`.
+- **Files:** `src/client/java/geiler/addons/client/module/impl/AutoExperimentsModule.java`,
+  `src/client/java/geiler/addons/client/module/impl/ExperimentController.java`,
+  `src/client/java/geiler/addons/client/enchanting/UltrasequencerModel.java`.
+
 ### BUG-001 — Expanding one macro's Islands section expands every macro's Islands section
 
 - **Area:** Click GUI → Miscellaneous → Macros. **Severity:** low.
