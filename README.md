@@ -24,9 +24,6 @@ with the menu id used by vanilla (not the backing-inventory index), which makes 
 workflows and puzzle reports reproducible. **Dev → Debug** independently enables the retained,
 category/module-separated GeilerAddons logs under `logs/geileraddons/`.
 
-Possible future features are collected in [FUTURE-IDEAS.md](FUTURE-IDEAS.md). The file is a
-planning list and does not represent a commitment to a specific implementation order.
-
 ## Modules
 
 <details>
