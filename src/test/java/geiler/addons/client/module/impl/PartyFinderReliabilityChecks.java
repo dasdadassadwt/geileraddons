@@ -9,6 +9,7 @@ import geiler.addons.client.party.PartyLookupAttempts;
 import geiler.addons.client.party.PartyMember;
 
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -163,6 +164,12 @@ public final class PartyFinderReliabilityChecks {
 		check(!partial.cacheable(), "an incomplete profile fixture stays identifiable as incomplete");
 		check(!AutoKickRules.canApplyAction(true, true),
 			"unknown profile fields suppress otherwise-failing kick requirements");
+		check(!AutoKickRules.needsProfileRefresh(false, List.of("Party classes"))
+			&& AutoKickRules.profileRefreshableUnknowns(List.of("Party classes")).isEmpty(),
+			"roster-wide missing classes wait for class updates instead of refetching one profile");
+		check(AutoKickRules.needsProfileRefresh(false, List.of("Party classes", "Cata"))
+			&& AutoKickRules.profileRefreshableUnknowns(List.of("Party classes", "Cata")).equals(List.of("Cata")),
+			"a missing player stat can still request a profile refresh when roster classes are unknown");
 		check(!AutoKickRules.canApplyAction(true, false)
 			&& AutoKickRules.canApplyAction(false, true)
 			&& !AutoKickRules.canApplyAction(false, false),

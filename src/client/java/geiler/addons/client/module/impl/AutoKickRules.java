@@ -1,5 +1,7 @@
 package geiler.addons.client.module.impl;
 
+import java.util.List;
+
 /** Pure requirement predicates kept separate so their boundary behavior can be checked offline. */
 final class AutoKickRules {
 	private AutoKickRules() {
@@ -13,6 +15,19 @@ final class AutoKickRules {
 	/** Unknown or incomplete profile data can delay evaluation, but can never authorize a kick. */
 	static boolean canApplyAction(boolean hasUnknownOrIncompleteData, boolean hasKnownFailure) {
 		return !hasUnknownOrIncompleteData && hasKnownFailure;
+	}
+
+	/**
+	 * Party classes describe the whole roster, so refetching one player's profile cannot resolve them.
+	 */
+	static List<String> profileRefreshableUnknowns(List<String> unknowns) {
+		if (unknowns == null || unknowns.isEmpty()) return List.of();
+		return unknowns.stream().filter(value -> value != null && !value.equals("Party classes"))
+			.distinct().toList();
+	}
+
+	static boolean needsProfileRefresh(boolean profileIncomplete, List<String> unknowns) {
+		return profileIncomplete || !profileRefreshableUnknowns(unknowns).isEmpty();
 	}
 
 	/** Parses a PB limit as {@code m:ss} or as legacy whole seconds. Invalid values disable the check. */

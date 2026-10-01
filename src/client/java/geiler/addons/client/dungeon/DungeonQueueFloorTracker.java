@@ -26,9 +26,9 @@ public final class DungeonQueueFloorTracker {
 	private static final long CANDIDATE_MAX_AGE_NANOS = Duration.ofSeconds(15).toNanos();
 	private static final Pattern CURRENTLY_SELECTED = Pattern.compile("(?i)^Currently Selected:\\s*(.+)$");
 	private static final Pattern FLOOR = Pattern.compile(
-		"(?i)^(?:Floor\\s*)?(?:(F|M)\\s*)?(VII|VI|IV|V|III|II|I|[1-7])$");
+		"(?i)^(?:Floor\\s*)?(?:(F|M)\\s*)?(Entrance|VII|VI|IV|V|III|II|I|[1-7])$");
 	private static final Pattern LISTING_FLOOR = Pattern.compile(
-		"(?i)^Floor:?\\s*(?:Floor\\s*)?(?:(F|M)\\s*)?(VII|VI|IV|V|III|II|I|[1-7])$");
+		"(?i)^Floor:?\\s*(?:Floor\\s*)?(?:(F|M)\\s*)?(Entrance|VII|VI|IV|V|III|II|I|[1-7])$");
 
 	private static DungeonFloor candidate;
 	private static long candidateCapturedAt;
@@ -77,10 +77,11 @@ public final class DungeonQueueFloorTracker {
 			clearCandidate();
 			return CaptureResult.failed("the selected floor was not F1-F7 or M1-M7: " + clean(floorValue));
 		}
-		int floorNumber = romanFloor(floorMatcher.group(2));
+		boolean entrance = floorMatcher.group(2).equalsIgnoreCase("Entrance");
+		int floorNumber = entrance ? 0 : romanFloor(floorMatcher.group(2));
 		boolean master = normalizedType.contains("master mode") || normalizedType.contains("master catacombs")
 			|| "M".equalsIgnoreCase(floorMatcher.group(1));
-		DungeonFloor captured = DungeonFloor.parse((master ? "M" : "F") + floorNumber);
+		DungeonFloor captured = DungeonFloor.parse(entrance ? "Entrance" : (master ? "M" : "F") + floorNumber);
 		if (captured == null) {
 			clearCandidate();
 			return CaptureResult.failed("the selected floor could not be normalized");
@@ -115,7 +116,7 @@ public final class DungeonQueueFloorTracker {
 			}
 			Matcher floorMatcher = LISTING_FLOOR.matcher(line);
 			if (floorMatcher.matches()) {
-				number = romanFloor(floorMatcher.group(2));
+				number = floorMatcher.group(2).equalsIgnoreCase("Entrance") ? 0 : romanFloor(floorMatcher.group(2));
 				if ("M".equalsIgnoreCase(floorMatcher.group(1))) master = true;
 			}
 		}
@@ -123,7 +124,7 @@ public final class DungeonQueueFloorTracker {
 			clearJoinedListingCandidate();
 			return CaptureResult.failed("the clicked listing did not contain a Catacombs floor");
 		}
-		DungeonFloor captured = DungeonFloor.parse((master ? "M" : "F") + number);
+		DungeonFloor captured = DungeonFloor.parse(number == 0 ? "Entrance" : (master ? "M" : "F") + number);
 		if (captured == null) {
 			clearJoinedListingCandidate();
 			return CaptureResult.failed("the clicked listing floor could not be normalized");

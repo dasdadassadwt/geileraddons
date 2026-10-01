@@ -1,11 +1,14 @@
 package geiler.addons.client.macro;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
 import geiler.addons.client.config.MacroStepConfigCodec;
 import geiler.addons.client.config.MacroVariableConfigCodec;
 import geiler.addons.client.module.impl.MacrosModule;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +24,7 @@ public final class MacroRuntimeChecks {
 		checkFunctionLocals();
 		checkGlobalVariables();
 		checkNewStepCodec();
+		checkUnknownStepsAndLegacyMigrations();
 		checkDependenciesAndLegacyMigration();
 	}
 
@@ -119,9 +123,9 @@ public final class MacroRuntimeChecks {
 		List<MacroStep> globalSteps = List.of(setGlobal, changeGlobal, new MacroStep.WaitUntil(compareGlobal));
 		List<MacroStep> restored = MacroStepConfigCodec.decode(JsonParser.parseString(
 			MacroStepConfigCodec.encode(globalSteps).toString()).getAsJsonArray());
-		assertEquals(count.id(), ((MacroStep.SetVariable) restored.get(0)).globalVariableId(),
+		assertEquals(count.id(), ((MacroStep.UpdateVariable) restored.get(0)).globalVariableId(),
 			"global assignment targets survive config round trips by stable id");
-		assertEquals(count.id(), ((MacroStep.ChangeVariable) restored.get(1)).globalVariableId(),
+		assertEquals(count.id(), ((MacroStep.UpdateVariable) restored.get(1)).globalVariableId(),
 			"global change targets survive config round trips by stable id");
 		MacroCondition.Variable restoredCondition = (MacroCondition.Variable)
 			((MacroStep.WaitUntil) restored.get(2)).condition();
@@ -153,7 +157,7 @@ public final class MacroRuntimeChecks {
 		assertTrue(imported.success(), "portable packages with global references remain importable");
 		assertEquals(1, imported.globalVariables().size(), "portable package includes the referenced global definition");
 		assertEquals(count.id(), imported.globalVariables().getFirst().id(), "portable package retains the variable's stable id");
-		assertEquals(count.id(), ((MacroStep.SetVariable) imported.macros().getFirst().steps().get(0)).globalVariableId(),
+		assertEquals(count.id(), ((MacroStep.UpdateVariable) imported.macros().getFirst().steps().get(0)).globalVariableId(),
 			"portable import retains global variable references");
 		assertFalse(imported.globalVariables().getFirst().persistValue(),
 			"portable packages never transfer the local persistence preference");
@@ -186,16 +190,20 @@ public final class MacroRuntimeChecks {
 		List<MacroStep> restored = MacroStepConfigCodec.decode(
 			JsonParser.parseString(MacroStepConfigCodec.encode(source).toString()).getAsJsonArray());
 		assertEquals(source.size(), restored.size(), "all newly added action nodes survive a config round trip");
-		assertEquals(8, ((MacroStep.SelectHotbarSlot) restored.get(0)).slot(), "hotbar slot is preserved");
-		MacroStep.MouseButton mouse = (MacroStep.MouseButton) restored.get(1);
-		assertEquals(MacroStep.MouseButton.Button.MIDDLE, mouse.button(), "mouse button is preserved");
+		MacroStep.Key hotbar = (MacroStep.Key) restored.get(0);
+		assertEquals(MacroStep.Key.InputMode.HOTBAR, hotbar.inputMode(), "legacy hotbar node migrates to unified key input");
+		assertEquals(8, hotbar.hotbarSlot(), "hotbar slot is preserved");
+		MacroStep.Key mouse = (MacroStep.Key) restored.get(1);
+		assertEquals(MacroStep.Key.InputMode.MOUSE, mouse.inputMode(), "legacy mouse node migrates to unified key input");
+		assertEquals(MacroStep.MouseButton.Button.MIDDLE, mouse.mouseButton(), "mouse button is preserved");
 		assertTrue(mouse.hold(), "mouse hold mode is preserved");
-		assertEquals(321, mouse.holdMillis(), "mouse hold duration is preserved");
+		assertEquals(321, mouse.holdMinMillis(), "mouse hold duration minimum is preserved");
+		assertEquals(321, mouse.holdMaxMillis(), "mouse hold duration maximum is preserved");
 		assertEquals(450, ((MacroStep.BlockPlayerInput) restored.get(2)).durationMillis(), "timed input block is preserved");
 		assertTrue(restored.get(3) instanceof MacroStep.StartBlockPlayerInput, "start input-block node is preserved");
 		assertTrue(restored.get(4) instanceof MacroStep.StopBlockPlayerInput, "stop input-block node is preserved");
-		assertEquals("true", ((MacroStep.SetVariable) restored.get(5)).value().value(), "typed variable assignment is preserved");
-		assertEquals(1.25, ((MacroStep.ChangeVariable) restored.get(6)).amount(), "numeric variable change is preserved");
+		assertEquals("true", ((MacroStep.UpdateVariable) restored.get(5)).value().value(), "typed variable assignment is preserved");
+		assertEquals(1.25, ((MacroStep.UpdateVariable) restored.get(6)).amount(), "numeric variable change is preserved");
 		MacroStep.FunctionCall restoredCall = (MacroStep.FunctionCall) restored.get(7);
 		assertEquals(2, restoredCall.arguments().size(), "function arguments are preserved");
 		assertTrue(restoredCall.arguments().get(1).variableReference(), "variable argument references are preserved");
@@ -203,6 +211,167 @@ public final class MacroRuntimeChecks {
 		assertTrue(((MacroStep.MacroCall) restored.get(8)).condition() == null,
 			"a call written without a condition stays unconditional");
 		checkConditionalMacroCall();
+	}
+
+	private static void checkUnknownStepsAndLegacyMigrations() {
+		JsonArray legacy = JsonParser.parseString("["
+			+ "{\"type\":\"command\",\"command\":\"warp home\",\"delayMin\":12,\"delayMax\":34,\"editorX\":21.5,\"editorY\":-8},"
+			+ "{\"type\":\"select_hotbar_slot\",\"slot\":8},"
+			+ "{\"type\":\"mouse_button\",\"button\":\"MIDDLE\",\"hold\":true,\"holdMillis\":321},"
+			+ "{\"type\":\"click_slot\",\"slotId\":31,\"button\":1,\"shift\":true},"
+			+ "{\"type\":\"click_item\",\"name\":\"Confirm, Claim\",\"contains\":true,\"scope\":\"player\",\"occurrence\":2,\"button\":2,\"shift\":true},"
+			+ "{\"type\":\"set_variable\",\"name\":\"amount\",\"valueType\":\"NUMBER\",\"globalVariableId\":\"global-1\",\"value\":{\"type\":\"NUMBER\",\"variable\":false,\"scope\":\"NONE\",\"value\":\"4.5\"}},"
+			+ "{\"type\":\"change_variable\",\"name\":\"amount\",\"amount\":2.75,\"globalVariableId\":\"global-1\"},"
+			+ "{\"type\":\"repeat_until\",\"condition\":{\"type\":\"world\",\"mustBeInWorld\":true},\"untilSteps\":[{\"type\":\"chat\",\"message\":\"continue\"}]}"
+			+ "]").getAsJsonArray();
+		List<MacroStep> migrated = MacroStepConfigCodec.decode(legacy);
+		assertEquals(8, migrated.size(), "recognized legacy block types remain visible after migration");
+		MacroStep.Chat command = (MacroStep.Chat) migrated.get(0);
+		assertEquals("/warp home", command.message(), "legacy commands migrate without changing command behavior");
+		assertEquals(12, command.delayMin(), "legacy command keeps its delay minimum");
+		assertEquals(34, command.delayMax(), "legacy command keeps its delay maximum");
+		assertEquals(21.5f, ((MacroStep.Base) command).editorX(), "legacy command keeps its canvas position");
+		MacroStep.Key hotbar = (MacroStep.Key) migrated.get(1);
+		assertEquals(MacroStep.Key.InputMode.HOTBAR, hotbar.inputMode(), "legacy hotbar becomes unified key input");
+		assertEquals(8, hotbar.hotbarSlot(), "legacy hotbar selection keeps its slot");
+		MacroStep.Key mouse = (MacroStep.Key) migrated.get(2);
+		assertEquals(MacroStep.Key.InputMode.MOUSE, mouse.inputMode(), "legacy mouse action becomes unified key input");
+		assertEquals(MacroStep.MouseButton.Button.MIDDLE, mouse.mouseButton(), "legacy mouse action keeps its button");
+		assertTrue(mouse.hold(), "legacy mouse action keeps its hold mode");
+		assertEquals(321, mouse.holdMinMillis(), "legacy mouse action keeps its fixed hold duration");
+		assertEquals(321, mouse.holdMaxMillis(), "legacy mouse action keeps its fixed hold duration");
+		MacroStep.InventoryClick slot = (MacroStep.InventoryClick) migrated.get(3);
+		assertEquals(MacroStep.InventoryClick.Target.SLOT, slot.target(), "legacy slot click becomes a unified inventory click");
+		assertEquals(31, slot.slotId(), "legacy slot click keeps its slot");
+		assertEquals(1, slot.button(), "legacy slot click keeps its mouse button");
+		assertTrue(slot.shift(), "legacy slot click keeps its shift modifier");
+		MacroStep.InventoryClick item = (MacroStep.InventoryClick) migrated.get(4);
+		assertEquals(MacroStep.InventoryClick.Target.ITEM, item.target(), "legacy item click becomes a unified inventory click");
+		assertEquals("Confirm, Claim", item.name(), "legacy item click keeps its alternatives");
+		assertEquals("player", item.scope(), "legacy item click keeps its search scope");
+		assertEquals(2, item.occurrence(), "legacy item click keeps its occurrence");
+		assertEquals(2, item.button(), "legacy item click keeps its mouse button");
+		assertTrue(item.shift(), "legacy item click keeps its shift modifier");
+		MacroStep.UpdateVariable set = (MacroStep.UpdateVariable) migrated.get(5);
+		assertEquals(MacroStep.UpdateVariable.Operation.SET, set.operation(), "legacy set variable becomes unified SET");
+		assertEquals("global-1", set.globalVariableId(), "legacy set variable keeps its global target");
+		assertEquals(MacroValue.Type.NUMBER, set.value().type(), "legacy set variable keeps its value type");
+		assertEquals("4.5", set.value().value(), "legacy set variable keeps its value");
+		MacroStep.UpdateVariable explicitLegacyType = (MacroStep.UpdateVariable) MacroStepConfigCodec.decode(
+			JsonParser.parseString("[{\"type\":\"set_variable\",\"valueType\":\"NUMBER\","
+				+ "\"value\":{\"type\":\"TEXT\",\"variable\":false,\"value\":\"3\"}}]")
+			.getAsJsonArray()).getFirst();
+		assertEquals(MacroValue.Type.NUMBER, explicitLegacyType.value().type(),
+			"legacy set variable's explicit type setting migrates to the unified value");
+		MacroStep.UpdateVariable change = (MacroStep.UpdateVariable) migrated.get(6);
+		assertEquals(MacroStep.UpdateVariable.Operation.ADD, change.operation(), "legacy change variable becomes unified ADD");
+		assertEquals(2.75, change.amount(), "legacy variable change keeps its amount");
+		assertEquals("global-1", change.globalVariableId(), "legacy variable change keeps its global target");
+		MacroStep.Repeat until = (MacroStep.Repeat) migrated.get(7);
+		assertEquals(MacroStep.Repeat.Mode.UNTIL, until.mode(), "legacy Repeat Until becomes the unified repeat node");
+		assertEquals(1, until.steps().size(), "legacy Repeat Until keeps its child stack");
+		assertTrue(until.condition() instanceof MacroCondition.World, "legacy Repeat Until keeps its condition");
+
+		JsonObject futureStep = JsonParser.parseString("{\"type\":\"future_action\",\"delayMin\":7,"
+			+ "\"editorX\":1.25,\"editorY\":-2.5,\"futureSettings\":{\"targets\":[\"a\",\"b\"],\"enabled\":true}}")
+			.getAsJsonObject();
+		JsonArray futureSteps = new JsonArray();
+		futureSteps.add(futureStep);
+		MacroStep.Unknown unknown = (MacroStep.Unknown) MacroStepConfigCodec.decode(futureSteps).getFirst();
+		assertEquals("future_action", unknown.originalType(), "unknown steps retain their original type label");
+		assertEquals(futureStep, unknown.serializedData(), "unknown step data survives a config decode unchanged");
+		JsonObject externalCopy = unknown.serializedData();
+		externalCopy.addProperty("futureMutation", true);
+		assertFalse(unknown.serializedData().has("futureMutation"), "unknown raw data is exposed defensively");
+		unknown.setEditorPosition(10, 20);
+		JsonObject movedUnknown = MacroStepConfigCodec.encode(List.of(unknown)).get(0).getAsJsonObject();
+		assertEquals(futureStep.get("futureSettings"), movedUnknown.get("futureSettings"),
+			"moving an unknown canvas block leaves every unknown setting intact");
+		assertEquals(10.0f, movedUnknown.get("editorX").getAsFloat(), "moving an unknown canvas block persists its new x position");
+		assertEquals(20.0f, movedUnknown.get("editorY").getAsFloat(), "moving an unknown canvas block persists its new y position");
+		List<MacroStep> activeUnknownStack = new ArrayList<>();
+		activeUnknownStack.add(unknown);
+		assertFalse(MacroRunner.wasPausedUnknownStepResolved(activeUnknownStack, unknown),
+			"a paused run cannot resume while its unsupported block remains in the active stack");
+		activeUnknownStack.set(0, new MacroStep.Chat("replacement"));
+		assertTrue(MacroRunner.wasPausedUnknownStepResolved(activeUnknownStack, unknown),
+			"a paused run may resume after the unsupported block is replaced");
+		activeUnknownStack.set(0, unknown);
+		activeUnknownStack.clear();
+		assertTrue(MacroRunner.wasPausedUnknownStepResolved(activeUnknownStack, unknown),
+			"a paused run may resume after the unsupported block is removed");
+		assertFalse(MacroRunner.wasPausedUnknownStepResolved(null, unknown),
+			"a paused run does not resume when its active stack cannot be verified");
+
+		MacroDefinition portable = new MacroDefinition(933);
+		portable.steps().add(unknown);
+		MacroTransfer.ImportResult imported = MacroTransfer.decode(MacroTransfer.encode(List.of(portable)), 934);
+		assertTrue(imported.success(), "portable packages accept and preserve unknown macro blocks");
+		assertEquals(movedUnknown, ((MacroStep.Unknown) imported.macros().getFirst().steps().getFirst()).serializedData(),
+			"unknown raw fields survive a portable export and import");
+
+		JsonObject legacyPackage = new JsonObject();
+		legacyPackage.addProperty("format", "geileraddons-macros");
+		legacyPackage.addProperty("version", 1);
+		JsonObject legacyMacro = new JsonObject();
+		legacyMacro.addProperty("id", 72);
+		legacyMacro.addProperty("name", "Legacy unknown");
+		JsonArray legacyUnknownSteps = new JsonArray();
+		legacyUnknownSteps.add(futureStep);
+		legacyMacro.add("steps", legacyUnknownSteps);
+		JsonArray legacyMacros = new JsonArray();
+		legacyMacros.add(legacyMacro);
+		legacyPackage.add("macros", legacyMacros);
+		MacroTransfer.ImportResult oldImport = MacroTransfer.decode(legacyPackage.toString(), 935);
+		assertTrue(oldImport.success(), "legacy clipboard packages retain unknown step placeholders");
+		assertEquals(futureStep, ((MacroStep.Unknown) oldImport.macros().getFirst().steps().getFirst()).serializedData(),
+			"legacy clipboard import keeps every raw unknown field");
+
+		JsonObject deepLeaf = JsonParser.parseString("{\"type\":\"future_nested_action\",\"custom\":{\"kept\":true}}")
+			.getAsJsonObject();
+		JsonElement nested = deepLeaf;
+		for (int i = 0; i <= MacroTreeRules.MAX_DEPTH; i++) {
+			JsonObject repeat = new JsonObject();
+			repeat.addProperty("type", "repeat");
+			JsonArray body = new JsonArray();
+			body.add(nested);
+			repeat.add("steps", body);
+			nested = repeat;
+		}
+		JsonArray deeplyNested = new JsonArray();
+		deeplyNested.add(nested);
+		List<MacroStep> deepDecoded = MacroStepConfigCodec.decode(deeplyNested);
+		MacroStep cursor = deepDecoded.getFirst();
+		for (int i = 0; i <= MacroTreeRules.MAX_DEPTH; i++) {
+			assertTrue(cursor instanceof MacroStep.Repeat, "all levels above the nesting boundary stay editable");
+			cursor = ((MacroStep.Repeat) cursor).steps().getFirst();
+		}
+		assertTrue(cursor instanceof MacroStep.Unknown && ((MacroStep.Unknown) cursor).depthLimited(),
+			"a block beyond the supported depth becomes a visible raw-data placeholder");
+		assertEquals(deepLeaf, ((MacroStep.Unknown) cursor).serializedData(),
+			"an over-depth node keeps its raw data");
+		JsonElement savedDeep = MacroStepConfigCodec.encode(deepDecoded).get(0);
+		for (int i = 0; i <= MacroTreeRules.MAX_DEPTH; i++) {
+			savedDeep = savedDeep.getAsJsonObject().getAsJsonArray("steps").get(0);
+		}
+		assertEquals(deepLeaf, savedDeep, "a deep placeholder survives a save/reload round trip");
+
+		MacroDefinition maxDepth = new MacroDefinition(936);
+		List<MacroStep> target = maxDepth.steps();
+		for (int i = 0; i < MacroTreeRules.MAX_DEPTH; i++) {
+			MacroStep.Repeat repeat = new MacroStep.Repeat(false, 1);
+			target.add(repeat);
+			target = repeat.steps();
+		}
+		target.add(new MacroStep.Chat("bottom"));
+		List<MacroStep> maxDepthReload = MacroStepConfigCodec.decode(
+			MacroStepConfigCodec.encode(maxDepth.steps()));
+		MacroStep atBottom = maxDepthReload.getFirst();
+		for (int i = 0; i < MacroTreeRules.MAX_DEPTH; i++) {
+			atBottom = ((MacroStep.Repeat) atBottom).steps().getFirst();
+		}
+		assertEquals("bottom", ((MacroStep.Chat) atBottom).message(),
+			"the editor's maximum nesting depth now persists through config reload");
 	}
 
 	/**
@@ -310,8 +479,10 @@ public final class MacroRuntimeChecks {
 		MacroTransfer.ImportResult legacy = MacroTransfer.decode(legacyV2, 700);
 		assertTrue(legacy.success(), "version 2 clipboard data remains readable");
 		assertEquals(1, legacy.macros().getFirst().scripts().size(), "legacy macro migrates into its key event stack");
-		assertTrue(legacy.macros().getFirst().steps().getFirst() instanceof MacroStep.Command,
-			"legacy steps remain in the migrated key event stack");
+		assertTrue(legacy.macros().getFirst().steps().getFirst() instanceof MacroStep.Chat,
+			"legacy command steps migrate to the unified chat-or-command node");
+		assertEquals("/say old", ((MacroStep.Chat) legacy.macros().getFirst().steps().getFirst()).message(),
+			"legacy command keeps its executable slash command");
 	}
 
 	private static void assertEquals(Object expected, Object actual, String label) {

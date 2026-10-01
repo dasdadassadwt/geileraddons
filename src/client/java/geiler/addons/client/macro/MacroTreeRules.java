@@ -5,8 +5,8 @@ import java.util.List;
 
 /** Pure insertion and movement rules shared by the macro editor and offline checks. */
 public final class MacroTreeRules {
-	/** The config and clipboard codecs stop reading or writing workflow nodes beyond this depth. */
-	public static final int MAX_DEPTH = 8;
+	/** Shared maximum nesting depth used by the editor, local config codec, and clipboard codec. */
+	public static final int MAX_DEPTH = 12;
 
 	private MacroTreeRules() {
 	}
@@ -16,6 +16,16 @@ public final class MacroTreeRules {
 		int targetDepth = findListDepth(macro.steps(), target, 0, new IdentityHashMap<>());
 		if (targetDepth < 0 || containsChildList(step, target, new IdentityHashMap<>())) return false;
 		return targetDepth + subtreeDepth(step, new IdentityHashMap<>()) <= MAX_DEPTH;
+	}
+
+	/** Whether {@code target} is nested anywhere below this step. */
+	public static boolean containsDescendantList(MacroStep step, List<MacroStep> target) {
+		return containsChildList(step, target, new IdentityHashMap<>());
+	}
+
+	/** Number of additional child-list levels contained below this step. */
+	public static int subtreeDepth(MacroStep step) {
+		return subtreeDepth(step, new IdentityHashMap<>());
 	}
 
 	public static boolean canMove(MacroDefinition macro, List<MacroStep> source, MacroStep step,
@@ -83,6 +93,12 @@ public final class MacroTreeRules {
 		if (step instanceof MacroStep.IfElse branch) return List.of(branch.thenSteps(), branch.elseSteps());
 		if (step instanceof MacroStep.Repeat repeat) return List.of(repeat.steps());
 		if (step instanceof MacroStep.RepeatUntil repeatUntil) return List.of(repeatUntil.steps());
+		if (step instanceof MacroStep.Switch value) {
+			java.util.ArrayList<List<MacroStep>> lists = new java.util.ArrayList<>(value.cases().size() + 1);
+			for (MacroStep.SwitchCase branch : value.cases()) lists.add(branch.steps());
+			lists.add(value.defaultSteps());
+			return List.copyOf(lists);
+		}
 		return List.of();
 	}
 

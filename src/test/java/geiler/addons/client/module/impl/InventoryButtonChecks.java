@@ -32,6 +32,24 @@ public final class InventoryButtonChecks {
 			"button config round-trips its optional custom hover tooltip");
 		check(restored.getFirst().slotAligned(), "new placements keep the vanilla-slot grid anchor across saves");
 
+		InventoryButtonPlacement actionButton = new InventoryButtonPlacement(12);
+		actionButton.setGrid(2, -1);
+		actionButton.setAppearance(InventoryButtonPlacement.Appearance.TEXT, "GFS");
+		actionButton.setTextAction("/gfs ender_pearl 16");
+		InventoryButtonPlacement restoredAction = InventoryButtonConfigCodec.decode(
+			InventoryButtonConfigCodec.encode(List.of(actionButton)), id -> true, name -> true).getFirst();
+		check(restoredAction.macroId() == -1 && restoredAction.hasTextAction()
+			&& restoredAction.textAction().equals("/gfs ender_pearl 16"),
+			"standalone text action buttons persist without a macro assignment");
+		InventoryButtonTextAction.Dispatch command = InventoryButtonTextAction.parse(" /gfs ender_pearl 16 ");
+		check(command != null && command.kind() == InventoryButtonTextAction.Kind.COMMAND
+			&& command.payload().equals("gfs ender_pearl 16"), "slash-prefixed text dispatches as a command without the slash");
+		InventoryButtonTextAction.Dispatch chat = InventoryButtonTextAction.parse("hello party");
+		check(chat != null && chat.kind() == InventoryButtonTextAction.Kind.CHAT
+			&& chat.payload().equals("hello party"), "plain text dispatches as a normal chat message");
+		check(InventoryButtonTextAction.parse("/") == null
+			&& InventoryButtonTextAction.parse("  ") == null, "empty command and chat actions are ignored");
+
 		JsonObject stale = new JsonObject();
 		stale.addProperty("id", 5);
 		stale.addProperty("macroId", 99);

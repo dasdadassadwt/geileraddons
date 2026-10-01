@@ -15,7 +15,7 @@ public final class DebugModule extends Module {
 	public static final DebugModule INSTANCE = new DebugModule();
 
 	private DebugModule() {
-		super("Debug", "Enables diagnostic logs and developer diagnostics across the mod.", Category.DEV);
+		super("Debug", "Enables diagnostic logs and developer diagnostics across the mod.", Category.DEV, false);
 	}
 
 	@Override

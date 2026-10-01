@@ -23,13 +23,16 @@ import java.util.Map;
 public final class HudManager {
 	private static final List<HudElement> elements = new ArrayList<>();
 	private static final Map<String, float[]> positions = new LinkedHashMap<>();
+	private static final Map<String, float[]> defaults = new LinkedHashMap<>();
 
 	private HudManager() {
 	}
 
 	public static void register(HudElement element, float defaultX, float defaultY) {
 		elements.add(element);
-		positions.putIfAbsent(element.id(), new float[]{clamp(defaultX), clamp(defaultY)});
+		float[] initial = new float[]{clamp(defaultX), clamp(defaultY)};
+		defaults.putIfAbsent(element.id(), initial.clone());
+		positions.putIfAbsent(element.id(), initial);
 	}
 
 	public static List<HudElement> elements() {
@@ -79,6 +82,14 @@ public final class HudManager {
 			float[] value = entry.getValue();
 			if (value == null || value.length != 2) continue;
 			positions.put(entry.getKey(), new float[]{clamp(value[0]), clamp(value[1])});
+		}
+	}
+
+	/** Restores every registered panel to its declared factory position. */
+	public static void resetPositions() {
+		positions.clear();
+		for (Map.Entry<String, float[]> entry : defaults.entrySet()) {
+			positions.put(entry.getKey(), entry.getValue().clone());
 		}
 	}
 

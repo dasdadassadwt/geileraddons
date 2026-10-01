@@ -42,6 +42,9 @@ final class BlockEspScanner {
 	private FutureTask<Snapshot> pendingSnapshot;
 	private ClientLevel lastLevel;
 	private Snapshot snapshot = Snapshot.EMPTY;
+	private List<Target> preparedTargets = List.of();
+	private long preparedSettingsFingerprint = Long.MIN_VALUE;
+	private String preparedTargetSignature = "";
 	private String lastSignature = "";
 	private int ticksUntilRefresh;
 
@@ -51,6 +54,9 @@ final class BlockEspScanner {
 		scan = null;
 		cancelPendingSnapshot();
 		snapshot = Snapshot.EMPTY;
+		preparedTargets = List.of();
+		preparedSettingsFingerprint = Long.MIN_VALUE;
+		preparedTargetSignature = "";
 		lastLevel = null;
 		lastSignature = "";
 		ticksUntilRefresh = 0;
@@ -62,23 +68,14 @@ final class BlockEspScanner {
 			clear(entries);
 			return;
 		}
-		List<Target> targets = new ArrayList<>();
 		Island currentIsland = HypixelModApi.currentIsland();
-		for (BlockEspEntry entry : entries) {
-			if (!entry.enabled().value() || entry.blockId().isBlank()) {
-				entry.setStatus(0);
-				continue;
-			}
-			Block block = BlockEspRules.resolve(entry.blockId());
-			if (block == null || !BlockEspRules.matches(entry.blockId(), block)
-				|| !entry.appliesOn(currentIsland)) {
-				entry.setStatus(0);
-				continue;
-			}
-			int radius = effectiveRadius(renderDistanceBlocks, entry.useCustomRange().value(), entry.customRange().intValue());
-			targets.add(new Target(entry, block, radius, entry.blockId(), entry.connectTouching().value(), currentIsland));
+		long settingsFingerprint = settingsFingerprint(entries, renderDistanceBlocks, currentIsland);
+		if (settingsFingerprint != preparedSettingsFingerprint) {
+			preparedSettingsFingerprint = settingsFingerprint;
+			preparedTargets = prepareTargets(entries, renderDistanceBlocks, currentIsland);
+			preparedTargetSignature = signature(preparedTargets);
 		}
-		String signature = signature(targets);
+		List<Target> targets = preparedTargets;
 		BlockPos current = player.blockPosition();
 		if (level != lastLevel) {
 			lastLevel = level;
@@ -86,20 +83,18 @@ final class BlockEspScanner {
 			scan = null;
 			cancelPendingSnapshot();
 			ticksUntilRefresh = 0;
-			lastSignature = "";
 		}
-		if (!signature.equals(lastSignature)) {
+		if (!preparedTargetSignature.equals(lastSignature)) {
 			scan = null;
 			cancelPendingSnapshot();
 			ticksUntilRefresh = 0;
-			lastSignature = signature;
+			lastSignature = preparedTargetSignature;
 		}
 		if (targets.isEmpty()) {
 			snapshot = Snapshot.EMPTY;
 			scan = null;
 			cancelPendingSnapshot();
 			ticksUntilRefresh = 0;
-			for (BlockEspEntry entry : entries) entry.setStatus(0);
 			return;
 		}
 		if (scan == null) {
@@ -142,6 +137,50 @@ final class BlockEspScanner {
 			pendingSnapshot = null;
 			ticksUntilRefresh = REFRESH_DELAY_TICKS;
 		}
+	}
+
+	private List<Target> prepareTargets(List<BlockEspEntry> entries, int renderDistanceBlocks,
+		Island currentIsland) {
+		List<Target> targets = new ArrayList<>();
+		for (BlockEspEntry entry : entries) {
+			if (!entry.enabled().value() || entry.blockId().isBlank()) {
+				entry.setStatus(0);
+				continue;
+			}
+			Block block = BlockEspRules.resolve(entry.blockId());
+			if (block == null || !BlockEspRules.matches(entry.blockId(), block)
+				|| !entry.appliesOn(currentIsland)) {
+				entry.setStatus(0);
+				continue;
+			}
+			int radius = effectiveRadius(renderDistanceBlocks, entry.useCustomRange().value(), entry.customRange().intValue());
+			targets.add(new Target(entry, block, radius, entry.blockId(), entry.connectTouching().value(), currentIsland));
+		}
+		return List.copyOf(targets);
+	}
+
+	/** Cheap primitive fingerprint avoids rebuilding targets or resolving registry blocks on scan-idle ticks. */
+	private static long settingsFingerprint(List<BlockEspEntry> entries, int renderDistanceBlocks,
+		Island currentIsland) {
+		long hash = 0xCBF29CE484222325L;
+		hash = mix(hash, renderDistanceBlocks);
+		hash = mix(hash, currentIsland == null ? -1 : currentIsland.ordinal());
+		boolean hasLocation = HypixelModApi.hasLocation();
+		hash = mix(hash, hasLocation ? 1 : 0);
+		for (BlockEspEntry entry : entries) {
+			hash = mix(hash, entry.id());
+			hash = mix(hash, entry.enabled().value() ? 1 : 0);
+			hash = mix(hash, entry.blockId().hashCode());
+			hash = mix(hash, entry.useCustomRange().value() ? 1 : 0);
+			hash = mix(hash, entry.customRange().intValue());
+			hash = mix(hash, entry.connectTouching().value() ? 1 : 0);
+			hash = mix(hash, entry.appliesOn(currentIsland) ? 1 : 0);
+		}
+		return hash;
+	}
+
+	private static long mix(long hash, long value) {
+		return (hash ^ value) * 0x100000001B3L;
 	}
 
 	private void cancelPendingSnapshot() {

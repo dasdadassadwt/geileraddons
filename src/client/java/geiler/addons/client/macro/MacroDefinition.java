@@ -16,9 +16,12 @@ public final class MacroDefinition {
 	private boolean islandRestricted;
 	private final EnumSet<Island> islands = EnumSet.noneOf(Island.class);
 	private final List<MacroScript> scripts = new ArrayList<>();
+	/** Unconnected blocks live on the editor canvas and are deliberately never visited by MacroRunner. */
+	private final List<MacroStep> detachedBlocks = new ArrayList<>();
 	private float canvasPanX;
 	private float canvasPanY;
-	private float canvasZoom = 1.0f;
+	/** Canvas zoom as a user-facing percentage, from 1% through 100%. */
+	private float canvasZoom = 100.0f;
 
 	public MacroDefinition(int id) {
 		this.id = Math.max(0, id);
@@ -44,6 +47,15 @@ public final class MacroDefinition {
 	/** Backward-compatible view of the original macro workflow. */
 	public List<MacroStep> steps() { return primaryKeyScript().steps(); }
 	public List<MacroScript> scripts() { return scripts; }
+	public List<MacroStep> detachedBlocks() { return detachedBlocks; }
+	public void restoreDetachedBlocks(Iterable<MacroStep> restored) {
+		detachedBlocks.clear();
+		if (restored == null) return;
+		for (MacroStep step : restored) {
+			if (detachedBlocks.size() >= 512) break;
+			if (step != null) detachedBlocks.add(step);
+		}
+	}
 	public MacroScript primaryKeyScript() {
 		for (MacroScript script : scripts) if (script.trigger() == MacroScript.Trigger.KEY_PRESS) return script;
 		MacroScript script = new MacroScript(MacroScript.Trigger.KEY_PRESS);
@@ -74,7 +86,10 @@ public final class MacroDefinition {
 	public void setCanvasView(float panX, float panY, float zoom) {
 		canvasPanX = Float.isFinite(panX) ? Math.max(-100_000, Math.min(100_000, panX)) : 0;
 		canvasPanY = Float.isFinite(panY) ? Math.max(-100_000, Math.min(100_000, panY)) : 0;
-		canvasZoom = Float.isFinite(zoom) ? Math.max(0.45f, Math.min(2.0f, zoom)) : 1.0f;
+		setCanvasZoom(zoom);
+	}
+	public void setCanvasZoom(float zoom) {
+		canvasZoom = Float.isFinite(zoom) ? Math.max(1.0f, Math.min(100.0f, zoom)) : 100.0f;
 	}
 
 	public boolean allowsIsland(Island island) {

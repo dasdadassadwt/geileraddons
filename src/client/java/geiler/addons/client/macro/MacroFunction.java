@@ -8,6 +8,8 @@ import java.util.UUID;
 
 /** User-authored reusable block stack. Each call receives an isolated variable frame. */
 public final class MacroFunction {
+	/** Kept in sync with the separated-file loader so every accepted catalog remains reloadable. */
+	public static final int MAX_FUNCTIONS = 256;
 	private final String id;
 	private String name = "My Block";
 	private final List<Parameter> parameters = new ArrayList<>();

@@ -30,15 +30,17 @@ public final class GardenPlotGrid {
 
 	/** Maps an in-Garden world position to its plot; the outer +240 edge belongs to the final row/column. */
 	public static Optional<Plot> plotAt(double x, double y, double z) {
-		if (!Double.isFinite(y) || y < MIN_BUILD_Y || y >= MAX_BUILD_Y) return Optional.empty();
-		int column = coordinateIndex(x);
-		int row = coordinateIndex(z);
-		if (row < 0 || column < 0) return Optional.empty();
-		return Optional.of(BY_ID.get(IDS_BY_ROW[row][column]));
+		if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) return Optional.empty();
+		if (y < MIN_BUILD_Y || y >= MAX_BUILD_Y) return Optional.empty();
+		return plotAt(x, z);
 	}
 
 	/** Maps horizontal coordinates when the caller already established Garden/build-height context. */
 	public static Optional<Plot> plotAt(double x, double z) {
+		// Checked here rather than left to coordinateIndex's range test: coordinates arrive from
+		// entities and the camera, and "rejected because it is not finite" should be a stated rule
+		// instead of a side effect of which comparison happens to fail first.
+		if (!Double.isFinite(x) || !Double.isFinite(z)) return Optional.empty();
 		int column = coordinateIndex(x);
 		int row = coordinateIndex(z);
 		if (row < 0 || column < 0) return Optional.empty();
@@ -90,7 +92,13 @@ public final class GardenPlotGrid {
 		return Map.copyOf(byId);
 	}
 
-	public record Plot(int id, int row, int column, double minX, double minZ) {
+	/**
+	 * A plot's place in the grid and its world extent.
+	 *
+	 * @param gridZ index into {@link #IDS_BY_ROW}, which runs from the most negative Z upward
+	 * @param gridX index within that row, from the most negative X eastward
+	 */
+	public record Plot(int id, int gridZ, int gridX, double minX, double minZ) {
 		public double maxX() { return minX + PLOT_SIZE; }
 		public double maxZ() { return minZ + PLOT_SIZE; }
 		public double centerX() { return minX + PLOT_SIZE / 2.0; }

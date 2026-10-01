@@ -1,5 +1,7 @@
 package geiler.addons.client.macro;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import geiler.addons.client.location.Island;
 
 import java.util.ArrayList;
@@ -16,6 +18,16 @@ public sealed interface MacroStep permits MacroStep.Base {
 	non-sealed abstract class Base implements MacroStep {
 		private int delayMin;
 		private int delayMax;
+		private float editorX;
+		private float editorY;
+
+		/** Canvas position used only while the node is stored outside an executable stack. */
+		public float editorX() { return editorX; }
+		public float editorY() { return editorY; }
+		public void setEditorPosition(float x, float y) {
+			editorX = Float.isFinite(x) ? Math.max(-100_000, Math.min(100_000, x)) : 0;
+			editorY = Float.isFinite(y) ? Math.max(-100_000, Math.min(100_000, y)) : 0;
+		}
 
 		@Override
 		public int delayMin() {
@@ -101,17 +113,187 @@ public sealed interface MacroStep permits MacroStep.Base {
 	}
 
 	final class Wait extends Base {
+		public enum Mode { DURATION, CONDITION }
 		private int minMillis;
 		private int maxMillis;
+		private Mode mode = Mode.DURATION;
+		private MacroCondition condition = new MacroCondition.Always(true);
 		public Wait(int minMillis, int maxMillis) { setRange(minMillis, maxMillis); }
 		public int minMillis() { return minMillis; }
 		public int maxMillis() { return maxMillis; }
+		public Mode mode() { return mode; }
+		public MacroCondition condition() { return condition; }
+		public void setMode(Mode value) { mode = value == null ? Mode.DURATION : value; }
+		public void setCondition(MacroCondition value) { condition = value == null ? new MacroCondition.Always(true) : value; }
 		public void setRange(int min, int max) { minMillis = clamp(min, 0, 300_000); maxMillis = clamp(Math.max(min, max), minMillis, 300_000); }
 		@Override public String type() { return "wait"; }
 	}
 
+	/** A visual separator that never executes or consumes a delay in the runner. */
+	final class Comment extends Base {
+		private String text = "Comment";
+		public Comment() { }
+		public Comment(String text) { setText(text); }
+		public String text() { return text; }
+		public void setText(String value) { text = clampText(value, 256); }
+		@Override public String type() { return "comment"; }
+	}
+
+	/**
+	 * A persisted step whose type this build cannot safely execute or edit.
+	 *
+	 * <p>The raw object is retained so loading and saving a macro with a step introduced by another
+	 * build cannot erase that step's settings. Only the common editor-position and delay fields are
+	 * overlaid when the user changes them; all other raw fields stay untouched.
+	 */
+	final class Unknown extends Base {
+		private final JsonObject rawData;
+		private final String originalType;
+		private final boolean depthLimited;
+		private final int initialDelayMin;
+		private final int initialDelayMax;
+		private final float initialEditorX;
+		private final float initialEditorY;
+		private String rawJson;
+
+		public Unknown(JsonObject rawData) {
+			this(rawData, false);
+		}
+
+		public Unknown(JsonObject rawData, boolean depthLimited) {
+			this.rawData = rawData == null ? new JsonObject() : rawData.deepCopy();
+			this.originalType = typeName(this.rawData);
+			this.depthLimited = depthLimited;
+			setDelay(integer(this.rawData, "delayMin", 0), integer(this.rawData, "delayMax", 0));
+			setEditorPosition(decimal(this.rawData, "editorX", 0), decimal(this.rawData, "editorY", 0));
+			initialDelayMin = delayMin();
+			initialDelayMax = delayMax();
+			initialEditorX = editorX();
+			initialEditorY = editorY();
+		}
+
+		public String originalType() { return originalType; }
+		public boolean depthLimited() { return depthLimited; }
+
+		/** Returns a defensive copy with any deliberately edited common fields applied. */
+		public JsonObject serializedData() {
+			JsonObject result = rawData.deepCopy();
+			if (delayMin() != initialDelayMin) result.addProperty("delayMin", delayMin());
+			if (delayMax() != initialDelayMax) result.addProperty("delayMax", delayMax());
+			if (Float.compare(editorX(), initialEditorX) != 0) result.addProperty("editorX", editorX());
+			if (Float.compare(editorY(), initialEditorY) != 0) result.addProperty("editorY", editorY());
+			return result;
+		}
+
+		/** Compact read-only preview for the editor's raw-data panel. */
+		public String rawJson() {
+			if (rawJson == null) rawJson = rawData.toString();
+			return rawJson;
+		}
+
+		@Override public String type() { return originalType; }
+
+		private static String typeName(JsonObject object) {
+			JsonElement value = object.get("type");
+			if (value == null || !value.isJsonPrimitive()) return "(missing type)";
+			try {
+				String type = value.getAsString();
+				return type.isBlank() ? "(blank type)" : type;
+			} catch (RuntimeException ignored) {
+				return "(invalid type)";
+			}
+		}
+
+		private static int integer(JsonObject object, String name, int fallback) {
+			JsonElement value = object.get(name);
+			if (value == null || !value.isJsonPrimitive()) return fallback;
+			try { return value.getAsInt(); } catch (RuntimeException ignored) { return fallback; }
+		}
+
+		private static float decimal(JsonObject object, String name, float fallback) {
+			JsonElement value = object.get(name);
+			if (value == null || !value.isJsonPrimitive()) return fallback;
+			try { return value.getAsFloat(); } catch (RuntimeException ignored) { return fallback; }
+		}
+	}
+
+	/** Explicitly ends this macro run and releases held inputs. */
+	final class StopRun extends Base {
+		@Override public String type() { return "stop_run"; }
+	}
+
+	/** Scrolls an open screen or the world hotbar by a bounded number of wheel steps. */
+	final class Scroll extends Base {
+		public enum Direction { UP, DOWN }
+		private Direction direction = Direction.DOWN;
+		private int amount = 1;
+		public Scroll() { }
+		public Scroll(Direction direction, int amount) { setDirection(direction); setAmount(amount); }
+		public Direction direction() { return direction; }
+		public int amount() { return amount; }
+		public void setDirection(Direction value) { direction = value == null ? Direction.DOWN : value; }
+		public void setAmount(int value) { amount = clamp(value, 1, 32); }
+		@Override public String type() { return "scroll"; }
+	}
+
+	/** New combined inventory action; legacy slot/item nodes remain readable and executable. */
+	final class InventoryClick extends Base {
+		public enum Target { SLOT, ITEM }
+		private Target target = Target.SLOT;
+		private int slotId;
+		private String name = "";
+		private boolean contains;
+		private String scope = "container";
+		private int occurrence;
+		private int button;
+		private boolean shift;
+		public Target target() { return target; }
+		public int slotId() { return slotId; }
+		public String name() { return name; }
+		public boolean contains() { return contains; }
+		public String scope() { return scope; }
+		public int occurrence() { return occurrence; }
+		public int button() { return button; }
+		public boolean shift() { return shift; }
+		public void setTarget(Target value) { target = value == null ? Target.SLOT : value; }
+		public void setSlotId(int value) { slotId = Math.max(0, value); }
+		public void setName(String value) { name = value == null ? "" : value; }
+		public void setContains(boolean value) { contains = value; }
+		public void setScope(String value) { scope = value == null ? "container" : value; }
+		public void setOccurrence(int value) { occurrence = Math.max(0, value); }
+		public void setButton(int value) { button = clamp(value, 0, 2); }
+		public void setShift(boolean value) { shift = value; }
+		@Override public String type() { return "inventory_click"; }
+	}
+
+	/** New combined local/global variable action; legacy set/change nodes remain compatible. */
+	final class UpdateVariable extends Base {
+		public enum Operation { SET, ADD, SUBTRACT }
+		private Operation operation = Operation.SET;
+		private String name = "value";
+		private String globalVariableId;
+		private MacroValue value = MacroValue.literal(MacroValue.Type.TEXT, "");
+		private double amount = 1;
+		public Operation operation() { return operation; }
+		public String name() { return name; }
+		public String globalVariableId() { return globalVariableId; }
+		public boolean targetsGlobal() { return globalVariableId != null; }
+		public MacroValue value() { return value; }
+		public double amount() { return amount; }
+		public void setOperation(Operation value) { operation = value == null ? Operation.SET : value; }
+		public void setName(String value) { name = value == null || value.isBlank() ? "value" : value.strip().substring(0, Math.min(32, value.strip().length())); }
+		public void setGlobalVariableId(String value) { globalVariableId = value == null || value.isBlank() ? null : value.substring(0, Math.min(64, value.length())); }
+		public void setValue(MacroValue value) { this.value = value == null ? MacroValue.literal(MacroValue.Type.TEXT, "") : value; }
+		public void setAmount(double value) { amount = Double.isFinite(value) ? Math.max(-1_000_000, Math.min(1_000_000, value)) : 0; }
+		@Override public String type() { return "update_variable"; }
+	}
+
 	final class Key extends Base {
+		public enum InputMode { KEYBOARD, MOUSE, HOTBAR }
 		private String key;
+		private InputMode inputMode = InputMode.KEYBOARD;
+		private MouseButton.Button mouseButton = MouseButton.Button.LEFT;
+		private int hotbarSlot = 1;
 		private boolean hold;
 		private int holdMinMillis;
 		private int holdMaxMillis;
@@ -122,12 +304,18 @@ public sealed interface MacroStep permits MacroStep.Base {
 			setHoldRange(holdMinMillis, holdMaxMillis);
 		}
 		public String key() { return key; }
+		public InputMode inputMode() { return inputMode; }
+		public MouseButton.Button mouseButton() { return mouseButton; }
+		public int hotbarSlot() { return hotbarSlot; }
 		public boolean hold() { return hold; }
 		public int holdMinMillis() { return holdMinMillis; }
 		public int holdMaxMillis() { return holdMaxMillis; }
 		/** Legacy accessor retained for callers that treated hold time as a fixed duration. */
 		public int holdMillis() { return holdMinMillis; }
 		public void setKey(String value) { key = value == null ? "" : value; }
+		public void setInputMode(InputMode value) { inputMode = value == null ? InputMode.KEYBOARD : value; }
+		public void setMouseButton(MouseButton.Button value) { mouseButton = value == null ? MouseButton.Button.LEFT : value; }
+		public void setHotbarSlot(int value) { hotbarSlot = clamp(value, 1, 9); }
 		public void setHold(boolean value) { hold = value; }
 		public void setHoldMillis(int value) { setHoldRange(value, value); }
 		public void setHoldRange(int min, int max) {
@@ -190,7 +378,7 @@ public sealed interface MacroStep permits MacroStep.Base {
 	}
 
 	final class MouseButton extends Base {
-		public enum Button { LEFT, RIGHT, MIDDLE }
+		public enum Button { LEFT, RIGHT, MIDDLE, BUTTON_4, BUTTON_5, BUTTON_6, BUTTON_7, BUTTON_8 }
 		private Button button;
 		private boolean hold;
 		private int holdMillis;
@@ -332,26 +520,35 @@ public sealed interface MacroStep permits MacroStep.Base {
 
 	final class IfElse extends Base {
 		private MacroCondition condition;
+		private boolean elseEnabled;
 		private final List<MacroStep> thenSteps = new ArrayList<>();
 		private final List<MacroStep> elseSteps = new ArrayList<>();
 		public IfElse(MacroCondition condition) { this.condition = condition == null ? new MacroCondition.Always(true) : condition; }
 		public MacroCondition condition() { return condition; }
+		public boolean elseEnabled() { return elseEnabled; }
 		public void setCondition(MacroCondition value) { condition = value == null ? new MacroCondition.Always(true) : value; }
+		public void setElseEnabled(boolean value) { elseEnabled = value; }
 		public List<MacroStep> thenSteps() { return thenSteps; }
 		public List<MacroStep> elseSteps() { return elseSteps; }
 		@Override public String type() { return "if"; }
 	}
 
 	final class Repeat extends Base {
-		private boolean forever;
+		public enum Mode { COUNT, FOREVER, UNTIL }
+		private Mode mode;
 		private int count;
+		private MacroCondition condition = new MacroCondition.Always(false);
 		private final List<MacroStep> steps = new ArrayList<>();
-		public Repeat(boolean forever, int count) { this.forever = forever; this.count = Math.max(1, count); }
-		public boolean forever() { return forever; }
+		public Repeat(boolean forever, int count) { this.mode = forever ? Mode.FOREVER : Mode.COUNT; setCount(count); }
+		public Mode mode() { return mode; }
+		public boolean forever() { return mode == Mode.FOREVER; }
 		public int count() { return count; }
+		public MacroCondition condition() { return condition; }
 		public List<MacroStep> steps() { return steps; }
-		public void setForever(boolean value) { forever = value; }
-		public void setCount(int value) { count = Math.max(1, value); }
+		public void setMode(Mode value) { mode = value == null ? Mode.COUNT : value; }
+		public void setForever(boolean value) { mode = value ? Mode.FOREVER : Mode.COUNT; }
+		public void setCount(int value) { count = clamp(value, 1, 1_000_000); }
+		public void setCondition(MacroCondition value) { condition = value == null ? new MacroCondition.Always(false) : value; }
 		@Override public String type() { return "repeat"; }
 	}
 
@@ -369,6 +566,41 @@ public sealed interface MacroStep permits MacroStep.Base {
 		}
 		public List<MacroStep> steps() { return steps; }
 		@Override public String type() { return "repeat_until"; }
+	}
+
+	/** Multi-case value branch. Every case and the fallback own an independent nested stack. */
+	final class Switch extends Base {
+		private String name = "value";
+		private String globalVariableId;
+		private final List<SwitchCase> cases = new ArrayList<>();
+		private final List<MacroStep> defaultSteps = new ArrayList<>();
+		public Switch() {
+			cases.add(new SwitchCase("case 1"));
+			cases.add(new SwitchCase("case 2"));
+		}
+		public String name() { return name; }
+		public String globalVariableId() { return globalVariableId; }
+		public boolean targetsGlobal() { return globalVariableId != null; }
+		public List<SwitchCase> cases() { return cases; }
+		public List<MacroStep> defaultSteps() { return defaultSteps; }
+		public void setName(String value) { name = value == null || value.isBlank() ? "value" : value.strip().substring(0, Math.min(32, value.strip().length())); }
+		public void setGlobalVariableId(String value) { globalVariableId = value == null || value.isBlank() ? null : value.substring(0, Math.min(64, value.length())); }
+		public SwitchCase addCase() {
+			if (cases.size() >= 16) return null;
+			SwitchCase value = new SwitchCase("case " + (cases.size() + 1));
+			cases.add(value);
+			return value;
+		}
+		@Override public String type() { return "switch"; }
+	}
+
+	final class SwitchCase {
+		private String value;
+		private final List<MacroStep> steps = new ArrayList<>();
+		public SwitchCase(String value) { setValue(value); }
+		public String value() { return value; }
+		public List<MacroStep> steps() { return steps; }
+		public void setValue(String value) { this.value = clampText(value, 128); }
 	}
 
 	private static int clamp(int value, int min, int max) {

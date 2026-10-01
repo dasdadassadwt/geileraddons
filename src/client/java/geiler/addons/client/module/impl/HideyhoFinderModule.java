@@ -85,7 +85,7 @@ public final class HideyhoFinderModule extends Module {
 
 	/** Just a carrier so the constructor can both build the settings and keep references to them. */
 	private static final class Settings {
-		final ColorSetting color = new ColorSetting("Color", 255, 0, 255, 200);
+		final ColorSetting color = new ColorSetting("Color", 255, 0, 255, 83);
 		/** Ticks between sweeps; the default is one a second. */
 		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 20, true);
 		/** Boxes every fake player instead, which is how to tell a miss from a bad skin match. */

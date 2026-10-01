@@ -4,10 +4,13 @@ import geiler.addons.client.module.impl.PartyFinderStatsModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-/** Client-only handler for the local {@code /ga dstats <name>} command. */
+/** Client-only handler for the local {@code /ga dstats [player-name]} command. */
 public final class DungeonStatsCommand {
 	private static final Pattern PLAYER_NAME = Pattern.compile("[A-Za-z0-9_]{1,16}");
 
@@ -17,16 +20,33 @@ public final class DungeonStatsCommand {
 	public static boolean handle(String rawCommand) {
 		ParseResult parsed = parse(rawCommand);
 		if (!parsed.recognized()) return false;
-		if (!parsed.valid()) showUsage();
+		if (parsed.usesLocalPlayer()) lookupLocalPlayer();
+		else if (!parsed.valid()) showUsage();
 		else lookup(parsed.name());
 		return true;
+	}
+
+	/** Looks up the account name attached to the local player's profile. */
+	public static int lookupLocalPlayer() {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.player == null) return showUnavailable("no local player is connected");
+		return lookup(minecraft.player.getGameProfile().name());
 	}
 
 	public static int showUsage() {
 		Minecraft minecraft = Minecraft.getInstance();
 		if (minecraft.gui != null) {
 			minecraft.gui.getChat().addClientSystemMessage(Component.literal(
-				"[DStats] Usage: /ga dstats \"player-name\""));
+				"[DStats] Usage: /ga dstats [player-name]"));
+		}
+		return 0;
+	}
+
+	private static int showUnavailable(String reason) {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.gui != null) {
+			minecraft.gui.getChat().addClientSystemMessage(Component.literal(
+				"[DStats] Unavailable: " + reason + "."));
 		}
 		return 0;
 	}
@@ -44,6 +64,17 @@ public final class DungeonStatsCommand {
 		if (name == null || !PLAYER_NAME.matcher(name).matches()) return showUsage();
 		PartyFinderStatsModule.INSTANCE.lookupStats(name);
 		return 1;
+	}
+
+	/** Case-insensitive prefix filter with deterministic ordering for the full listed-player set. */
+	public static List<String> suggestions(Collection<String> profileNames, String prefix) {
+		if (profileNames == null || profileNames.isEmpty()) return List.of();
+		String normalizedPrefix = prefix == null ? "" : prefix.toLowerCase(Locale.ROOT);
+		return profileNames.stream()
+			.filter(name -> name != null && PLAYER_NAME.matcher(name).matches())
+			.filter(name -> name.toLowerCase(Locale.ROOT).startsWith(normalizedPrefix))
+			.sorted(String.CASE_INSENSITIVE_ORDER.thenComparing(Comparator.<String>naturalOrder()))
+			.toList();
 	}
 
 	public static int retryPartyMember(String name) {
@@ -64,7 +95,7 @@ public final class DungeonStatsCommand {
 		int commandEnd = firstWhitespace(tail);
 		String subcommand = (commandEnd < 0 ? tail : tail.substring(0, commandEnd)).toLowerCase(Locale.ROOT);
 		if (!subcommand.equals("dstats")) return ParseResult.NOT_RECOGNIZED;
-		if (commandEnd < 0) return ParseResult.USAGE;
+		if (commandEnd < 0) return ParseResult.LOCAL_PLAYER;
 
 		String name = tail.substring(commandEnd).trim();
 		if (name.startsWith("\"")) {
@@ -89,9 +120,14 @@ public final class DungeonStatsCommand {
 	public record ParseResult(boolean recognized, String name, String error) {
 		private static final ParseResult NOT_RECOGNIZED = new ParseResult(false, null, null);
 		private static final ParseResult USAGE = new ParseResult(true, null, "usage");
+		private static final ParseResult LOCAL_PLAYER = new ParseResult(true, null, null);
 
 		public boolean valid() {
 			return recognized && name != null;
+		}
+
+		public boolean usesLocalPlayer() {
+			return recognized && name == null && error == null;
 		}
 	}
 }

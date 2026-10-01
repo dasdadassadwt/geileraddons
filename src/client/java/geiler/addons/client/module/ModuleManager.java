@@ -1,10 +1,14 @@
 package geiler.addons.client.module;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 
 public final class ModuleManager {
 	private static final List<Module> MODULES = new ArrayList<>();
+	private static final Set<Module> REGISTERED_MODULES = Collections.newSetFromMap(new IdentityHashMap<>());
 
 	private ModuleManager() {
 	}
@@ -17,6 +21,7 @@ public final class ModuleManager {
 			}
 		}
 		MODULES.add(module);
+		REGISTERED_MODULES.add(module);
 	}
 
 	public static List<Module> modules() {
@@ -31,5 +36,10 @@ public final class ModuleManager {
 			}
 		}
 		return result;
+	}
+
+	/** Tests registry membership without rebuilding and scanning a category list. */
+	public static boolean contains(Category category, Module module) {
+		return module != null && REGISTERED_MODULES.contains(module) && module.category() == category;
 	}
 }

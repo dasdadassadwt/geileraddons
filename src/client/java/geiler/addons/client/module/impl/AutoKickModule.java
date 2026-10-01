@@ -137,9 +137,17 @@ public final class AutoKickModule extends Module {
 		boolean hasUnknownData = profileIncomplete || evaluation.hasUnknown();
 		if (!AutoKickRules.canApplyAction(hasUnknownData, evaluation.hasAction())) {
 			if (hasUnknownData) {
-				List<String> unknowns = evaluation.unknowns.isEmpty()
-					? List.of("complete profile data") : evaluation.unknowns;
-				scheduleProfileRetry(actionKey, floor, snapshot.generation(), member.name(), unknowns, null);
+				List<String> refreshableUnknowns = AutoKickRules.profileRefreshableUnknowns(evaluation.unknowns);
+				if (AutoKickRules.needsProfileRefresh(profileIncomplete, evaluation.unknowns)) {
+					List<String> unknowns = refreshableUnknowns.isEmpty()
+						? List.of("complete profile data") : refreshableUnknowns;
+					scheduleProfileRetry(actionKey, floor, snapshot.generation(), member.name(), unknowns, null);
+				} else {
+					// The missing classes belong to the other roster members. Refetching this player's
+					// profile cannot answer that check; wait for roster/profile updates instead.
+					profileRetries.remove(actionKey);
+					debug("Waiting for party class data for %s without refetching their profile", member.name());
+				}
 			} else {
 				profileRetries.remove(actionKey);
 				handled.add(actionKey);
@@ -160,7 +168,8 @@ public final class AutoKickModule extends Module {
 					.withHoverEvent(new HoverEvent.ShowText(Component.literal("/party kick " + member.name())))));
 			queueNotice(message);
 		} else {
-			scheduleKick(floor, snapshot.generation(), member.name(), evaluation.failures);
+			scheduleKick(floor, snapshot.generation(), member, evaluation.evaluatedClass,
+				stats.selectedClass(), evaluation.failures);
 			queueNotice(Component.literal("[Auto Kick] ").withStyle(ChatFormatting.RED)
 				.append(Component.literal(member.name() + " failed: " + String.join(", ", evaluation.failures) + " (scheduled)")
 					.withStyle(ChatFormatting.GRAY)));
@@ -197,6 +206,17 @@ public final class AutoKickModule extends Module {
 		handled.removeIf(key -> key.startsWith(generation + ":") && key.contains(nameSegment));
 	}
 
+	/** Cancels work tied to the departed membership episode before a same-name rejoin can reuse it. */
+	public void onMemberDeparted(String name) {
+		if (name == null || name.isBlank()) return;
+		String normalized = name.toLowerCase(Locale.ROOT);
+		pendingKicks.removeIf(pending -> pending.name.equalsIgnoreCase(name));
+		profileRetries.entrySet().removeIf(entry -> entry.getValue().name.equalsIgnoreCase(name));
+		String nameSegment = ":" + normalized + ":";
+		handled.removeIf(key -> key.contains(nameSegment));
+		manualFallbacks.removeIf(key -> key.contains(nameSegment));
+	}
+
 	public void tick() {
 		tickNotices();
 		syncGeneration(PartyListBackend.snapshot().generation());
@@ -214,11 +234,21 @@ public final class AutoKickModule extends Module {
 			}
 			Minecraft mc = Minecraft.getInstance();
 			if (!pending.messageSent && now >= pending.messageAt) {
+				if (!stillAllowed(pending)) {
+					debug("Cancelled scheduled kick for %s immediately before sending its reason", pending.name);
+					iterator.remove();
+					continue;
+				}
 				mc.player.connection.sendCommand("pc " + pending.partyMessage);
 				pending.messageSent = true;
 				debug("Sent party reason for %s; kick follows in %d ms", pending.name, pending.kickAt - now);
 			}
 			if (pending.messageSent && now >= pending.kickAt) {
+				if (!stillAllowed(pending)) {
+					debug("Cancelled scheduled kick for %s immediately before sending the kick command", pending.name);
+					iterator.remove();
+					continue;
+				}
 				mc.player.connection.sendCommand("party kick " + pending.name);
 				debug("Sent delayed party kick for %s", pending.name);
 				iterator.remove();
@@ -348,7 +378,14 @@ public final class AutoKickModule extends Module {
 			.withHoverEvent(new HoverEvent.ShowText(Component.literal(command))));
 	}
 
-	private void scheduleKick(DungeonFloor floor, long generation, String name, List<String> failures) {
+	private void scheduleKick(DungeonFloor floor, long generation, PartyMember member,
+		DungeonClass evaluatedClass, DungeonClass profileClass, List<String> failures) {
+		String name = member.name();
+		long membershipIdentity = PartyListBackend.membershipIdentity(name);
+		if (membershipIdentity == 0L) {
+			debug("Not scheduling a kick for %s because the current membership has no identity", name);
+			return;
+		}
 		long messageDelay = randomDelay();
 		long kickDelay = randomDelay();
 		long now = System.currentTimeMillis();
@@ -356,7 +393,8 @@ public final class AutoKickModule extends Module {
 		long startAt = Math.max(now, queueAfter);
 		String reasons = String.join(", ", failures);
 		String partyMessage = limitChat(name + " will be kicked for: " + reasons);
-		pendingKicks.add(new PendingKick(floor, generation, name, partyMessage, startAt + messageDelay,
+		pendingKicks.add(new PendingKick(floor, generation, name, membershipIdentity, evaluatedClass, profileClass,
+			partyMessage, startAt + messageDelay,
 			startAt + messageDelay + kickDelay));
 		debug("Scheduled %s after the existing action queue: party reason in %d ms, kick %d ms later",
 			name, startAt - now + messageDelay, kickDelay);
@@ -366,9 +404,13 @@ public final class AutoKickModule extends Module {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player == null || mc.player.connection == null) return false;
 		PartySnapshot snapshot = PartyListBackend.snapshot();
+		PartyMember member = findMember(snapshot, pending.name);
+		DungeonClass currentClass = member == null ? null
+			: member.dungeonClass() == null ? pending.profileClass : member.dungeonClass();
 		FloorPolicy policy = policies.get(pending.floor);
 		return snapshot.generation() == pending.generation && snapshot.isLeader(localName())
-			&& findMember(snapshot, pending.name) != null && policy != null
+			&& member != null && PartyListBackend.membershipIdentity(pending.name) == pending.membershipIdentity
+			&& currentClass == pending.evaluatedClass && policy != null
 			&& policy.autoKick.value() && !policy.askBeforeKick.value();
 	}
 
@@ -384,15 +426,23 @@ public final class AutoKickModule extends Module {
 		final DungeonFloor floor;
 		final long generation;
 		final String name;
+		final long membershipIdentity;
+		final DungeonClass evaluatedClass;
+		final DungeonClass profileClass;
 		final String partyMessage;
 		final long messageAt;
 		final long kickAt;
 		boolean messageSent;
 
-		PendingKick(DungeonFloor floor, long generation, String name, String partyMessage, long messageAt, long kickAt) {
+		PendingKick(DungeonFloor floor, long generation, String name, long membershipIdentity,
+			DungeonClass evaluatedClass, DungeonClass profileClass, String partyMessage,
+			long messageAt, long kickAt) {
 			this.floor = floor;
 			this.generation = generation;
 			this.name = name;
+			this.membershipIdentity = membershipIdentity;
+			this.evaluatedClass = evaluatedClass;
+			this.profileClass = profileClass;
 			this.partyMessage = partyMessage;
 			this.messageAt = messageAt;
 			this.kickAt = kickAt;
@@ -430,6 +480,7 @@ public final class AutoKickModule extends Module {
 	private static final class Evaluation {
 		final List<String> failures = new ArrayList<>();
 		final List<String> unknowns = new ArrayList<>();
+		DungeonClass evaluatedClass;
 		boolean hasAction() { return !failures.isEmpty(); }
 		boolean hasUnknown() { return !unknowns.isEmpty(); }
 	}
@@ -466,6 +517,7 @@ public final class AutoKickModule extends Module {
 
 		Settings() {
 			for (DungeonFloor floor : DungeonFloor.values()) {
+				if (floor.number() == 0) continue;
 				FloorPolicy policy = new FloorPolicy(floor);
 				policies.put(floor, policy);
 				(floor.master() ? master : normal).add(policy);
@@ -503,16 +555,16 @@ public final class AutoKickModule extends Module {
 			this.floor = floor;
 			String prefix = floor.displayName() + " ";
 			autoKick = new BooleanSetting(prefix + "Auto Kick", "Auto Kick", false);
-			askBeforeKick = new BooleanSetting(prefix + "Ask Before", "Ask Before", false);
+			askBeforeKick = new BooleanSetting(prefix + "Ask Before", "Ask Before", true);
 			dupeCheck = new BooleanSetting(prefix + "Dupe", "Dupe", false);
-			minCata = new TextSetting(prefix + "Cata", "Min Cata Level", "0", 6);
-			minClass = new TextSetting(prefix + "Class", "Min Class Level", "0", 6);
-			minClassAverage = new TextSetting(prefix + "Class Avg", "Min Class Avg", "0", 8);
-			minSecrets = new TextSetting(prefix + "Secrets", "Min Secrets", "0", 12);
-			minSecretAverage = new TextSetting(prefix + "Secret Avg", "Min Secret Avg", "0", 8);
-			minMagicalPower = new TextSetting(prefix + "MP", "Min MP", "0", 8);
-			personalBestLimit = new TextSetting(prefix + "Minimum PB", "PB limit (m:ss or sec; 0 off)", "0", 16);
-			minBank = new TextSetting(prefix + "Bank", "Min Bank", "0", 14);
+			minCata = new TextSetting(prefix + "Cata", "Min Cata Level", "", 6);
+			minClass = new TextSetting(prefix + "Class", "Min Class Level", "", 6);
+			minClassAverage = new TextSetting(prefix + "Class Avg", "Min Class Avg", "", 8);
+			minSecrets = new TextSetting(prefix + "Secrets", "Min Secrets", "", 12);
+			minSecretAverage = new TextSetting(prefix + "Secret Avg", "Min Secret Avg", "", 8);
+			minMagicalPower = new TextSetting(prefix + "MP", "Min MP", "", 8);
+			personalBestLimit = new TextSetting(prefix + "Minimum PB", "PB limit (m:ss or sec; 0 off)", "", 16);
+			minBank = new TextSetting(prefix + "Bank", "Min Bank", "", 14);
 			terminator = new BooleanSetting(prefix + "Terminator", "Terminator", false);
 			hyperion = new BooleanSetting(prefix + "Hyperion", "Hyperion", false);
 			goldenDragon = new BooleanSetting(prefix + "GDrag", "GDrag", false);
@@ -541,6 +593,7 @@ public final class AutoKickModule extends Module {
 			if (requiredCata > 0 && !stats.has(DungeonStats.DataField.CATACOMBS_LEVEL)) result.unknowns.add("Cata");
 			else if (requiredCata > 0 && stats.catacombsLevel() < requiredCata) result.failures.add("Cata " + stats.catacombsLevel() + "/" + requiredCata);
 			DungeonClass dungeonClass = member.dungeonClass() != null ? member.dungeonClass() : stats.selectedClass();
+			result.evaluatedClass = dungeonClass;
 			if (dupeCheck.value() && dungeonClass == null) result.unknowns.add("Class");
 			if (dupeCheck.value() && dungeonClass != null) {
 				for (PartyMember other : snapshot.members()) {

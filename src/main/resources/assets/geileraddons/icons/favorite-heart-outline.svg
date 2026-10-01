@@ -1,0 +1,4 @@
+<!-- Original GeilerAddons favorite icon. The matching PNG is rasterized at high resolution for smooth GUI scaling. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24">
+  <path d="M12 20.5 10.8 19.4C6.6 15.6 3 12.3 3 8.4 3 5.4 5.3 3.2 8.2 3.2c1.6 0 2.9.8 3.8 2 0.9-1.2 2.2-2 3.8-2 2.9 0 5.2 2.2 5.2 5.2 0 3.9-3.6 7.2-7.8 11Z" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -110,13 +110,13 @@ public final class TreeNotifierModule extends Module implements HudElement {
 	/** Just a carrier so the constructor can both build the settings and keep references to them. */
 	private static final class Settings {
 		final BooleanSetting giftEnabled = new BooleanSetting("On Tree Gift", true);
-		final TextSetting giftText = new TextSetting("Gift Text", "TREE GIFT", 48);
+		final TextSetting giftText = new TextSetting("Gift Text", "Baum Kaputt", 48);
 		final TextSetting giftSound = new TextSetting("Gift Sound", GIFT_SOUND, 64);
 		final NumberSetting giftPitch = new NumberSetting("Gift Pitch", 0.5f, 2.0f, 1.0f);
 		final BooleanSetting hideGiftChat = new BooleanSetting("Hide Gift Message", false);
 
 		final BooleanSetting felledEnabled = new BooleanSetting("On Timber / Petalfall", true);
-		final TextSetting felledText = new TextSetting("Felled Text", "TREE BROKEN", 48);
+		final TextSetting felledText = new TextSetting("Felled Text", "Kaboom", 48);
 		final TextSetting felledSound = new TextSetting("Felled Sound", FELLED_SOUND, 64);
 		final NumberSetting felledPitch = new NumberSetting("Felled Pitch", 0.5f, 2.0f, 0.8f);
 		final BooleanSetting hideFelledChat = new BooleanSetting("Hide Felled Message", false);

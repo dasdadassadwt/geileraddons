@@ -16,6 +16,7 @@ import geiler.addons.client.macro.MacroVariableStore;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ChoiceSetting;
+import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleAction;
 import geiler.addons.client.module.impl.InventoryButtonsModule;
@@ -24,8 +25,6 @@ import geiler.addons.client.module.Setting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.gui.MacroTransferScreen;
-import geiler.addons.client.macro.MacroCheatRules;
-import geiler.addons.client.module.CheatsState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
@@ -43,6 +42,14 @@ import java.util.Set;
 
 /** Stores and exposes user-authored keyboard workflows. */
 public final class MacrosModule extends Module {
+	private static final ColorSetting ACTIONS_NODE_COLOR = new ColorSetting("Node Color · Actions", 76, 151, 255, 255);
+	private static final ColorSetting CONTROL_NODE_COLOR = new ColorSetting("Node Color · Control", 255, 171, 25, 255);
+	private static final ColorSetting INPUT_NODE_COLOR = new ColorSetting("Node Color · Player Input", 15, 189, 140, 255);
+	private static final ColorSetting INVENTORY_NODE_COLOR = new ColorSetting("Node Color · Inventory", 125, 119, 245, 255);
+	private static final ColorSetting DISPLAY_NODE_COLOR = new ColorSetting("Node Color · Display", 46, 184, 212, 255);
+	private static final ColorSetting DATA_NODE_COLOR = new ColorSetting("Node Color · Data", 226, 196, 50, 255);
+	private static final ColorSetting REUSABLE_NODE_COLOR = new ColorSetting("Node Color · Reusable", 255, 102, 128, 255);
+	private static final ColorSetting WORLD_NODE_COLOR = new ColorSetting("Node Color · World", 102, 142, 61, 255);
 	public static final MacrosModule INSTANCE = new MacrosModule();
 
 	private static final String[] CONTEXT_CHOICES = {
@@ -53,6 +60,7 @@ public final class MacrosModule extends Module {
 	private final MacroVariableStore globalVariables = new MacroVariableStore(ModConfig::markDirty);
 	private final Map<Integer, Controls> controls = new HashMap<>();
 	private final BooleanSetting systemEnabled;
+	private final ModuleAction replayBlocked;
 	private final ModuleAction create;
 	private final ModuleAction transfer;
 	private final ModuleAction foldersAction;
@@ -61,6 +69,9 @@ public final class MacrosModule extends Module {
 
 	private MacrosModule() {
 		this(new BooleanSetting("Enable Macro System", true),
+			new ModuleAction("Replay Last Blocked Macro",
+				"Starts the chat-triggered macro stack that was most recently refused.",
+				MacroRunner::replayLastBlocked),
 			new ModuleAction("Create Macro", "Create a new macro workflow.", () -> INSTANCE.create()),
 			new ModuleAction("Share / Paste Macros",
 				"Select several macros, copy them to the clipboard, or append a shared package.",
@@ -68,11 +79,14 @@ public final class MacrosModule extends Module {
 			new ModuleAction("Manage Folders", "Organize macros into nested folders.", () -> INSTANCE.openFolders()));
 	}
 
-	private MacrosModule(BooleanSetting systemEnabled, ModuleAction create, ModuleAction transfer,
+	private MacrosModule(BooleanSetting systemEnabled, ModuleAction replayBlocked, ModuleAction create, ModuleAction transfer,
 		ModuleAction foldersAction) {
 		super("Macros", "Build workflows from Minecraft inputs. Each node has its own optional delay and start context.",
-			Category.MISCELLANEOUS, systemEnabled, create, transfer, foldersAction);
+			Category.MISCELLANEOUS, systemEnabled, replayBlocked, create, transfer, foldersAction,
+			ACTIONS_NODE_COLOR, CONTROL_NODE_COLOR, INPUT_NODE_COLOR, INVENTORY_NODE_COLOR,
+			DISPLAY_NODE_COLOR, DATA_NODE_COLOR, REUSABLE_NODE_COLOR, WORLD_NODE_COLOR);
 		this.systemEnabled = systemEnabled;
+		this.replayBlocked = replayBlocked;
 		this.create = create;
 		this.transfer = transfer;
 		this.foldersAction = foldersAction;
@@ -89,6 +103,14 @@ public final class MacrosModule extends Module {
 	}
 
 	public List<MacroFunction> functions() { return List.copyOf(functions); }
+	public int actionsNodeColor() { return ACTIONS_NODE_COLOR.argb(); }
+	public int controlNodeColor() { return CONTROL_NODE_COLOR.argb(); }
+	public int inputNodeColor() { return INPUT_NODE_COLOR.argb(); }
+	public int inventoryNodeColor() { return INVENTORY_NODE_COLOR.argb(); }
+	public int displayNodeColor() { return DISPLAY_NODE_COLOR.argb(); }
+	public int dataNodeColor() { return DATA_NODE_COLOR.argb(); }
+	public int reusableNodeColor() { return REUSABLE_NODE_COLOR.argb(); }
+	public int worldNodeColor() { return WORLD_NODE_COLOR.argb(); }
 	/** Shared variable definitions and values, available to all macros and function calls. */
 	public MacroVariableStore globalVariables() { return globalVariables; }
 	public MacroFunction function(String id) {
@@ -97,6 +119,12 @@ public final class MacrosModule extends Module {
 		return null;
 	}
 	public MacroFunction createFunction() {
+		if (functions.size() >= MacroFunction.MAX_FUNCTIONS) {
+			Minecraft mc = Minecraft.getInstance();
+			if (mc.gui != null) mc.gui.getChat().addClientSystemMessage(
+				Component.literal("[Macros] Limit " + MacroFunction.MAX_FUNCTIONS + " reusable functions reached."));
+			return null;
+		}
 		MacroFunction function = new MacroFunction();
 		function.setName("My Block " + (functions.size() + 1));
 		functions.add(function);
@@ -105,7 +133,13 @@ public final class MacrosModule extends Module {
 	}
 	public void restoreFunctions(List<MacroFunction> restored) {
 		functions.clear();
-		if (restored != null) functions.addAll(restored);
+		if (restored != null) {
+			Set<String> ids = new HashSet<>();
+			for (MacroFunction function : restored) {
+				if (functions.size() >= MacroFunction.MAX_FUNCTIONS) break;
+				if (function != null && ids.add(function.id())) functions.add(function);
+			}
+		}
 	}
 
 	public FolderTree folders() { return folders; }
@@ -145,10 +179,16 @@ public final class MacrosModule extends Module {
 	@Override
 	public List<SettingGroup> groups() {
 		syncSettings();
-		List<SettingGroup> groups = new ArrayList<>(macros.size() + folders.folders().size() + 1);
-		groups.add(new SettingGroup(null, systemEnabled, create, transfer, foldersAction));
-		for (FolderTree.Folder folder : folders.childrenOf(null)) groups.add(folderGroup(folder));
-		for (MacroDefinition macro : macros) if (!folders.contains(macro.folderId())) groups.add(macroGroup(macro));
+		List<SettingGroup> groups = new ArrayList<>(3);
+		groups.add(new SettingGroup(null, systemEnabled, replayBlocked, create, transfer, foldersAction));
+		List<SettingGroup> library = new ArrayList<>(macros.size() + folders.folders().size());
+		for (FolderTree.Folder folder : folders.childrenOf(null)) library.add(folderGroup(folder));
+		for (MacroDefinition macro : macros) if (!folders.contains(macro.folderId())) library.add(macroGroup(macro));
+		groups.add(new SettingGroup("Macro Library", null, true, List.of(), library, false,
+			"macro-library"));
+		groups.add(SettingGroup.folded("Macro Node Colors", ACTIONS_NODE_COLOR, CONTROL_NODE_COLOR,
+			INPUT_NODE_COLOR, INVENTORY_NODE_COLOR, DISPLAY_NODE_COLOR, DATA_NODE_COLOR,
+			REUSABLE_NODE_COLOR, WORLD_NODE_COLOR).keyed("macro-node-colors"));
 		return groups;
 	}
 
@@ -179,21 +219,10 @@ public final class MacrosModule extends Module {
 			SettingGroup macroGroup = new SettingGroup("Macro " + macro.id() + " • " + macro.name(),
 				c.enabled, c.name, c.context,
 				c.islandRestricted, capture, edit, delete);
-			// The gate is visible here rather than only when a start is refused: the row explains
-			// what the workflow would need and what to turn on, without moving the macro's switch.
-			if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(macro)) {
-				String reason = MacroCheatRules.reason(macro.scripts());
-				macroGroup = new SettingGroup("Macro " + macro.id() + " • " + macro.name(),
-					c.enabled, c.name, c.context, c.islandRestricted, capture, edit,
-					new ModuleAction("Cheats required",
-						"This workflow needs Cheats because " + reason
-							+ ". Turn it on under Miscellaneous → General → Cheats.",
-						() -> message("Macro '" + macro.name() + "' needs Cheats because " + reason
-							+ ". Turn it on under Miscellaneous → General → Cheats.")),
-					delete);
-			}
+			// Keyed per macro: the heading text is the same for every macro, so without this the fold
+			// state of one macro's Islands section would apply to all of them.
 			SettingGroup islands = SettingGroup.folded("Islands",
-				c.islands.values().toArray(new Setting[0]));
+				c.islands.values().toArray(new Setting[0])).keyed("macro-islands:" + macro.id());
 			return macroGroup.containing(islands).keyed("macro-entry:" + macro.id());
 	}
 
@@ -233,6 +262,13 @@ public final class MacrosModule extends Module {
 		syncSettings();
 		MacroTransfer.ImportResult result = MacroTransfer.decode(payload, nextId);
 		if (!result.success()) return result;
+		Set<String> resultingFunctionIds = new HashSet<>();
+		for (MacroFunction function : functions) resultingFunctionIds.add(function.id());
+		for (MacroFunction function : result.functions()) resultingFunctionIds.add(function.id());
+		if (resultingFunctionIds.size() > MacroFunction.MAX_FUNCTIONS) {
+			return new MacroTransfer.ImportResult(List.of(), List.of(), List.of(),
+				"Import would exceed the " + MacroFunction.MAX_FUNCTIONS + " reusable-function limit.");
+		}
 		for (MacroDefinition macro : result.macros()) {
 			macros.add(macro);
 			controls.put(macro.id(), new Controls(macro));
@@ -256,17 +292,23 @@ public final class MacrosModule extends Module {
 		ArrayDeque<Integer> macroQueue = new ArrayDeque<>();
 		ArrayDeque<String> functionQueue = new ArrayDeque<>();
 		if (selected != null) for (MacroDefinition macro : selected) if (macro != null) macroQueue.add(macro.id());
-		while ((!macroQueue.isEmpty() || !functionQueue.isEmpty())
-			&& includedMacros.size() < 64 && includedFunctions.size() < 256) {
+		while (!macroQueue.isEmpty() || !functionQueue.isEmpty()) {
 			if (!macroQueue.isEmpty()) {
 				int id = macroQueue.removeFirst();
 				MacroDefinition macro = knownMacros.get(id);
-				if (macro == null || includedMacros.putIfAbsent(id, macro) != null) continue;
+				if (macro == null || includedMacros.containsKey(id)) continue;
+				if (includedMacros.size() >= 64) throw new IllegalArgumentException(
+					"Export needs more than 64 linked macros; choose fewer macros or remove some calls.");
+				includedMacros.put(id, macro);
 				for (MacroScript script : macro.scripts()) collectReferences(script.steps(), macroQueue, functionQueue, globalVariableIds, 0);
 			} else {
 				String id = functionQueue.removeFirst();
 				MacroFunction function = knownFunctions.get(id);
-				if (function == null || includedFunctions.putIfAbsent(id, function) != null) continue;
+				if (function == null || includedFunctions.containsKey(id)) continue;
+				if (includedFunctions.size() >= MacroFunction.MAX_FUNCTIONS) throw new IllegalArgumentException(
+					"Export needs more than " + MacroFunction.MAX_FUNCTIONS
+						+ " linked reusable functions; choose fewer macros or remove some calls.");
+				includedFunctions.put(id, function);
 				collectReferences(function.steps(), macroQueue, functionQueue, globalVariableIds, 0);
 			}
 		}

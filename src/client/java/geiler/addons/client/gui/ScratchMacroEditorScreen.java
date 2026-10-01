@@ -1,20 +1,24 @@
 package geiler.addons.client.gui;
 
 import com.mojang.blaze3d.platform.InputConstants;
+import com.google.gson.JsonParser;
+import geiler.addons.client.config.ClickGuiState;
+import geiler.addons.client.config.MacroScriptConfigCodec;
+import geiler.addons.client.config.MacroStepConfigCodec;
 import geiler.addons.client.config.ModConfig;
+import geiler.addons.client.gui.GuiTheme;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.macro.MacroChatTrigger;
-import geiler.addons.client.macro.MacroCheatRules;
 import geiler.addons.client.macro.MacroCondition;
 import geiler.addons.client.macro.MacroDefinition;
 import geiler.addons.client.macro.MacroFunction;
 import geiler.addons.client.macro.MacroRunner;
 import geiler.addons.client.macro.MacroScript;
 import geiler.addons.client.macro.MacroStep;
+import geiler.addons.client.macro.MacroTreeRules;
 import geiler.addons.client.macro.MacroValue;
 import geiler.addons.client.macro.MacroVariableStore;
 import geiler.addons.client.macro.MacroWorldRegion;
-import geiler.addons.client.module.CheatsState;
 import geiler.addons.client.module.ModuleKeybindManager;
 import geiler.addons.client.module.impl.MacrosModule;
 import geiler.addons.client.module.impl.VisualModule;
@@ -44,9 +48,8 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private static final int MARGIN = 8;
 	private static final int HEADER_HEIGHT = 70;
 	private static final int FOOTER_HEIGHT = 22;
-	private static final int COMPACT_WIDTH = 940;
 	private static final int GRID_STEP = 26;
-	private static final int MAX_TREE_DEPTH = 12;
+	private static final int MAX_TREE_DEPTH = MacroTreeRules.MAX_DEPTH;
 	private static final int MAX_CONDITION_DEPTH = 6;
 	private static final int MAX_COMPOUND_TERMS = 12;
 	private static final int BLOCK_HEIGHT = 27;
@@ -60,6 +63,16 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private static final int COLOR_VARIABLE = 0xFFFF8C1A;
 	private static final int COLOR_FUNCTION = 0xFFFF6680;
 	private static final int COLOR_REGION = 0xFF45C9B0;
+
+	/**
+	 * Every colour a macro block can be drawn in when Theme Macro Colors is off.
+	 *
+	 * <p>Exposed so the outline check can prove the selection ring reads against all of them, rather
+	 * than against whichever one a screenshot happened to show.
+	 */
+	public static final int[] MACRO_CATEGORY_COLORS = {
+		COLOR_MOTION, COLOR_EVENT, COLOR_CONTROL, COLOR_INPUT, COLOR_VARIABLE, COLOR_FUNCTION, COLOR_REGION
+	};
 	private static final List<PaletteBlock> PALETTE_BLOCKS = createPaletteBlocks();
 
 	private final Screen parent;
@@ -71,9 +84,14 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private List<CanvasScriptPlacement> visibleScriptPlacements = List.of();
 	private final IdentityHashMap<MacroStep, Integer> measuredStepHeights = new IdentityHashMap<>();
 	private final IdentityHashMap<List<MacroStep>, ListLayout> measuredListLayouts = new IdentityHashMap<>();
+	private final IdentityHashMap<MacroStep, int[]> measuredStepWidths = new IdentityHashMap<>();
+	private final IdentityHashMap<List<MacroStep>, int[]> measuredListWidths = new IdentityHashMap<>();
+	private Font measuredWidthFont;
+	private PaletteLayout cachedPaletteLayout;
+	private String cachedPaletteInput;
+	private Category cachedPaletteCategory;
 
 	private Tab tab = Tab.CODE;
-	private CompactPane compactPane = CompactPane.PALETTE;
 	private Category category = Category.ACTIONS;
 	private MacroScript selectedScript;
 	private MacroFunction selectedFunction;
@@ -85,6 +103,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private int inspectorMaxScroll;
 	private String focusedField;
 	private String fieldText = "";
+	private String fieldInitialText = "";
 	private int fieldCursor;
 	private boolean selectAll;
 	private Consumer<String> focusedSetter;
@@ -92,8 +111,13 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private Layout lastLayout;
 	private int currentMouseX;
 	private int currentMouseY;
-	private Runnable undoAction;
-	private String undoLabel = "";
+	private float dragGhostX;
+	private float dragGhostY;
+	private boolean dragGhostInitialized;
+	private static final int HISTORY_LIMIT = 50;
+	private final BoundedUndoHistory<DocumentSnapshot> documentHistory;
+	private BoundedUndoHistory<FieldDraftState> fieldHistory;
+	private boolean restoringHistory;
 	private PickerState picker;
 	private boolean globalManagerOpen;
 	private String globalNameDraft = "";
@@ -102,10 +126,16 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private String notice = "";
 	private long noticeUntil;
 	private boolean replayingCanvasTargets;
+	private float canvasTransformScale = 1.0f;
+	private float canvasTransformX;
+	private float canvasTransformY;
+	private Rect canvasTransformClip;
+	private boolean canvasTransformActive;
 	private boolean canvasTargetCacheValid;
 	private int workspaceRevision;
 	private int cachedWorkspaceRevision = -1;
 	private Rect cachedCanvasViewport;
+	private Font cachedCanvasFont;
 	private Tab cachedCanvasTab;
 	private MacroFunction cachedCanvasFunction;
 	private float cachedCanvasPanX;
@@ -116,13 +146,22 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private float visibleScriptsPanX;
 	private float visibleScriptsPanY;
 	private float visibleScriptsZoom;
+	private Font visibleScriptsFont;
+	private List<CanvasDetachedPlacement> visibleDetachedPlacements = List.of();
+	private int visibleDetachedRevision = -1;
+	private Rect visibleDetachedViewport;
+	private float visibleDetachedPanX;
+	private float visibleDetachedPanY;
+	private float visibleDetachedZoom;
+	private Font visibleDetachedFont;
 
 	public ScratchMacroEditorScreen(Screen parent, MacroDefinition macro) {
-		super(Component.literal("Scratch Macro Editor"));
+		super(Component.literal("Macro Editor"));
 		this.parent = parent;
 		this.macro = macro;
 		this.selectedScript = macro == null ? null : macro.primaryKeyScript();
 		this.selectedFunction = firstFunction();
+		this.documentHistory = new BoundedUndoHistory<>(HISTORY_LIMIT, captureDocumentSnapshot());
 	}
 
 	@Override
@@ -147,20 +186,9 @@ public final class ScratchMacroEditorScreen extends Screen {
 			layout.panel.y + 3, PANEL_HIGHLIGHT);
 		renderHeader(graphics, layout, mouseX, mouseY);
 
-		if (layout.compact) {
-			renderCompactTabs(graphics, layout, mouseX, mouseY);
-			renderCanvas(graphics, layout.canvas, mouseX, mouseY);
-			Rect pane = layout.compactContent;
-			switch (compactPane) {
-				case PALETTE -> renderPalette(graphics, pane, mouseX, mouseY);
-				case INSPECTOR -> renderInspector(graphics, pane, mouseX, mouseY);
-				case CANVAS -> { }
-			}
-		} else {
-			renderPalette(graphics, layout.palette, mouseX, mouseY);
-			renderCanvas(graphics, layout.canvas, mouseX, mouseY);
-			renderInspector(graphics, layout.inspector, mouseX, mouseY);
-		}
+		renderPalette(graphics, layout.palette, mouseX, mouseY);
+		renderCanvas(graphics, layout.canvas, mouseX, mouseY);
+		renderInspector(graphics, layout.inspector, mouseX, mouseY);
 		renderFooter(graphics, layout);
 		renderDragPreview(graphics, mouseX, mouseY);
 		renderPicker(graphics, mouseX, mouseY);
@@ -171,53 +199,29 @@ public final class ScratchMacroEditorScreen extends Screen {
 		int panelW = Math.max(280, width - MARGIN * 2);
 		int panelH = Math.max(180, height - MARGIN * 2);
 		Rect panel = new Rect(MARGIN, MARGIN, panelW, panelH);
-		boolean compact = panelW < COMPACT_WIDTH || panelH < 520;
 		int footerY = panel.y + panel.h - FOOTER_HEIGHT;
-		if (compact) {
-			int tabsY = panel.y + HEADER_HEIGHT + 2;
-			int contentH = Math.max(80, footerY - tabsY - 4);
-			int innerX = panel.x + 7;
-			int innerW = panel.w - 14;
-			int gap = 6;
-			int sidebarW = clamp(Math.round(innerW * 0.24f), 118, 190);
-			if (innerW - sidebarW - gap < 150) sidebarW = Math.max(84, innerW - gap - 150);
-			Rect sidebar = new Rect(innerX, tabsY + 25, sidebarW, Math.max(52, contentH - 25));
-			Rect canvas = new Rect(innerX + sidebarW + gap, tabsY, Math.max(1, innerW - sidebarW - gap), contentH);
-			return new Layout(panel, sidebar, canvas, sidebar, true, footerY,
-				new Rect(innerX, tabsY, sidebarW, 21), sidebar);
-		}
 		int contentY = panel.y + HEADER_HEIGHT + 2;
 		int contentH = Math.max(100, footerY - contentY - 4);
 		int innerX = panel.x + 7;
 		int innerW = panel.w - 14;
 		int gap = 6;
-		int paletteW = Math.max(166, Math.min(194, Math.round(innerW * 0.20f)));
-		int inspectorW = Math.max(246, Math.min(310, Math.round(innerW * 0.27f)));
+		int paletteW = Math.max(92, Math.min(194, Math.round(innerW * 0.20f)));
+		int inspectorW = Math.max(150, Math.min(310, Math.round(innerW * 0.27f)));
 		int canvasW = innerW - paletteW - inspectorW - gap * 2;
-		if (canvasW < 280) {
-			compact = true;
-			int tabsY = panel.y + HEADER_HEIGHT + 2;
-			int compactHeight = Math.max(80, footerY - tabsY - 4);
-			int compactX = panel.x + 7;
-			int compactWidth = panel.w - 14;
-			int compactGap = 6;
-			int sidebarW = clamp(Math.round(compactWidth * 0.24f), 118, 190);
-			if (compactWidth - sidebarW - compactGap < 150) sidebarW = Math.max(84, compactWidth - compactGap - 150);
-			Rect sidebar = new Rect(compactX, tabsY + 25, sidebarW, Math.max(52, compactHeight - 25));
-			Rect canvas = new Rect(compactX + sidebarW + compactGap, tabsY,
-				Math.max(1, compactWidth - sidebarW - compactGap), compactHeight);
-			return new Layout(panel, sidebar, canvas, sidebar, true, footerY,
-				new Rect(compactX, tabsY, sidebarW, 21), sidebar);
+		if (canvasW < 220) {
+			paletteW = Math.max(68, Math.min(paletteW, Math.round(innerW * 0.18f)));
+			inspectorW = Math.max(120, Math.min(inspectorW, Math.round(innerW * 0.27f)));
+			canvasW = innerW - paletteW - inspectorW - gap * 2;
 		}
 		Rect palette = new Rect(innerX, contentY, paletteW, contentH);
 		Rect canvas = new Rect(palette.x + palette.w + gap, contentY, canvasW, contentH);
 		Rect inspector = new Rect(canvas.x + canvas.w + gap, contentY, inspectorW, contentH);
-		return new Layout(panel, palette, canvas, inspector, false, footerY, null);
+		return new Layout(panel, palette, canvas, inspector, footerY);
 	}
 
 	private void renderHeader(GuiGraphicsExtractor graphics, Layout layout, int mouseX, int mouseY) {
 		Rect panel = layout.panel;
-		graphics.text(font, "Scratch Studio", panel.x + 13, panel.y + 8, TEXT_PRIMARY);
+		graphics.text(font, "Macro Editor", panel.x + 13, panel.y + 8, TEXT_PRIMARY);
 		String subtitle = macro == null ? "No macro selected" : "Macro " + macro.id() + "  ·  " + macro.name();
 		graphics.text(font, trim(subtitle, panel.w - 170), panel.x + 13, panel.y + 22, TEXT_MUTED);
 
@@ -248,22 +252,6 @@ public final class ScratchMacroEditorScreen extends Screen {
 			right.startsWith("Listening") ? TEXT_WARN : TEXT_MUTED);
 	}
 
-	private void renderCompactTabs(GuiGraphicsExtractor graphics, Layout layout, int mouseX, int mouseY) {
-		String[] labels = {"Blocks", "Inspect"};
-		CompactPane[] panes = {CompactPane.PALETTE, CompactPane.INSPECTOR};
-		Rect row = layout.compactTabs;
-		int gap = 3;
-		int w = (row.w - gap) / 2;
-		for (int i = 0; i < panes.length; i++) {
-			Rect bounds = new Rect(row.x + i * (w + gap), row.y, w, row.h);
-			CompactPane pane = panes[i];
-			button(graphics, labels[i], bounds, mouseX, mouseY, row,
-				() -> compactPane = pane, compactPane == pane,
-				pane == CompactPane.PALETTE ? categoryColor(Category.ACTIONS)
-					: pane == CompactPane.INSPECTOR ? categoryColor(Category.VARIABLES) : categoryColor(Category.WORLD));
-		}
-	}
-
 	private void renderPalette(GuiGraphicsExtractor graphics, Rect pane, int mouseX, int mouseY) {
 		drawPanel(graphics, pane, "Blocks", tab == Tab.FUNCTIONS
 			? "Search nodes for this reusable block" : "Search a category, then click or drag");
@@ -277,12 +265,12 @@ public final class ScratchMacroEditorScreen extends Screen {
 		Rect search = new Rect(viewport.x + 3, viewport.y + 1, viewport.w - 6, 20);
 		boolean searchFocused = "palette-search".equals(focusedField);
 		roundedRectBordered(graphics, search.x, search.y, search.w, search.h, RADIUS_SMALL,
-			searchFocused ? CARD_BG_HOVER : CARD_BG, searchFocused ? CARD_BG_HOVER : CARD_BG,
-			searchFocused ? CARD_BORDER_ENABLED : CARD_BORDER);
+			MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM,
+			searchFocused ? CARD_BORDER_ENABLED : BORDER);
 		String query = searchFocused ? fieldText : paletteSearch;
-		String searchLabel = query.isBlank() && !searchFocused ? "Search nodes…" : query + (searchFocused ? "|" : "");
-		graphics.text(font, trim(searchLabel, search.w - 12), search.x + 5, search.y + 6,
-			query.isBlank() && !searchFocused ? TEXT_MUTED : TEXT_PRIMARY);
+		String searchLabel = query.isBlank() && !searchFocused ? "Search nodes…" : query;
+		drawBoundedFieldText(graphics, search, viewport, searchLabel, 5, 5, search.y + 6,
+			searchFocused, false, query.isBlank() && !searchFocused ? TEXT_MUTED : TEXT_PRIMARY);
 		registerHit(search, viewport, null, null, null, null, null, null,
 			new FieldBinding("palette-search", () -> paletteSearch, value -> {
 				paletteSearch = safe(value);
@@ -311,9 +299,9 @@ public final class ScratchMacroEditorScreen extends Screen {
 		int listTop = categoryTop + categoryRows * (categoryH + 2) + 3;
 		Rect list = new Rect(viewport.x + 1, listTop, viewport.w - 2,
 			Math.max(8, viewport.y + viewport.h - 2 - listTop));
-		List<PaletteRow> rows = paletteRows(query);
-		int contentHeight = 0;
-		for (PaletteRow row : rows) contentHeight += row.header ? 21 : 39;
+		PaletteLayout paletteLayout = paletteLayout(query);
+		List<PaletteRow> rows = paletteLayout.rows;
+		int contentHeight = paletteLayout.contentHeight;
 		paletteScroll = clamp(paletteScroll, 0, Math.max(0, contentHeight - list.h));
 		int y = list.y - paletteScroll;
 		for (PaletteRow row : rows) {
@@ -321,7 +309,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 				if (y + 18 > list.y && y < list.y + list.h) {
 					graphics.fill(list.x + 2, y + 16, list.x + list.w - 2, y + 17,
 						withOpacity(categoryColor(row.category), 0.48f));
-					graphics.text(font, row.category.label, list.x + 4, y + 4,
+			graphics.text(font, trim(row.category.label, list.w - 8), list.x + 4, y + 4,
 						categoryColor(row.category));
 				}
 				y += 21;
@@ -335,15 +323,15 @@ public final class ScratchMacroEditorScreen extends Screen {
 			Rect bounds = new Rect(list.x + 1, y + 1, list.w - 4, 35);
 			boolean hovered = bounds.contains(mouseX, mouseY);
 			roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
-				hovered ? CARD_BG_HOVER : CARD_BG, hovered ? CARD_BG_HOVER : CARD_BG,
-				CARD_BORDER);
+				hovered ? MODULE_PANEL_TOP : MODULE_PANEL_BOTTOM,
+				hovered ? MODULE_PANEL_TOP : MODULE_PANEL_BOTTOM, BORDER);
 			roundedRect(graphics, bounds.x + 4, bounds.y + 6, 5, bounds.h - 12, 2, categoryColor(block.category));
 			graphics.text(font, trim(block.label, bounds.w - 18), bounds.x + 14, bounds.y + 5, TEXT_PRIMARY);
 			graphics.text(font, trim(block.hint, bounds.w - 18), bounds.x + 14, bounds.y + 18, TEXT_MUTED);
 			registerHit(bounds, list, null, null, null, block, null, null);
 			y += 39;
 		}
-		if (rows.isEmpty()) graphics.centeredText(font, "No nodes match this search.",
+		if (rows.isEmpty()) graphics.centeredText(font, trim("No nodes match this search.", list.w - 8),
 			list.x + list.w / 2, list.y + 18, TEXT_MUTED);
 	}
 
@@ -367,41 +355,39 @@ public final class ScratchMacroEditorScreen extends Screen {
 		if (macro == null) {
 			graphics.centeredText(font, "No macro to edit.", viewport.x + viewport.w / 2,
 				viewport.y + viewport.h / 2, TEXT_MUTED);
-		} else if (tab == Tab.CODE) {
-			renderScripts(graphics, viewport);
 		} else {
-			renderFunctionStack(graphics, viewport);
+			float zoom = canvasZoomFactor(macro.canvasZoom());
+			canvasTransformX = viewport.x + 16 + macro.canvasPanX();
+			canvasTransformY = viewport.y + 14 + macro.canvasPanY();
+			canvasTransformScale = zoom;
+			canvasTransformClip = viewport;
+			Rect worldViewport = new Rect(
+				(int) Math.floor((viewport.x - canvasTransformX) / zoom),
+				(int) Math.floor((viewport.y - canvasTransformY) / zoom),
+				Math.max(1, (int) Math.ceil(viewport.w / zoom)),
+				Math.max(1, (int) Math.ceil(viewport.h / zoom)));
+			var pose = graphics.pose();
+			pose.pushMatrix();
+			pose.translate(canvasTransformX, canvasTransformY);
+			pose.scale(zoom, zoom);
+			canvasTransformActive = true;
+			if (tab == Tab.CODE) renderScripts(graphics, worldViewport);
+			else renderFunctionStack(graphics, worldViewport);
+			canvasTransformActive = false;
+			pose.popMatrix();
 		}
 		graphics.disableScissor();
 		if (!replayingCanvasTargets) cacheCanvasTargets(viewport, hitStart, dropStart);
 		replayingCanvasTargets = false;
+		renderDropPreview(graphics, viewport, mouseX, mouseY);
 		renderZoomControls(graphics, viewport, mouseX, mouseY);
-		if (tab == Tab.CODE && macro != null && !CheatsState.enabled()
-			&& MacroCheatRules.requiresCheats(macro)) {
-			drawCheatsWarning(graphics, viewport);
-		}
-	}
-
-	/**
-	 * The editor has to say the gate is closed, or a workflow that never starts looks broken.
-	 *
-	 * <p>Drawn over the canvas rather than in its own row: the workspace layout is shared with the
-	 * Functions tab and shifting every stack down by a banner would move what the player is editing.
-	 */
-	private void drawCheatsWarning(GuiGraphicsExtractor graphics, Rect viewport) {
-		int height = 15;
-		roundedRect(graphics, viewport.x + 4, viewport.y + 2, viewport.w - 8, height, RADIUS_SMALL,
-			withOpacity(0xFFB4453C, 0.88f));
-		graphics.centeredText(font,
-			trim("Cheats are off — this workflow needs Cheats to run", viewport.w - 20),
-			viewport.x + viewport.w / 2, viewport.y + 2 + (height - 8) / 2, 0xFFFFFFFF);
 	}
 
 	private boolean canReuseCanvasTargets(Rect viewport) {
 		if (!canvasTargetCacheValid || cachedWorkspaceRevision != workspaceRevision
-			|| !viewport.equals(cachedCanvasViewport) || cachedCanvasTab != tab
+			|| !viewport.equals(cachedCanvasViewport) || cachedCanvasFont != font || cachedCanvasTab != tab
 			|| cachedCanvasFunction != selectedFunction) return false;
-		if (macro == null) return cachedCanvasPanX == 0 && cachedCanvasPanY == 0 && cachedCanvasZoom == 1;
+		if (macro == null) return cachedCanvasPanX == 0 && cachedCanvasPanY == 0 && cachedCanvasZoom == 100;
 		return cachedCanvasPanX == macro.canvasPanX() && cachedCanvasPanY == macro.canvasPanY()
 			&& cachedCanvasZoom == macro.canvasZoom();
 	}
@@ -412,12 +398,13 @@ public final class ScratchMacroEditorScreen extends Screen {
 		cachedCanvasHitTargets.addAll(hitTargets.subList(hitStart, hitTargets.size()));
 		cachedCanvasDropSlots.addAll(dropSlots.subList(dropStart, dropSlots.size()));
 		cachedCanvasViewport = viewport;
+		cachedCanvasFont = font;
 		cachedCanvasTab = tab;
 		cachedCanvasFunction = selectedFunction;
 		cachedWorkspaceRevision = workspaceRevision;
 		cachedCanvasPanX = macro == null ? 0 : macro.canvasPanX();
 		cachedCanvasPanY = macro == null ? 0 : macro.canvasPanY();
-		cachedCanvasZoom = macro == null ? 1 : macro.canvasZoom();
+		cachedCanvasZoom = macro == null ? 100 : macro.canvasZoom();
 		canvasTargetCacheValid = true;
 	}
 
@@ -480,15 +467,15 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private void renderScripts(GuiGraphicsExtractor graphics, Rect viewport) {
 		if (visibleScriptsRevision != workspaceRevision || !viewport.equals(visibleScriptsViewport)
 			|| visibleScriptsPanX != macro.canvasPanX() || visibleScriptsPanY != macro.canvasPanY()
-			|| visibleScriptsZoom != macro.canvasZoom()) {
+			|| visibleScriptsZoom != macro.canvasZoom() || visibleScriptsFont != font) {
 			List<CanvasScriptPlacement> visible = new ArrayList<>();
-			float zoom = macro.canvasZoom();
-			int stackW = clamp(Math.round(270 * zoom), 156, 340);
-			int hatHeight = Math.max(28, Math.round(HAT_HEIGHT * Math.min(1.25f, zoom)));
+			float zoom = canvasZoomFactor(macro.canvasZoom());
 			for (MacroScript script : macro.scripts()) {
-				int x = Math.round(viewport.x + 16 + macro.canvasPanX() + script.canvasX() * zoom);
-				int y = Math.round(viewport.y + 14 + macro.canvasPanY() + script.canvasY() * zoom);
-				int stackH = hatHeight + 3 + measureList(script.steps(), 0);
+				int stackW = requiredStackWidth(scriptHeaderLabel(script), script.steps(),
+					320);
+				int x = Math.round(script.canvasX());
+				int y = Math.round(script.canvasY());
+				int stackH = HAT_HEIGHT + 3 + measureList(script.steps(), 0);
 				if (intersectsViewport(x, y, stackW, stackH, viewport)) {
 					visible.add(new CanvasScriptPlacement(script, x, y, stackW, zoom));
 				}
@@ -499,10 +486,51 @@ public final class ScratchMacroEditorScreen extends Screen {
 			visibleScriptsPanX = macro.canvasPanX();
 			visibleScriptsPanY = macro.canvasPanY();
 			visibleScriptsZoom = macro.canvasZoom();
+			visibleScriptsFont = font;
 		}
 		for (CanvasScriptPlacement placement : visibleScriptPlacements) {
 			renderScriptStack(graphics, viewport, placement.script, placement.x, placement.y,
 				placement.width, placement.zoom);
+		}
+		renderDetachedBlocks(graphics, viewport);
+	}
+
+	/** Draws editor-only blocks that are deliberately absent from every executable script list. */
+	private void renderDetachedBlocks(GuiGraphicsExtractor graphics, Rect viewport) {
+		if (macro == null || macro.detachedBlocks().isEmpty()) return;
+		if (visibleDetachedRevision != workspaceRevision || !viewport.equals(visibleDetachedViewport)
+			|| visibleDetachedPanX != macro.canvasPanX() || visibleDetachedPanY != macro.canvasPanY()
+			|| visibleDetachedZoom != macro.canvasZoom() || visibleDetachedFont != font) {
+			int width = 304;
+			List<CanvasDetachedPlacement> visible = new ArrayList<>();
+			for (int index = 0; index < macro.detachedBlocks().size(); index++) {
+				MacroStep step = macro.detachedBlocks().get(index);
+				if (!(step instanceof MacroStep.Base base)) continue;
+				int x = Math.round(base.editorX());
+				int y = Math.round(base.editorY());
+				boolean note = step instanceof MacroStep.Comment;
+				int height = note ? 128 : measureStep(step, 0);
+				int nodeWidth = note
+					? Math.max(width, font.width(((MacroStep.Comment) step).text()) + 16)
+					: Math.max(width, requiredStepWidth(step, 0));
+				if (intersectsViewport(x, y, nodeWidth, height + 12, viewport)) {
+					visible.add(new CanvasDetachedPlacement(step, index, x, y, nodeWidth, height, note));
+				}
+			}
+			visibleDetachedPlacements = List.copyOf(visible);
+			visibleDetachedRevision = workspaceRevision;
+			visibleDetachedViewport = viewport;
+			visibleDetachedPanX = macro.canvasPanX();
+			visibleDetachedPanY = macro.canvasPanY();
+			visibleDetachedZoom = macro.canvasZoom();
+			visibleDetachedFont = font;
+		}
+		for (CanvasDetachedPlacement placement : visibleDetachedPlacements) {
+			MacroStep step = placement.step;
+			graphics.text(font, placement.note ? "Note" : "Stored · inactive",
+				placement.x + 5, placement.y - 11, TEXT_MUTED);
+			drawStepNode(graphics, viewport, step, macro.detachedBlocks(), placement.index,
+				new Rect(placement.x, placement.y, placement.width, placement.height), null, null, 0);
 		}
 	}
 
@@ -513,7 +541,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 
 	private void renderScriptStack(GuiGraphicsExtractor graphics, Rect viewport, MacroScript script,
 		int x, int y, int stackW, float zoom) {
-		int hatH = Math.max(28, Math.round(HAT_HEIGHT * Math.min(1.25f, zoom)));
+		int hatH = HAT_HEIGHT;
 		Rect hat = new Rect(x, y, stackW, hatH);
 		int color = script.trigger() == MacroScript.Trigger.KEY_PRESS ? categoryColor(Category.ACTIONS)
 			: script.trigger() == MacroScript.Trigger.WORLD_REGION ? categoryColor(Category.WORLD)
@@ -522,12 +550,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		boolean selected = script == selectedScript;
 		roundedRectBordered(graphics, hat.x, hat.y, hat.w, hat.h, 11,
 			color, color, selected ? TEXT_PRIMARY : withOpacity(color, 0.72f));
-		String label = switch (script.trigger()) {
-			case KEY_PRESS -> "when  " + script.keybind().displayName() + "  pressed";
-			case WORLD_REGION -> regionHatLabel(script.worldRegion());
-			case ON_CALL -> "when this macro is called";
-			case CHAT -> chatHatLabel(script);
-		};
+		String label = scriptHeaderLabel(script);
 		graphics.text(font, trim(label, hat.w - 58), hat.x + 10, hat.y + 7,
 			macroAccentText(0xFF1C2028));
 		MacroRunner.RunState state = MacroRunner.scriptState(script.id());
@@ -554,19 +577,19 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private void renderFunctionStack(GuiGraphicsExtractor graphics, Rect viewport) {
 		ensureFunction();
 		if (selectedFunction == null) {
-			graphics.centeredText(font, "Create a reusable block from the left panel.",
+			graphics.centeredText(font, trim("Create a reusable block from the left panel.", viewport.w - 12),
 				viewport.x + viewport.w / 2, viewport.y + viewport.h / 2, TEXT_MUTED);
 			return;
 		}
-		float zoom = macro.canvasZoom();
-		int x = Math.round(viewport.x + 16 + macro.canvasPanX() + selectedFunction.canvasX() * zoom);
-		int y = Math.round(viewport.y + 14 + macro.canvasPanY() + selectedFunction.canvasY() * zoom);
-		int w = clamp(Math.round(270 * zoom), 156, 340);
-		int hatH = Math.max(28, Math.round(HAT_HEIGHT * Math.min(1.25f, zoom)));
+		int x = Math.round(selectedFunction.canvasX());
+		int y = Math.round(selectedFunction.canvasY());
+		int w = requiredStackWidth("define  " + selectedFunction.name(), selectedFunction.steps(),
+			320);
+		int hatH = HAT_HEIGHT;
 		Rect hat = new Rect(x, y, w, hatH);
 		int functionColor = categoryColor(Category.FUNCTIONS);
 		roundedRectBordered(graphics, hat.x, hat.y, hat.w, hat.h, 11, functionColor,
-			functionColor, CARD_BORDER_ENABLED);
+			functionColor, GuiTheme.selectionOutline(functionColor));
 		graphics.text(font, trim("define  " + selectedFunction.name(), hat.w - 18), hat.x + 11, hat.y + 7,
 			macroAccentText(0xFFFFFFFF));
 		registerHit(hat, viewport, () -> { selectedStep = null; selectedOwner = null; }, null, null, null, null, selectedFunction);
@@ -581,6 +604,86 @@ public final class ScratchMacroEditorScreen extends Screen {
 			0, null, selectedFunction, 0);
 	}
 
+	private int requiredStackWidth(String header, List<MacroStep> steps, int minimumWidth) {
+		int headerWidth = font.width(header) + 64;
+		int blockWidth = requiredListWidth(steps, Math.max(1, minimumWidth - 16), 0) + 16;
+		return Math.max(minimumWidth, Math.max(headerWidth, blockWidth));
+	}
+
+	private String scriptHeaderLabel(MacroScript script) {
+		return switch (script.trigger()) {
+			case KEY_PRESS -> "when  " + script.keybind().displayName() + "  pressed";
+			case WORLD_REGION -> regionHatLabel(script.worldRegion());
+			case ON_CALL -> "when this macro is called";
+			case CHAT -> chatHatLabel(script);
+		};
+	}
+
+	private int requiredListWidth(List<MacroStep> steps, int minimumWidth, int nesting) {
+		int width = minimumWidth;
+		if (steps == null || nesting > MAX_TREE_DEPTH) return width;
+		if (steps.isEmpty()) return width;
+		ensureWidthCacheFont();
+		int[] cachedWidths = measuredListWidths.get(steps);
+		if (cachedWidths != null && cachedWidths[nesting] != 0) {
+			return Math.max(minimumWidth, cachedWidths[nesting]);
+		}
+		int measuredWidth = 0;
+		for (MacroStep step : steps) measuredWidth = Math.max(measuredWidth, requiredStepWidth(step, nesting));
+		int[] widths = cachedWidths == null ? new int[MAX_TREE_DEPTH + 1] : cachedWidths;
+		widths[nesting] = measuredWidth;
+		measuredListWidths.put(steps, widths);
+		width = Math.max(width, measuredWidth);
+		return width;
+	}
+
+	/** Width required to draw a node's inline fields and any expanded child stack without wrapping. */
+	private int requiredStepWidth(MacroStep step, int nesting) {
+		if (step == null || nesting > MAX_TREE_DEPTH) return 60;
+		ensureWidthCacheFont();
+		int[] cachedWidths = measuredStepWidths.get(step);
+		if (cachedWidths != null && cachedWidths[nesting] != 0) return cachedWidths[nesting];
+		BlockPreview preview = inlinePreview(step);
+		int width = preview == null
+			? font.width(blockLabel(step)) + 22
+			: font.width(preview.prefix) + font.width(preview.value) + font.width(preview.suffix) + 40;
+		width = Math.max(60, width);
+		if (!ClickGuiState.macroNodeExpanded(step) || nesting >= MAX_TREE_DEPTH) {
+			cacheRequiredStepWidth(step, nesting, width, cachedWidths);
+			return width;
+		}
+		int children = 0;
+		if (step instanceof MacroStep.IfElse branch) {
+			children = requiredListWidth(branch.thenSteps(), 42, nesting + 1);
+			if (branch.elseEnabled()) children = Math.max(children,
+				requiredListWidth(branch.elseSteps(), 42, nesting + 1));
+		} else if (step instanceof MacroStep.Repeat repeat) {
+			children = requiredListWidth(repeat.steps(), 42, nesting + 1);
+		} else if (step instanceof MacroStep.RepeatUntil repeat) {
+			children = requiredListWidth(repeat.steps(), 42, nesting + 1);
+		} else if (step instanceof MacroStep.Switch value) {
+			for (MacroStep.SwitchCase branch : value.cases()) children = Math.max(children,
+				requiredListWidth(branch.steps(), 42, nesting + 1));
+			children = Math.max(children, requiredListWidth(value.defaultSteps(), 42, nesting + 1));
+		}
+		int requiredWidth = Math.max(width, children + 42);
+		cacheRequiredStepWidth(step, nesting, requiredWidth, cachedWidths);
+		return requiredWidth;
+	}
+
+	private void cacheRequiredStepWidth(MacroStep step, int nesting, int width, int[] cachedWidths) {
+		int[] widths = cachedWidths == null ? new int[MAX_TREE_DEPTH + 1] : cachedWidths;
+		widths[nesting] = width;
+		measuredStepWidths.put(step, widths);
+	}
+
+	private void ensureWidthCacheFont() {
+		if (measuredWidthFont == font) return;
+		measuredWidthFont = font;
+		measuredStepWidths.clear();
+		measuredListWidths.clear();
+	}
+
 	private int drawStepList(GuiGraphicsExtractor graphics, Rect viewport, List<MacroStep> steps,
 		int x, int y, int w, int depth, MacroScript script, MacroFunction function, int nesting) {
 		if (steps == null || steps.isEmpty() || nesting > MAX_TREE_DEPTH) return y;
@@ -593,7 +696,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 			if (nodeY > viewport.y + viewport.h) break;
 			int indent = Math.min(depth * 7, 49);
 			int nodeX = x + indent;
-			int nodeW = Math.max(60, w - indent);
+			int nodeW = Math.max(Math.max(60, w - indent), requiredStepWidth(step, nesting));
 			Rect outer = new Rect(nodeX, nodeY, nodeW, nodeH);
 			if (intersectsViewport(outer.x, outer.y, outer.w, outer.h, viewport)) {
 				drawStepNode(graphics, viewport, step, steps, i, outer, script, function, nesting);
@@ -608,15 +711,25 @@ public final class ScratchMacroEditorScreen extends Screen {
 		boolean selected = step == selectedStep;
 		boolean active = script != null && MacroRunner.activeStep(script.id()) == step;
 		boolean control = step instanceof MacroStep.IfElse || step instanceof MacroStep.Repeat
-			|| step instanceof MacroStep.RepeatUntil;
+			|| step instanceof MacroStep.RepeatUntil || step instanceof MacroStep.Switch;
+		boolean detachedNote = step instanceof MacroStep.Comment && macro != null && owner == macro.detachedBlocks();
+		if (detachedNote) {
+			drawCommentNote(graphics, viewport, bounds, (MacroStep.Comment) step, color, selected);
+			registerHit(bounds, viewport, null, step, owner, null, script, function);
+			return;
+		}
 		int headH = Math.min(BLOCK_HEIGHT, bounds.h);
-		int outline = active ? 0xFFFFFFFF : selected ? CARD_BORDER_ENABLED : withOpacity(color, 0.65f);
+		// The selection ring must not be the accent, because an accent-bodied node would then be
+		// outlined in its own colour. Active wins over selected: it is the narrower, live state.
+		boolean selectedRing = selected && !active;
+		int outline = active ? 0xFFFFFFFF
+			: selected ? GuiTheme.selectionOutline(color) : withOpacity(color, 0.65f);
 		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, headH, RADIUS_SMALL,
-			color, color, outline);
+			color, color, outline, selectedRing ? 2 : 1);
 		// Small connector nubs make adjacent blocks read as one snapped stack.
 		roundedRect(graphics, bounds.x + 12, bounds.y - 2, Math.min(19, bounds.w / 4), 5, 2, color);
 		if (!control) roundedRect(graphics, bounds.x + 12, bounds.y + headH - 3, Math.min(19, bounds.w / 4), 5, 2, color);
-		drawInlineBlockPreview(graphics, bounds, headH, step,
+		drawInlineBlockPreview(graphics, viewport, bounds, headH, step,
 			macroAccentText(active ? 0xFFFFFFFF : 0xFFFAFCFF));
 		registerHit(new Rect(bounds.x, bounds.y, bounds.w, headH), viewport, null,
 			step, owner, null, script, function);
@@ -624,8 +737,16 @@ public final class ScratchMacroEditorScreen extends Screen {
 			function != null, script, function, nesting);
 		addDropSlot(new Rect(bounds.x, bounds.y + headH / 2, bounds.w, Math.max(1, headH - headH / 2)),
 			owner, index + 1, function != null, script, function, nesting);
+		boolean expanded = !control || ClickGuiState.macroNodeExpanded(step);
+		if (control) {
+			int toggleX = bounds.x + bounds.w - 22;
+			Rect toggle = new Rect(toggleX, bounds.y, 22, headH);
+			graphics.centeredText(font, expanded ? "▾" : "▸", toggleX + 11, bounds.y + 8, color);
+			registerHit(toggle, viewport, () -> { ClickGuiState.toggleMacroNode(step); dirty(); },
+				null, null, null, null, null);
+		}
 
-		if (!control) return;
+		if (!control || !expanded) return;
 		int bodyY = bounds.y + headH - 1;
 		int bodyH = Math.max(16, bounds.h - headH + 1);
 		int tint = withOpacity(color, 0.18f);
@@ -636,25 +757,113 @@ public final class ScratchMacroEditorScreen extends Screen {
 		int childW = Math.max(42, bounds.w - 23);
 		int childY = bodyY + 7;
 		if (step instanceof MacroStep.IfElse branch) {
-			graphics.text(font, "then", childX, childY, TEXT_SECONDARY);
+			graphics.text(font, trim("then", childW - 8), childX, childY, TEXT_SECONDARY);
 			childY += 13;
 			childY = drawNestedList(graphics, viewport, branch.thenSteps(), childX, childY, childW,
 				step, script, function, nesting + 1, color);
-			graphics.text(font, "else", childX, childY + 1, TEXT_SECONDARY);
-			childY += 14;
-			drawNestedList(graphics, viewport, branch.elseSteps(), childX, childY, childW,
-				step, script, function, nesting + 1, color);
+			if (branch.elseEnabled()) {
+				graphics.text(font, trim("else", childW - 8), childX, childY + 1, TEXT_SECONDARY);
+				childY += 14;
+				drawNestedList(graphics, viewport, branch.elseSteps(), childX, childY, childW,
+					step, script, function, nesting + 1, color);
+			}
 		} else if (step instanceof MacroStep.Repeat repeat) {
-			graphics.text(font, "do", childX, childY, TEXT_SECONDARY);
+			graphics.text(font, trim("do", childW - 8), childX, childY, TEXT_SECONDARY);
 			childY += 13;
 			drawNestedList(graphics, viewport, repeat.steps(), childX, childY, childW,
 				step, script, function, nesting + 1, color);
 		} else if (step instanceof MacroStep.RepeatUntil repeatUntil) {
-			graphics.text(font, "do", childX, childY, TEXT_SECONDARY);
+			graphics.text(font, trim("do", childW - 8), childX, childY, TEXT_SECONDARY);
 			childY += 13;
 			drawNestedList(graphics, viewport, repeatUntil.steps(), childX, childY, childW,
 				step, script, function, nesting + 1, color);
+		} else if (step instanceof MacroStep.Switch value) {
+			for (MacroStep.SwitchCase branch : value.cases()) {
+				graphics.text(font, trim("case " + branch.value(), childW - 8), childX, childY, TEXT_SECONDARY);
+				childY += 13;
+				childY = drawNestedList(graphics, viewport, branch.steps(), childX, childY, childW,
+					step, script, function, nesting + 1, color);
+			}
+			graphics.text(font, trim("otherwise", childW - 8), childX, childY, TEXT_SECONDARY);
+			childY += 13;
+			drawNestedList(graphics, viewport, value.defaultSteps(), childX, childY, childW,
+				step, script, function, nesting + 1, color);
 		}
+	}
+
+	private void drawCommentNote(GuiGraphicsExtractor graphics, Rect viewport, Rect bounds,
+		MacroStep.Comment comment, int color, boolean selected) {
+		int outline = selected ? GuiTheme.selectionOutline(color) : withOpacity(color, 0.78f);
+		int surface = withOpacity(color, 0.12f);
+		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, 7,
+			surface, surface, outline, selected ? 2 : 1);
+		graphics.fill(bounds.x + 1, bounds.y + 1, bounds.x + bounds.w - 1,
+			bounds.y + 19, withOpacity(color, 0.68f));
+		graphics.text(font, "COMMENT", bounds.x + 7, bounds.y + 6, 0xFFFFFFFF);
+		int textY = bounds.y + 27;
+		int lineHeight = font.lineHeight + 2;
+		int maxLines = Math.max(1, (bounds.h - 32) / lineHeight);
+		List<String> lines = wrapComment(comment.text(), Math.max(32, bounds.w - 14));
+		if (lines.isEmpty()) lines = List.of("Add text in Inspect");
+		for (int i = 0; i < Math.min(maxLines, lines.size()); i++) {
+			graphics.text(font, lines.get(i), bounds.x + 7, textY + i * lineHeight, TEXT_PRIMARY);
+		}
+		if (lines.size() > maxLines) {
+			int moreY = bounds.y + bounds.h - lineHeight - 5;
+			graphics.text(font, "…", bounds.x + bounds.w - 13, moreY, TEXT_MUTED);
+		}
+	}
+
+	private List<String> wrapComment(String text, int maxWidth) {
+		String cleaned = safe(text).replace('\n', ' ').replace('\r', ' ').strip();
+		if (cleaned.isEmpty()) return List.of();
+		List<String> result = new ArrayList<>();
+		StringBuilder line = new StringBuilder();
+		for (String word : cleaned.split("\\s+")) {
+			String candidate = line.isEmpty() ? word : line + " " + word;
+			if (!line.isEmpty() && font.width(candidate) > maxWidth) {
+				result.add(line.toString());
+				line.setLength(0);
+			}
+			if (font.width(word) > maxWidth) word = trim(word, maxWidth);
+			if (!line.isEmpty()) line.append(' ');
+			line.append(word);
+		}
+		if (!line.isEmpty()) result.add(line.toString());
+		return result;
+	}
+
+	private void drawRawJsonPreview(GuiGraphicsExtractor graphics, Rect viewport, int[] y, String rawJson) {
+		sectionTitle(graphics, viewport, y, "Saved raw data");
+		String raw = rawJson == null ? "{}" : rawJson;
+		int visibleLength = Math.min(raw.length(), 8_192);
+		int maxWidth = Math.max(32, viewport.w - 8);
+		StringBuilder line = new StringBuilder();
+		for (int offset = 0; offset < visibleLength;) {
+			int codePoint = raw.codePointAt(offset);
+			String text = new String(Character.toChars(codePoint));
+			if (codePoint == '\n') {
+				drawRawJsonLine(graphics, viewport, y, line.toString(), maxWidth);
+				line.setLength(0);
+			} else {
+				String candidate = line + text;
+				if (!line.isEmpty() && font.width(candidate) > maxWidth) {
+					drawRawJsonLine(graphics, viewport, y, line.toString(), maxWidth);
+					line.setLength(0);
+				}
+				line.append(text);
+			}
+			offset += Character.charCount(codePoint);
+		}
+		if (!line.isEmpty() || raw.isEmpty()) drawRawJsonLine(graphics, viewport, y, line.toString(), maxWidth);
+		if (visibleLength < raw.length()) {
+			lineText(graphics, viewport, y, "Preview", "Truncated; saved data remains intact");
+		}
+	}
+
+	private void drawRawJsonLine(GuiGraphicsExtractor graphics, Rect viewport, int[] y, String text, int maxWidth) {
+		graphics.text(font, trim(text, maxWidth), viewport.x + 4, y[0] + 2, TEXT_MUTED);
+		y[0] += 12;
 	}
 
 	private int drawNestedList(GuiGraphicsExtractor graphics, Rect viewport, List<MacroStep> children,
@@ -678,13 +887,23 @@ public final class ScratchMacroEditorScreen extends Screen {
 		Integer cached = measuredStepHeights.get(step);
 		if (cached != null) return cached;
 		int height;
-		if (step instanceof MacroStep.IfElse branch) {
-			height = BLOCK_HEIGHT + 7 + 13 + measureList(branch.thenSteps(), nesting + 1)
-				+ 15 + measureList(branch.elseSteps(), nesting + 1) + 7;
+		if ((step instanceof MacroStep.IfElse || step instanceof MacroStep.Repeat
+			|| step instanceof MacroStep.RepeatUntil || step instanceof MacroStep.Switch)
+			&& !ClickGuiState.macroNodeExpanded(step)) {
+			height = BLOCK_HEIGHT;
+		} else if (step instanceof MacroStep.IfElse branch) {
+			height = BLOCK_HEIGHT + 7 + 13 + measureList(branch.thenSteps(), nesting + 1) + 7;
+			if (branch.elseEnabled()) height += 15 + measureList(branch.elseSteps(), nesting + 1);
 		} else if (step instanceof MacroStep.Repeat repeat) {
 			height = BLOCK_HEIGHT + 7 + 13 + measureList(repeat.steps(), nesting + 1) + 7;
 		} else if (step instanceof MacroStep.RepeatUntil repeatUntil) {
 			height = BLOCK_HEIGHT + 7 + 13 + measureList(repeatUntil.steps(), nesting + 1) + 7;
+		} else if (step instanceof MacroStep.Switch value) {
+			height = BLOCK_HEIGHT + 7;
+			for (MacroStep.SwitchCase branch : value.cases()) {
+				height += 13 + measureList(branch.steps(), nesting + 1);
+			}
+			height += 13 + measureList(value.defaultSteps(), nesting + 1);
 		} else {
 			height = BLOCK_HEIGHT;
 		}
@@ -723,7 +942,10 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private void addDropSlot(Rect bounds, List<MacroStep> owner, int index, boolean functionScope,
 		MacroScript script, MacroFunction function, int depth) {
 		if (replayingCanvasTargets || owner == null) return;
-		Rect clipped = lastLayout == null ? bounds : bounds.intersection(canvasViewport(lastLayout));
+		if (canvasTransformActive) bounds = canvasToScreen(bounds);
+		Rect clip = canvasTransformActive ? canvasTransformClip
+			: lastLayout == null ? null : canvasViewport(lastLayout);
+		Rect clipped = clip == null ? bounds : bounds.intersection(clip);
 		if (clipped == null) return;
 		dropSlots.add(new DropSlot(clipped, owner, index, functionScope, script, function, depth));
 	}
@@ -751,13 +973,13 @@ public final class ScratchMacroEditorScreen extends Screen {
 		Rect reset = new Rect(zoomIn.x + 29, y, 49, 20);
 		button(graphics, "−", zoomOut, mouseX, mouseY, viewport, () -> setZoomAround(0.9f,
 			viewport.x + viewport.w / 2.0, viewport.y + viewport.h / 2.0), false, 0);
-		roundedRect(graphics, zoomLabel.x, zoomLabel.y, zoomLabel.w, zoomLabel.h, RADIUS_SMALL, CARD_BG);
-		graphics.centeredText(font, Math.round(macro.canvasZoom() * 100) + "%", zoomLabel.x + zoomLabel.w / 2,
+		roundedRect(graphics, zoomLabel.x, zoomLabel.y, zoomLabel.w, zoomLabel.h, RADIUS_SMALL, MODULE_PANEL_TOP);
+		graphics.centeredText(font, Math.round(macro.canvasZoom()) + "%", zoomLabel.x + zoomLabel.w / 2,
 			zoomLabel.y + 6, TEXT_SECONDARY);
 		button(graphics, "+", zoomIn, mouseX, mouseY, viewport, () -> setZoomAround(1.1f,
 			viewport.x + viewport.w / 2.0, viewport.y + viewport.h / 2.0), false, 0);
 		button(graphics, "Reset", reset, mouseX, mouseY, viewport,
-			() -> { macro.setCanvasView(0, 0, 1); dirty(); }, false, 0);
+			() -> { macro.setCanvasView(0, 0, 100); dirty(); }, false, 0);
 	}
 
 	private void renderInspector(GuiGraphicsExtractor graphics, Rect pane, int mouseX, int mouseY) {
@@ -773,8 +995,8 @@ public final class ScratchMacroEditorScreen extends Screen {
 		} else if (tab == Tab.CODE && selectedScript != null) {
 			drawScriptProperties(graphics, viewport, y, selectedScript, mouseX, mouseY);
 		} else {
-			graphics.text(font, "Select a block, event hat, or", viewport.x + 6, y[0] + 4, TEXT_SECONDARY);
-			graphics.text(font, "function to edit its settings.", viewport.x + 6, y[0] + 17, TEXT_MUTED);
+			graphics.text(font, trim("Select a block, event hat, or", viewport.w - 12), viewport.x + 6, y[0] + 4, TEXT_SECONDARY);
+			graphics.text(font, trim("function to edit its settings.", viewport.w - 12), viewport.x + 6, y[0] + 17, TEXT_MUTED);
 		}
 		graphics.disableScissor();
 		int contentHeight = Math.max(0, y[0] + inspectorScroll - startY);
@@ -786,7 +1008,24 @@ public final class ScratchMacroEditorScreen extends Screen {
 		MacroScript script, int mouseX, int mouseY) {
 		sectionTitle(graphics, viewport, y, "Event stack");
 		lineText(graphics, viewport, y, "Trigger", triggerName(script.trigger()));
-		lineText(graphics, viewport, y, "Run state", stateLabel(MacroRunner.scriptState(script.id())));
+		MacroRunner.RunState runState = MacroRunner.scriptState(script.id());
+		lineText(graphics, viewport, y, "Run state", stateLabel(runState));
+		if (runState == MacroRunner.RunState.PAUSED) {
+			lineText(graphics, viewport, y, "Paused because", MacroRunner.pausedReason(script.id()));
+			lineText(graphics, viewport, y, "Resume rule", "Remove or replace the preserved block first");
+			button(graphics, "Resume after resolving block", rowRect(viewport, y[0], 23), mouseX, mouseY,
+				viewport, () -> {
+					if (MacroRunner.resumePausedScript(script.id())) flash("Macro resumed after the preserved block.");
+					else flash("Remove or replace the highlighted preserved block before resuming.");
+				}, false, categoryColor(Category.WORLD));
+			y[0] += 28;
+			button(graphics, "Cancel paused run", rowRect(viewport, y[0], 23), mouseX, mouseY,
+				viewport, () -> {
+					MacroRunner.cancelPausedScript(script.id(), "paused run cancelled in the editor");
+					flash("Paused macro run cancelled.");
+				}, false, TEXT_ERROR);
+			y[0] += 28;
+		}
 		if (script.trigger() == MacroScript.Trigger.KEY_PRESS) {
 			lineText(graphics, viewport, y, "Hotkey", script.keybind().displayName());
 			button(graphics, ModuleKeybindManager.bindingScript() == script ? "Listening for key…" : "Capture hotkey",
@@ -884,7 +1123,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		for (int i = 0; i < count; i++) {
 			final int index = i;
 			MacroFunction.Parameter parameter = function.parameters().get(i);
-			graphics.text(font, "Input " + (i + 1), viewport.x + 4, y[0] + 2, TEXT_MUTED);
+			graphics.text(font, trim("Input " + (i + 1), viewport.w - 8), viewport.x + 4, y[0] + 2, TEXT_MUTED);
 			y[0] += 13;
 			int removeW = 25;
 			int typeW = Math.min(68, Math.max(52, viewport.w / 3));
@@ -915,36 +1154,78 @@ public final class ScratchMacroEditorScreen extends Screen {
 			mouseX, mouseY, viewport, this::removeSelectedStep, false, TEXT_ERROR);
 		button(graphics, "Undo", new Rect(actions.x + actionW + 3, actions.y, actions.w - actionW - 3, actions.h),
 			mouseX, mouseY, viewport, this::undoLastEdit, false,
-			undoAction == null ? 0 : categoryColor(Category.FUNCTIONS));
+			documentHistory.canUndo() ? categoryColor(Category.FUNCTIONS) : 0);
 		y[0] += 25;
+		if (step instanceof MacroStep.Unknown unknown) {
+			sectionTitle(graphics, viewport, y, "Unavailable block");
+			lineText(graphics, viewport, y, "Original type", unknown.originalType());
+			lineText(graphics, viewport, y, "Execution", "This macro stops here");
+			lineText(graphics, viewport, y, "Storage", "Raw settings are preserved");
+			if (unknown.depthLimited()) lineText(graphics, viewport, y, "Reason", "Too deeply nested");
+			drawRawJsonPreview(graphics, viewport, y, unknown.rawJson());
+			return;
+		}
 		drawIntField(graphics, viewport, y, "Delay before (ms)", "delay-min", step::delayMin,
-			value -> step.setDelay(value, Math.max(value, step.delayMax())));
+			value -> step.setDelay(Math.min(value, step.delayMax()), step.delayMax()));
 		drawIntField(graphics, viewport, y, "Delay maximum (ms)", "delay-max", step::delayMax,
-			value -> step.setDelay(Math.min(step.delayMin(), value), value));
+			value -> step.setDelay(step.delayMin(), Math.max(step.delayMin(), value)));
 
 		if (step instanceof MacroStep.Command command) {
 			drawTextField(graphics, viewport, y, "Command", "command", command::command, command::setCommand);
 		} else if (step instanceof MacroStep.Chat chat) {
-			drawTextField(graphics, viewport, y, "Chat message", "chat", chat::message, chat::setMessage);
+			drawTextField(graphics, viewport, y, "Message or command", "chat", chat::message, chat::setMessage);
+			lineText(graphics, viewport, y, "Commands", "Start the message with /.");
+		} else if (step instanceof MacroStep.Comment comment) {
+			drawTextField(graphics, viewport, y, "Editor note", "comment-text", comment::text, comment::setText);
 		} else if (step instanceof MacroStep.Wait wait) {
-			drawIntField(graphics, viewport, y, "Minimum wait (ms)", "wait-min", wait::minMillis,
-				value -> wait.setRange(value, Math.max(value, wait.maxMillis())));
-			drawIntField(graphics, viewport, y, "Maximum wait (ms)", "wait-max", wait::maxMillis,
-				value -> wait.setRange(Math.min(wait.minMillis(), value), value));
-		} else if (step instanceof MacroStep.Key key) {
-			lineText(graphics, viewport, y, "Key", key.key().isBlank() ? "Not set" : key.key());
-			button(graphics, ModuleKeybindManager.bindingKeyStep() == key ? "Listening for key…" : "Capture key",
-				rowRect(viewport, y[0], 22), mouseX, mouseY, viewport, () -> {
-					if (ModuleKeybindManager.bindingKeyStep() == key) ModuleKeybindManager.cancelBinding();
-					else ModuleKeybindManager.beginKeyStepBinding(key);
-				}, false, categoryColor(Category.INPUT));
+			button(graphics, "Mode  ·  " + title(wait.mode().name()), rowRect(viewport, y[0], 22), mouseX, mouseY,
+				viewport, () -> {
+					wait.setMode(wait.mode() == MacroStep.Wait.Mode.DURATION
+						? MacroStep.Wait.Mode.CONDITION : MacroStep.Wait.Mode.DURATION);
+					dirty();
+				}, false, categoryColor(Category.CONTROL));
 			y[0] += 26;
-			toggleRow(graphics, viewport, y, "Hold key", key.hold(), () -> { key.setHold(!key.hold()); dirty(); }, mouseX, mouseY);
-			if (key.hold()) {
-				drawIntField(graphics, viewport, y, "Minimum hold (ms)", "key-hold-min", key::holdMinMillis,
-					value -> key.setHoldRange(value, Math.max(value, key.holdMaxMillis())));
-				drawIntField(graphics, viewport, y, "Maximum hold (ms)", "key-hold-max", key::holdMaxMillis,
-					value -> key.setHoldRange(Math.min(key.holdMinMillis(), value), value));
+			if (wait.mode() == MacroStep.Wait.Mode.DURATION) {
+				drawIntField(graphics, viewport, y, "Minimum wait (ms)", "wait-min", wait::minMillis,
+					value -> wait.setRange(Math.min(value, wait.maxMillis()), wait.maxMillis()));
+				drawIntField(graphics, viewport, y, "Maximum wait (ms)", "wait-max", wait::maxMillis,
+					value -> wait.setRange(wait.minMillis(), Math.max(wait.minMillis(), value)));
+			} else {
+				drawConditionButton(graphics, viewport, y, "Wait until", wait.condition(),
+					wait::setCondition, mouseX, mouseY, 0);
+				drawConditionProperties(graphics, viewport, y, wait.condition(), wait::setCondition, mouseX, mouseY, 0);
+			}
+		} else if (step instanceof MacroStep.Key key) {
+			button(graphics, "Input  ·  " + title(key.inputMode().name()), rowRect(viewport, y[0], 22), mouseX, mouseY,
+				viewport, () -> { key.setInputMode(next(key.inputMode())); dirty(); }, false, categoryColor(Category.INPUT));
+			y[0] += 26;
+			if (key.inputMode() == MacroStep.Key.InputMode.KEYBOARD) {
+				lineText(graphics, viewport, y, "Key", key.key().isBlank() ? "Not set" : key.key());
+				button(graphics, ModuleKeybindManager.bindingKeyStep() == key ? "Listening for key…" : "Capture key",
+					rowRect(viewport, y[0], 22), mouseX, mouseY, viewport, () -> {
+						if (ModuleKeybindManager.bindingKeyStep() == key) ModuleKeybindManager.cancelBinding();
+						else ModuleKeybindManager.beginKeyStepBinding(key);
+					}, false, categoryColor(Category.INPUT));
+				y[0] += 26;
+			} else if (key.inputMode() == MacroStep.Key.InputMode.MOUSE) {
+				button(graphics, "Button  ·  " + title(key.mouseButton().name()), rowRect(viewport, y[0], 22),
+					mouseX, mouseY, viewport,
+					() -> { key.setMouseButton(next(key.mouseButton())); dirty(); }, false, categoryColor(Category.INPUT));
+				y[0] += 26;
+			} else {
+				drawIntField(graphics, viewport, y, "Hotbar slot (1–9)", "input-hotbar-slot",
+					key::hotbarSlot, key::setHotbarSlot);
+				lineText(graphics, viewport, y, "Safety", "Only outside inventories");
+			}
+			if (key.inputMode() != MacroStep.Key.InputMode.HOTBAR) {
+				toggleRow(graphics, viewport, y, "Hold instead of press", key.hold(),
+					() -> { key.setHold(!key.hold()); dirty(); }, mouseX, mouseY);
+				if (key.hold()) {
+					drawIntField(graphics, viewport, y, "Minimum hold (ms)", "key-hold-min", key::holdMinMillis,
+						value -> key.setHoldRange(Math.min(value, key.holdMaxMillis()), key.holdMaxMillis()));
+					drawIntField(graphics, viewport, y, "Maximum hold (ms)", "key-hold-max", key::holdMaxMillis,
+						value -> key.setHoldRange(key.holdMinMillis(), Math.max(key.holdMinMillis(), value)));
+				}
 			}
 		} else if (step instanceof MacroStep.SelectHotbarSlot hotbar) {
 			drawIntField(graphics, viewport, y, "Hotbar slot (1–9)", "hotbar-slot", hotbar::slot, hotbar::setSlot);
@@ -987,22 +1268,71 @@ public final class ScratchMacroEditorScreen extends Screen {
 			if (!change.targetsGlobal()) drawTextField(graphics, viewport, y, "Local variable name",
 				"change-var-name", change::name, change::setName);
 			drawDoubleField(graphics, viewport, y, "Change by", "change-var-amount", change::amount, change::setAmount);
+		} else if (step instanceof MacroStep.UpdateVariable update) {
+			drawVariableTarget(graphics, viewport, y, "Target", update.name(), update.targetsGlobal(), update.globalVariableId(),
+				definition -> {
+					update.setGlobalVariableId(definition.id());
+					update.setName(definition.name());
+					update.setValue(withType(update.value(), definition.type()));
+					dirty();
+				}, () -> { update.setGlobalVariableId(null); dirty(); }, mouseX, mouseY);
+			if (!update.targetsGlobal()) drawTextField(graphics, viewport, y, "Local variable name",
+				"update-var-name", update::name, update::setName);
+			button(graphics, "Operation  ·  " + title(update.operation().name()), rowRect(viewport, y[0], 22),
+				mouseX, mouseY, viewport, () -> { update.setOperation(nextEnum(update.operation())); dirty(); },
+				false, categoryColor(Category.VARIABLES));
+			y[0] += 26;
+			if (update.operation() == MacroStep.UpdateVariable.Operation.SET) {
+				drawMacroValueEditor(graphics, viewport, y, "Value", "update-var-value", update.value(),
+					update.value().type(), update::setValue, mouseX, mouseY);
+			} else {
+				drawDoubleField(graphics, viewport, y, "Amount", "update-var-amount", update::amount, update::setAmount);
+			}
 		} else if (step instanceof MacroStep.FunctionCall call) {
 			drawFunctionCallProperties(graphics, viewport, y, call, mouseX, mouseY);
 		} else if (step instanceof MacroStep.MacroCall call) {
 			drawMacroCallProperties(graphics, viewport, y, call, mouseX, mouseY);
 		} else if (step instanceof MacroStep.IfElse branch) {
+			toggleRow(graphics, viewport, y, "Else branch", branch.elseEnabled(),
+				() -> { branch.setElseEnabled(!branch.elseEnabled()); dirty(); }, mouseX, mouseY);
 			drawConditionButton(graphics, viewport, y, "Condition", branch.condition(),
 				branch::setCondition, mouseX, mouseY, 0);
 			drawConditionProperties(graphics, viewport, y, branch.condition(), branch::setCondition, mouseX, mouseY, 0);
 		} else if (step instanceof MacroStep.Repeat repeat) {
-			toggleRow(graphics, viewport, y, "Repeat forever", repeat.forever(),
-				() -> { repeat.setForever(!repeat.forever()); dirty(); }, mouseX, mouseY);
-			if (!repeat.forever()) drawIntField(graphics, viewport, y, "Repeat count", "repeat-count", repeat::count, repeat::setCount);
+			button(graphics, "Mode  ·  " + title(repeat.mode().name()), rowRect(viewport, y[0], 22), mouseX, mouseY,
+				viewport, () -> { repeat.setMode(next(repeat.mode())); dirty(); }, false, categoryColor(Category.CONTROL));
+			y[0] += 26;
+			if (repeat.mode() == MacroStep.Repeat.Mode.COUNT) {
+				drawIntField(graphics, viewport, y, "Repeat count", "repeat-count", repeat::count, repeat::setCount);
+			} else if (repeat.mode() == MacroStep.Repeat.Mode.UNTIL) {
+				drawConditionButton(graphics, viewport, y, "Stop condition", repeat.condition(),
+					repeat::setCondition, mouseX, mouseY, 0);
+				drawConditionProperties(graphics, viewport, y, repeat.condition(), repeat::setCondition, mouseX, mouseY, 0);
+			}
 		} else if (step instanceof MacroStep.RepeatUntil repeat) {
 			drawConditionButton(graphics, viewport, y, "Stop condition", repeat.condition(),
 				repeat::setCondition, mouseX, mouseY, 0);
 			drawConditionProperties(graphics, viewport, y, repeat.condition(), repeat::setCondition, mouseX, mouseY, 0);
+		} else if (step instanceof MacroStep.Switch value) {
+			drawVariableTarget(graphics, viewport, y, "Switch value", value.name(), value.targetsGlobal(), value.globalVariableId(),
+				definition -> { value.setGlobalVariableId(definition.id()); value.setName(definition.name()); dirty(); },
+				() -> { value.setGlobalVariableId(null); dirty(); }, mouseX, mouseY);
+			if (!value.targetsGlobal()) drawTextField(graphics, viewport, y, "Local variable name",
+				"switch-var-name", value::name, value::setName);
+			for (int index = 0; index < value.cases().size(); index++) {
+				int caseIndex = index;
+				MacroStep.SwitchCase branch = value.cases().get(index);
+				drawTextField(graphics, viewport, y, "Case " + (index + 1) + " value",
+					"switch-case-" + index, branch::value, branch::setValue);
+				button(graphics, "Remove case " + (index + 1), rowRect(viewport, y[0], 19), mouseX, mouseY,
+					viewport, () -> { value.cases().remove(caseIndex); dirty(); }, false, TEXT_ERROR);
+				y[0] += 23;
+			}
+			if (value.cases().size() < 16) {
+				button(graphics, "+ Add case", rowRect(viewport, y[0], 21), mouseX, mouseY, viewport,
+					() -> { value.addCase(); dirty(); }, false, categoryColor(Category.CONTROL));
+				y[0] += 25;
+			}
 		} else if (step instanceof MacroStep.WaitUntil wait) {
 			drawConditionButton(graphics, viewport, y, "Wait condition", wait.condition(),
 				wait::setCondition, mouseX, mouseY, 0);
@@ -1028,6 +1358,37 @@ public final class ScratchMacroEditorScreen extends Screen {
 				false, categoryColor(Category.INVENTORY));
 			y[0] += 26;
 			toggleRow(graphics, viewport, y, "Shift click", item.shift(), () -> { item.setShift(!item.shift()); dirty(); }, mouseX, mouseY);
+		} else if (step instanceof MacroStep.InventoryClick click) {
+			button(graphics, "Target  ·  " + title(click.target().name()), rowRect(viewport, y[0], 22), mouseX, mouseY,
+				viewport, () -> { click.setTarget(click.target() == MacroStep.InventoryClick.Target.SLOT
+					? MacroStep.InventoryClick.Target.ITEM : MacroStep.InventoryClick.Target.SLOT); dirty(); },
+				false, categoryColor(Category.INVENTORY));
+			y[0] += 26;
+			if (click.target() == MacroStep.InventoryClick.Target.SLOT) {
+				drawIntField(graphics, viewport, y, "Slot id", "inventory-click-slot", click::slotId, click::setSlotId);
+				lineText(graphics, viewport, y, "Slot IDs", "Enable Dev → Slot IDs while a menu is open");
+			} else {
+				drawTextField(graphics, viewport, y, "Item name", "inventory-click-name", click::name, click::setName);
+				toggleRow(graphics, viewport, y, "Partial name match", click.contains(),
+					() -> { click.setContains(!click.contains()); dirty(); }, mouseX, mouseY);
+				drawIntField(graphics, viewport, y, "Occurrence", "inventory-click-occurrence", click::occurrence, click::setOccurrence);
+				button(graphics, "Search area · " + itemScopeLabel(click.scope()), rowRect(viewport, y[0], 22),
+					mouseX, mouseY, viewport, () -> { click.setScope(nextItemScope(click.scope())); dirty(); },
+					false, categoryColor(Category.INVENTORY));
+				y[0] += 26;
+			}
+			button(graphics, "Mouse button · " + mouseButtonLabel(click.button()), rowRect(viewport, y[0], 22),
+				mouseX, mouseY, viewport, () -> { click.setButton((click.button() + 1) % 3); dirty(); },
+				false, categoryColor(Category.INVENTORY));
+			y[0] += 26;
+			toggleRow(graphics, viewport, y, "Shift click", click.shift(),
+				() -> { click.setShift(!click.shift()); dirty(); }, mouseX, mouseY);
+		} else if (step instanceof MacroStep.Scroll scroll) {
+			button(graphics, "Direction · " + title(scroll.direction().name()), rowRect(viewport, y[0], 22),
+				mouseX, mouseY, viewport, () -> { scroll.setDirection(nextEnum(scroll.direction())); dirty(); },
+				false, categoryColor(Category.INPUT));
+			y[0] += 26;
+			drawIntField(graphics, viewport, y, "Wheel steps", "scroll-amount", scroll::amount, scroll::setAmount);
 		} else if (step instanceof MacroStep.Title title) {
 			drawTextField(graphics, viewport, y, "Title text", "title-text", title::text, title::setText);
 			button(graphics, "Font · " + titleFontLabel(title.font()), rowRect(viewport, y[0], 22),
@@ -1339,6 +1700,48 @@ public final class ScratchMacroEditorScreen extends Screen {
 				variable.value(), variable.value().type(),
 				value -> setter.accept(new MacroCondition.Variable(variable.name(), variable.operator(), value,
 					variable.globalVariableId())), mouseX, mouseY);
+		} else if (condition instanceof MacroCondition.Hypixel hypixel) {
+			button(graphics, "Hypixel value · " + title(hypixel.field().name().replace('_', ' ')),
+				rowRect(viewport, y[0], 22), mouseX, mouseY, viewport, () -> {
+					List<PickerOption> options = new ArrayList<>();
+					for (MacroCondition.Hypixel.Field field : MacroCondition.Hypixel.Field.values()) {
+						options.add(new PickerOption(title(field.name().replace('_', ' ')), () -> {
+							setter.accept(new MacroCondition.Hypixel(field, MacroCondition.Hypixel.Operator.EQUALS,
+								hypixel.expected(), hypixel.argument(), hypixel.plotId()));
+							dirty();
+						}));
+					}
+					openPicker("Choose a Hypixel value", options);
+				}, false, categoryColor(Category.WORLD));
+			y[0] += 26;
+			button(graphics, "Compare · " + title(hypixel.operator().name().replace('_', ' ')),
+				rowRect(viewport, y[0], 22), mouseX, mouseY, viewport, () -> {
+					List<PickerOption> options = new ArrayList<>();
+					for (MacroCondition.Hypixel.Operator operator : MacroCondition.Hypixel.Operator.values()) {
+						options.add(new PickerOption(title(operator.name().replace('_', ' ')), () -> {
+							setter.accept(new MacroCondition.Hypixel(hypixel.field(), operator, hypixel.expected(),
+								hypixel.argument(), hypixel.plotId()));
+							dirty();
+						}));
+					}
+					openPicker("Choose comparison", options);
+				}, false, categoryColor(Category.CONTROL));
+			y[0] += 26;
+			if (hypixel.field() == MacroCondition.Hypixel.Field.PARTY_HAS_MEMBER) {
+				drawTextField(graphics, viewport, y, "Party member name", "hypixel-party-member",
+					() -> hypixel.argument(), value -> setter.accept(new MacroCondition.Hypixel(hypixel.field(),
+						hypixel.operator(), hypixel.expected(), value, hypixel.plotId())));
+			}
+			if (hypixel.field() == MacroCondition.Hypixel.Field.GARDEN_PEST_STATUS
+				|| hypixel.field() == MacroCondition.Hypixel.Field.GARDEN_PEST_COUNT) {
+				drawIntField(graphics, viewport, y, "Plot id (-1 = current)", "hypixel-plot-id",
+					hypixel::plotId, value -> setter.accept(new MacroCondition.Hypixel(hypixel.field(),
+						hypixel.operator(), hypixel.expected(), hypixel.argument(), value)));
+			}
+			drawTextField(graphics, viewport, y, "Expected value", "hypixel-expected", hypixel::expected,
+				value -> setter.accept(new MacroCondition.Hypixel(hypixel.field(), hypixel.operator(),
+					value, hypixel.argument(), hypixel.plotId())));
+			lineText(graphics, viewport, y, "Data requirement", "Missing or stale values stop this macro.");
 		} else if (condition != null && !(condition instanceof MacroCondition.Always)) {
 			lineText(graphics, viewport, y, "Logic", "Choose a condition type above");
 		}
@@ -1405,6 +1808,8 @@ public final class ScratchMacroEditorScreen extends Screen {
 		addConditionOption(options, "Chat contains", new MacroCondition.Chat("", true), setter);
 		addConditionOption(options, "Variable comparison", new MacroCondition.Variable("value",
 			MacroCondition.Variable.Operator.EQUALS, MacroValue.literal(MacroValue.Type.TEXT, "")), setter);
+		addConditionOption(options, "Hypixel state", new MacroCondition.Hypixel(
+			MacroCondition.Hypixel.Field.ISLAND, MacroCondition.Hypixel.Operator.EQUALS, "GARDEN"), setter);
 		if (depth < MAX_CONDITION_DEPTH) {
 			addConditionOption(options, "AND · all requirements", new MacroCondition.All(List.of(
 				new MacroCondition.Always(true), new MacroCondition.Always(true))), setter);
@@ -1453,7 +1858,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		String id, Supplier<Integer> getter, IntConsumer setter) {
 		drawTextField(graphics, viewport, y, label, id,
 			() -> Integer.toString(getter.get()), value -> {
-				try { setter.accept(Integer.parseInt(value.trim())); dirty(); }
+				try { setter.accept(Integer.parseInt(value.trim())); }
 				catch (NumberFormatException ignored) { }
 			});
 	}
@@ -1462,7 +1867,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		String id, Supplier<Double> getter, Consumer<Double> setter) {
 		drawTextField(graphics, viewport, y, label, id,
 			() -> String.format(Locale.ROOT, "%.2f", getter.get()), value -> {
-				try { setter.accept(Double.parseDouble(value.trim())); dirty(); }
+				try { setter.accept(Double.parseDouble(value.trim())); }
 				catch (NumberFormatException ignored) { }
 			});
 	}
@@ -1471,7 +1876,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		String id, Supplier<Float> getter, Consumer<Float> setter) {
 		drawTextField(graphics, viewport, y, label, id,
 			() -> String.format(Locale.ROOT, "%.2f", getter.get()), value -> {
-				try { setter.accept(Float.parseFloat(value.trim())); dirty(); }
+				try { setter.accept(Float.parseFloat(value.trim())); }
 				catch (NumberFormatException ignored) { }
 			});
 	}
@@ -1479,33 +1884,85 @@ public final class ScratchMacroEditorScreen extends Screen {
 	private void drawTextField(GuiGraphicsExtractor graphics, Rect viewport, int[] y, String label,
 		String id, Supplier<String> getter, Consumer<String> setter) {
 		int x = viewport.x + 4;
-		int w = Math.max(48, viewport.w - 8);
+		int w = Math.max(1, viewport.w - 8);
 		graphics.text(font, trim(label, w), x, y[0], TEXT_MUTED);
 		y[0] += 11;
 		Rect bounds = new Rect(x, y[0], w, 20);
 		boolean focused = id.equals(focusedField);
 		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
-			focused ? CARD_BG_HOVER : CARD_BG, focused ? CARD_BG_HOVER : CARD_BG,
-			focused ? CARD_BORDER_ENABLED : CARD_BORDER);
+			MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM,
+			focused ? CARD_BORDER_ENABLED : BORDER, focused ? 2 : 1);
 		String value = focused ? fieldText : safe(getter.get());
-		String displayed = value + (focused ? "|" : "");
-		graphics.text(font, trim(displayed, bounds.w - 12), bounds.x + 6, bounds.y + 6, TEXT_PRIMARY);
+		drawBoundedFieldText(graphics, bounds, viewport, value, 7, 5, bounds.y + 6,
+			focused, focused && selectAll, TEXT_PRIMARY);
 		FieldBinding binding = new FieldBinding(id, getter, setter);
 		registerHit(bounds, viewport, null, null, null, null, null, null, binding);
 		y[0] += 25;
 	}
 
+	private void drawBoundedFieldText(GuiGraphicsExtractor graphics, Rect bounds, Rect clip, String value,
+		int leftInset, int rightInset, int textY, boolean focused, boolean selected, int color) {
+		int contentWidth = bounds.w - leftInset - rightInset;
+		if (contentWidth <= 0) return;
+		Rect content = new Rect(bounds.x + leftInset, bounds.y + 2, contentWidth, Math.max(1, bounds.h - 4));
+		Rect visible = content.intersection(clip);
+		if (visible == null || visible.w <= 0 || visible.h <= 0) return;
+		if (focused && selected) {
+			int selectionTop = Math.max(visible.y, bounds.y + 4);
+			int selectionBottom = Math.min(visible.y + visible.h, bounds.y + bounds.h - 4);
+			if (selectionBottom > selectionTop) graphics.fill(visible.x, selectionTop,
+				visible.x + visible.w, selectionBottom, withOpacity(CATEGORY_SELECTED, 0.48f));
+		}
+		graphics.enableScissor(visible.x, visible.y, visible.x + visible.w, visible.y + visible.h);
+		String shown = focused ? visibleFieldText(value, fieldCursor, contentWidth, true) : trim(value, contentWidth);
+		graphics.text(font, shown, content.x, textY, color);
+		graphics.disableScissor();
+	}
+
+	/** Keeps the caret visible in narrow fields while the text remains clipped to its actual bounds. */
+	private String visibleFieldText(String value, int cursor, int availableWidth, boolean showCaret) {
+		String text = safe(value);
+		if (availableWidth <= 0 || text.isEmpty()) return showCaret && availableWidth >= font.width("|") ? "|" : "";
+		int caretWidth = showCaret ? font.width("|") : 0;
+		int caret = clamp(cursor, 0, text.length());
+		int start = 0;
+		String ellipsis = "…";
+		while (start < caret && font.width(text.substring(start, caret)) + caretWidth > availableWidth) {
+			start += Character.charCount(text.codePointAt(start));
+		}
+		while (start < caret && font.width(ellipsis + text.substring(start, caret)) + caretWidth > availableWidth) {
+			start += Character.charCount(text.codePointAt(start));
+		}
+		boolean clippedLeft = start > 0 && font.width(ellipsis) + caretWidth <= availableWidth;
+		String before = text.substring(start, caret);
+		String prefix = clippedLeft ? ellipsis : "";
+		int afterWidth = Math.max(0, availableWidth - font.width(prefix + before) - caretWidth);
+		String after = showCaret && afterWidth == 0 ? ""
+			: font.plainSubstrByWidth(text.substring(caret), Math.max(0, afterWidth));
+		String result = prefix + before + (showCaret ? "|" : "") + after;
+		while (!result.isEmpty() && font.width(result) > availableWidth) {
+			if (!after.isEmpty()) after = after.substring(0, after.offsetByCodePoints(after.length(), -1));
+			else if (!before.isEmpty()) before = before.substring(0, before.offsetByCodePoints(before.length(), -1));
+			else break;
+			result = prefix + before + (showCaret ? "|" : "") + after;
+		}
+		return result;
+	}
+
 	private void drawCompactField(GuiGraphicsExtractor graphics, Rect viewport, int[] y, String label,
 		String id, Supplier<String> getter, Consumer<String> setter, int width) {
 		int x = viewport.x + 4;
-		graphics.text(font, label, x, y[0] + 5, TEXT_MUTED);
-		Rect bounds = new Rect(x + 37, y[0], Math.max(40, width - 37), 19);
+		int fieldX = x + 37;
+		int available = Math.max(1, viewport.x + viewport.w - 4 - fieldX);
+		int fieldW = Math.min(available, Math.max(1, Math.max(40, width - 37)));
+		graphics.text(font, trim(label, Math.max(1, fieldX - x - 4)), x, y[0] + 5, TEXT_MUTED);
+		Rect bounds = new Rect(fieldX, y[0], fieldW, 19);
 		boolean focused = id.equals(focusedField);
 		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
-			focused ? CARD_BG_HOVER : CARD_BG, focused ? CARD_BG_HOVER : CARD_BG,
-			focused ? CARD_BORDER_ENABLED : CARD_BORDER);
-		graphics.text(font, trim(focused ? fieldText + "|" : safe(getter.get()), bounds.w - 8),
-			bounds.x + 4, bounds.y + 5, TEXT_PRIMARY);
+			MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM,
+			focused ? CARD_BORDER_ENABLED : BORDER);
+		drawBoundedFieldText(graphics, bounds, viewport, focused ? fieldText : safe(getter.get()),
+			4, 4, bounds.y + 5, focused, focused && selectAll, TEXT_PRIMARY);
 		registerHit(bounds, viewport, null, null, null, null, null, null,
 			new FieldBinding(id, getter, setter));
 		y[0] += 22;
@@ -1524,7 +1981,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 
 	private void sectionTitle(GuiGraphicsExtractor graphics, Rect viewport, int[] y, String text) {
 		graphics.fill(viewport.x + 3, y[0] + 1, viewport.x + viewport.w - 3, y[0] + 2, PANEL_HIGHLIGHT);
-		graphics.text(font, text, viewport.x + 4, y[0] + 6, TEXT_PRIMARY);
+		graphics.text(font, trim(text, viewport.w - 8), viewport.x + 4, y[0] + 6, TEXT_PRIMARY);
 		y[0] += 19;
 	}
 
@@ -1542,9 +1999,9 @@ public final class ScratchMacroEditorScreen extends Screen {
 
 	private void drawPanel(GuiGraphicsExtractor graphics, Rect pane, String title, String subtitle) {
 		roundedRectBordered(graphics, pane.x, pane.y, pane.w, pane.h, RADIUS_SMALL,
-			CARD_BG, CARD_BG, CARD_BORDER);
+			MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM, BORDER);
 		graphics.fill(pane.x + 1, pane.y + 1, pane.x + pane.w - 1, pane.y + 3, PANEL_HIGHLIGHT);
-		graphics.text(font, title, pane.x + 8, pane.y + 8, TEXT_PRIMARY);
+		graphics.text(font, trim(title, pane.w - 16), pane.x + 8, pane.y + 8, TEXT_PRIMARY);
 		graphics.text(font, trim(subtitle, pane.w - 16), pane.x + 8, pane.y + 21, TEXT_MUTED);
 	}
 
@@ -1572,31 +2029,89 @@ public final class ScratchMacroEditorScreen extends Screen {
 		List<MacroStep> owner, PaletteBlock paletteBlock, MacroScript script,
 		MacroFunction function, FieldBinding field) {
 		if (replayingCanvasTargets) return;
+		if (canvasTransformActive) {
+			bounds = canvasToScreen(bounds);
+			clip = canvasTransformClip;
+		}
 		Rect visible = clip == null ? bounds : bounds.intersection(clip);
 		if (visible == null) return;
 		hitTargets.add(new HitTarget(visible, action, step, owner, paletteBlock, script, function, field));
 	}
 
+	private Rect canvasToScreen(Rect bounds) {
+		int left = (int) Math.floor(canvasTransformX + bounds.x * canvasTransformScale);
+		int top = (int) Math.floor(canvasTransformY + bounds.y * canvasTransformScale);
+		int right = (int) Math.ceil(canvasTransformX + (bounds.x + bounds.w) * canvasTransformScale);
+		int bottom = (int) Math.ceil(canvasTransformY + (bounds.y + bounds.h) * canvasTransformScale);
+		return new Rect(left, top, Math.max(1, right - left), Math.max(1, bottom - top));
+	}
+
 	private void renderFooter(GuiGraphicsExtractor graphics, Layout layout) {
+		String historyHint = (documentHistory.canUndo() ? "Ctrl+Z undo" : "")
+			+ (documentHistory.canRedo() ? (documentHistory.canUndo() ? "  ·  " : "") + "Ctrl+Y redo" : "");
 		String hint = noticeUntil > System.currentTimeMillis() ? notice
-			: (undoAction == null ? "" : "Ctrl+Z undo " + undoLabel + "  ·  ")
+			: (historyHint.isEmpty() ? "" : historyHint + "  ·  ")
 				+ "Drag empty canvas to pan  ·  Scroll to zoom  ·  Drag blocks to snap  ·  Esc to close";
 		graphics.text(font, trim(hint, layout.panel.w - 20), layout.panel.x + 11,
 			layout.panel.y + layout.panel.h - 16, noticeUntil > System.currentTimeMillis() ? TEXT_WARN : TEXT_MUTED);
 	}
 
+	/** Highlights the exact insertion socket that will receive a dragged block. */
+	private void renderDropPreview(GuiGraphicsExtractor graphics, Rect viewport, int mouseX, int mouseY) {
+		if (drag == null || !drag.moved || (drag.kind != DragKind.PALETTE && drag.kind != DragKind.STEP)) return;
+		DropSlot target = findDropSlot(mouseX, mouseY, false);
+		if (target == null) return;
+		int color = drag.kind == DragKind.PALETTE ? categoryColor(drag.palette.category) : blockColor(drag.step);
+		String label = drag.kind == DragKind.PALETTE ? drag.palette.label : blockLabel(drag.step);
+		int nodeWidth = drag.kind == DragKind.STEP
+			? requiredStepWidth(drag.step, target.depth)
+			: Math.max(120, font.width(label) + 18);
+		int x = target.bounds.x;
+		int y = target.bounds.y + Math.max(0, (target.bounds.h - BLOCK_HEIGHT) / 2);
+		Rect node = new Rect(x, y, nodeWidth, BLOCK_HEIGHT);
+		Rect visible = node.intersection(viewport);
+		if (visible == null) return;
+		graphics.enableScissor(viewport.x, viewport.y, viewport.x + viewport.w, viewport.y + viewport.h);
+		roundedRectBordered(graphics, node.x, node.y, node.w, node.h, RADIUS_SMALL,
+			withOpacity(color, 0.90f), withOpacity(color, 0.90f), 0xE6FFFFFF);
+		roundedRect(graphics, node.x + 12, node.y - 2, Math.min(19, node.w / 4), 5, 2, withOpacity(color, 0.90f));
+		int textColor = macroAccentText(0xFFFAFCFF);
+		if (drag.kind == DragKind.STEP) {
+			drawInlineBlockPreview(graphics, viewport, node, node.h, drag.step, textColor);
+		} else {
+			graphics.text(font, label, node.x + 9, node.y + 8, textColor);
+		}
+		graphics.disableScissor();
+	}
+
 	private void renderDragPreview(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
-		if (drag == null || !drag.moved || drag.kind == DragKind.PAN) return;
+		if (drag == null || !drag.moved || drag.kind == DragKind.PAN) {
+			dragGhostInitialized = false;
+			return;
+		}
 		String label = drag.kind == DragKind.PALETTE ? drag.palette.label
 			: drag.kind == DragKind.STEP ? blockLabel(drag.step) : triggerName(drag.script.trigger());
 		int w = Math.min(230, Math.max(92, font.width(label) + 20));
-		int x = clamp(mouseX + 12, 3, Math.max(3, width - w - 3));
-		int y = clamp(mouseY + 12, 3, Math.max(3, height - 24));
+		float targetX = mouseX + 12;
+		float targetY = mouseY + 12;
+		if (!dragGhostInitialized) {
+			dragGhostX = targetX;
+			dragGhostY = targetY;
+			dragGhostInitialized = true;
+		} else {
+			dragGhostX += (targetX - dragGhostX) * 0.58f;
+			dragGhostY += (targetY - dragGhostY) * 0.58f;
+		}
+		int x = clamp(Math.round(dragGhostX), 3, Math.max(3, width - w - 3));
+		int y = clamp(Math.round(dragGhostY), 3, Math.max(3, height - 24));
 		int color = drag.kind == DragKind.PALETTE ? categoryColor(drag.palette.category)
 			: drag.kind == DragKind.STEP ? blockColor(drag.step) : categoryColor(Category.ACTIONS);
 		roundedRectBordered(graphics, x, y, w, 21, RADIUS_SMALL,
 			withOpacity(color, 0.94f), withOpacity(color, 0.94f), TEXT_PRIMARY);
-		graphics.text(font, trim(label, w - 12), x + 6, y + 6, 0xFFFFFFFF);
+		// The ghost is filled with the block's own colour, which can be a pale accent or the bright
+		// event yellow; a hard-coded white label was unreadable on those. macroAccentText already
+		// answers "which colour reads on this block" for every other drawn block.
+		graphics.text(font, trim(label, w - 12), x + 6, y + 6, macroAccentText(0xFFFAFCFF));
 	}
 
 	private void renderPicker(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
@@ -1626,9 +2141,13 @@ public final class ScratchMacroEditorScreen extends Screen {
 		if (picker.searchable) {
 			Rect search = new Rect(modal.x + 8, modal.y + 28, modal.w - 16, 20);
 			roundedRectBordered(graphics, search.x, search.y, search.w, search.h, RADIUS_SMALL,
-				CARD_BG, CARD_BG, CARD_BORDER_ENABLED);
+				MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM, CARD_BORDER_ENABLED);
 			String searchLabel = picker.search.isBlank() ? "Type to filter sound events" : "Search · " + picker.search;
-			graphics.text(font, trim(searchLabel, search.w - 12), search.x + 6, search.y + 6, TEXT_SECONDARY);
+			graphics.enableScissor(search.x + 5, search.y + 3, search.x + search.w - 5, search.y + search.h - 3);
+			String visibleSearch = picker.search.isBlank() ? trim(searchLabel, search.w - 12)
+				: visibleFieldText(searchLabel, searchLabel.length(), search.w - 12, false);
+			graphics.text(font, visibleSearch, search.x + 6, search.y + 6, TEXT_SECONDARY);
+			graphics.disableScissor();
 			registerHit(search, null, () -> { }, null, null, null, null, null);
 			rowsTop = modal.y + 55;
 		}
@@ -1652,7 +2171,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		String hint = picker.searchable
 			? "Type to search  ·  Backspace delete  ·  ↑ / ↓  ·  Enter select  ·  Esc close"
 			: "↑ / ↓ select  ·  Enter confirm  ·  Esc close  ·  Scroll for more";
-		graphics.centeredText(font, hint,
+		graphics.centeredText(font, trim(hint, modal.w - 20),
 			modal.x + modal.w / 2, modal.y + modal.h - 17, TEXT_MUTED);
 	}
 
@@ -1664,7 +2183,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 			PANEL_TOP, PANEL_BOTTOM, BORDER);
 		graphics.fill(modal.x + 1, modal.y + 1, modal.x + modal.w - 1, modal.y + 3, PANEL_HIGHLIGHT);
 		graphics.text(font, "Global variables", modal.x + 12, modal.y + 10, TEXT_PRIMARY);
-		graphics.text(font, "Shared across macros and function calls · values stay local to this client",
+		graphics.text(font, trim("Shared across macros and function calls · values stay local to this client", modal.w - 24),
 			modal.x + 12, modal.y + 25, TEXT_MUTED);
 		registerHit(modal, null, null, null, null, null, null, null);
 		Rect close = new Rect(modal.x + modal.w - 54, modal.y + 7, 42, 20);
@@ -1701,13 +2220,13 @@ public final class ScratchMacroEditorScreen extends Screen {
 			MacroVariableStore.Definition definition = definitions.get(index);
 			Rect row = new Rect(rows.x, rows.y + visible * rowHeight, rows.w, rowHeight - 3);
 			roundedRectBordered(graphics, row.x, row.y, row.w, row.h, RADIUS_SMALL,
-				CARD_BG, CARD_BG, CARD_BORDER);
+				MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM, BORDER);
 			drawGlobalVariableRow(graphics, row, definition, mouseX, mouseY);
 		}
 		graphics.disableScissor();
-		if (definitions.isEmpty()) graphics.centeredText(font, "Create a global variable above to share a value across macros.",
+		if (definitions.isEmpty()) graphics.centeredText(font, trim("Create a global variable above to share a value across macros.", rows.w - 12),
 			rows.x + rows.w / 2, rows.y + 8, TEXT_MUTED);
-		graphics.centeredText(font, "Unsaved live values reset on restart. Enable Save value per variable to keep it locally.",
+		graphics.centeredText(font, trim("Unsaved live values reset on restart. Enable Save value per variable to keep it locally.", modal.w - 24),
 			modal.x + modal.w / 2, modal.y + modal.h - 17, TEXT_MUTED);
 	}
 
@@ -1754,10 +2273,10 @@ public final class ScratchMacroEditorScreen extends Screen {
 		String id, Supplier<String> getter, Consumer<String> setter) {
 		boolean focused = id.equals(focusedField);
 		roundedRectBordered(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
-			focused ? CARD_BG_HOVER : BUTTON_BG, focused ? CARD_BG_HOVER : BUTTON_BG,
-			focused ? CARD_BORDER_ENABLED : CARD_BORDER);
-		String shown = focused ? fieldText + "|" : safe(getter.get());
-		graphics.text(font, trim(shown, bounds.w - 8), bounds.x + 4, bounds.y + 5, TEXT_PRIMARY);
+			MODULE_PANEL_TOP, MODULE_PANEL_BOTTOM,
+			focused ? CARD_BORDER_ENABLED : BORDER);
+		drawBoundedFieldText(graphics, bounds, clip, focused ? fieldText : safe(getter.get()),
+			4, 4, bounds.y + 5, focused, focused && selectAll, TEXT_PRIMARY);
 		registerHit(bounds, clip, null, null, null, null, null, null,
 			new FieldBinding(id, getter, setter));
 	}
@@ -1819,7 +2338,8 @@ public final class ScratchMacroEditorScreen extends Screen {
 			}
 			if (target.step != null) {
 				selectStep(target.step, target.owner, target.script, target.function);
-				drag = DragState.step(target.step, target.owner, target.script, target.function, x, y);
+				drag = DragState.step(target.step, target.owner, target.script, target.function,
+					x, y, target.bounds);
 				return true;
 			}
 			if (target.script != null) {
@@ -1860,11 +2380,11 @@ public final class ScratchMacroEditorScreen extends Screen {
 			macro.setCanvasView(drag.startPanX + dx, drag.startPanY + dy, macro.canvasZoom());
 			viewChanged();
 		} else if (drag.kind == DragKind.SCRIPT && drag.script != null) {
-			float zoom = Math.max(0.45f, macro.canvasZoom());
+			float zoom = canvasZoomFactor(macro.canvasZoom());
 			drag.script.setCanvasPosition(drag.startCanvasX + dx / zoom, drag.startCanvasY + dy / zoom);
 			viewChanged();
 		} else if (drag.kind == DragKind.FUNCTION && drag.function != null) {
-			float zoom = Math.max(0.45f, macro.canvasZoom());
+			float zoom = canvasZoomFactor(macro.canvasZoom());
 			drag.function.setCanvasPosition(drag.startCanvasX + dx / zoom, drag.startCanvasY + dy / zoom);
 			viewChanged();
 		}
@@ -1881,19 +2401,41 @@ public final class ScratchMacroEditorScreen extends Screen {
 		currentMouseY = y;
 		drag = null;
 		if (released.kind == DragKind.PALETTE) {
+			if (released.palette.detachedOnly) {
+				if (tab == Tab.CODE && canvasViewportContains(x, y)) insertPaletteDetached(released.palette, x - 64, y - 64);
+				else insertPalette(released.palette, null);
+				return true;
+			}
 			if (!released.moved) insertPalette(released.palette, null);
 			else {
 				DropSlot target = findDropSlot(x, y, false);
 				if (target != null) insertPalette(released.palette, target);
+				else if (tab == Tab.CODE && canvasViewportContains(x, y)) insertPaletteDetached(released.palette, x - 40, y - 10);
 			}
 			return true;
 		}
 		if (released.kind == DragKind.STEP && released.moved) {
+			if (released.step instanceof MacroStep.Comment && macro != null
+				&& released.owner == macro.detachedBlocks()) {
+				if (tab == Tab.CODE && canvasViewportContains(x, y)) {
+					moveStepToDetached(released, x - released.pointerOffsetX, y - released.pointerOffsetY);
+				}
+				return true;
+			}
 			DropSlot target = findDropSlot(x, y, false);
 			if (target != null) moveStep(released, target);
+			else if (tab == Tab.CODE && canvasViewportContains(x, y)
+				&& (released.function == null || released.owner == macro.detachedBlocks())) {
+				moveStepToDetached(released, x - released.pointerOffsetX, y - released.pointerOffsetY);
+			}
 			return true;
 		}
-		if (released.kind == DragKind.PAN || released.kind == DragKind.SCRIPT || released.kind == DragKind.FUNCTION) {
+		if (released.kind == DragKind.SCRIPT || released.kind == DragKind.FUNCTION) {
+			recordDocumentEdit();
+			viewChanged();
+			return true;
+		}
+		if (released.kind == DragKind.PAN) {
 			viewChanged();
 			return true;
 		}
@@ -1917,16 +2459,9 @@ public final class ScratchMacroEditorScreen extends Screen {
 			return true;
 		}
 		if (canvasViewportContains(x, y)) {
-			setZoomAround(scrollY > 0 ? 1.1f : 0.9f, mouseX, mouseY);
-			return true;
-		}
-		if (lastLayout.compact) {
-			if (!lastLayout.compactContent.contains(x, y)) return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
-				switch (compactPane) {
-				case PALETTE -> paletteScroll = Math.max(0, paletteScroll - (int) Math.signum(scrollY) * 30);
-				case INSPECTOR -> inspectorScroll = clamp(inspectorScroll - (int) Math.signum(scrollY) * 28,
-					0, inspectorMaxScroll);
-				case CANVAS -> { return true; }
+			if (scrollY != 0.0) {
+				float factor = (float) Math.pow(1.20, Math.max(-4.0, Math.min(4.0, scrollY)));
+				setZoomAround(factor, mouseX, mouseY);
 			}
 			return true;
 		}
@@ -1947,17 +2482,19 @@ public final class ScratchMacroEditorScreen extends Screen {
 			return true;
 		}
 		if (focusedField == null || !event.isAllowedChatCharacter()) return super.charTyped(event);
-		if (selectAll) {
-			fieldText = "";
-			fieldCursor = 0;
-			selectAll = false;
-		}
 		String typed = event.codepointAsString();
-		if (fieldText.length() + typed.length() <= 256) {
-			fieldText = fieldText.substring(0, fieldCursor) + typed + fieldText.substring(fieldCursor);
-			fieldCursor += typed.length();
-			if (focusedSetter != null) focusedSetter.accept(fieldText);
-			if (!"palette-search".equals(focusedField)) dirty();
+		int start = selectAll ? 0 : fieldCursor;
+		int end = selectAll ? fieldText.length() : fieldCursor;
+		String edited = fieldText.substring(0, start) + typed + fieldText.substring(end);
+		if (edited.length() <= 256 && !edited.equals(fieldText)) {
+			fieldText = edited;
+			fieldCursor = start + typed.length();
+			selectAll = false;
+			recordFieldDraft();
+			if ("palette-search".equals(focusedField)) {
+				paletteSearch = fieldText;
+				paletteScroll = 0;
+			}
 		}
 		return true;
 	}
@@ -1990,12 +2527,36 @@ public final class ScratchMacroEditorScreen extends Screen {
 			}
 			return true;
 		}
+		boolean control = (event.modifiers() & InputConstants.MOD_CONTROL) != 0;
+		boolean shift = (event.modifiers() & GLFW.GLFW_MOD_SHIFT) != 0;
+		if (control && event.key() == GLFW.GLFW_KEY_Z) {
+			if (focusedField != null) {
+				if (!"palette-search".equals(focusedField)) {
+					if (shift) redoFieldDraft();
+					else undoFieldDraft();
+				}
+				return true;
+			}
+			if (shift) redoLastEdit();
+			else undoLastEdit();
+			return true;
+		}
+		if (control && event.key() == GLFW.GLFW_KEY_Y) {
+			if (focusedField != null) {
+				if (!"palette-search".equals(focusedField)) redoFieldDraft();
+				return true;
+			}
+			redoLastEdit();
+			return true;
+		}
 		if (focusedField != null) {
 			if (event.key() == GLFW.GLFW_KEY_A && (event.modifiers() & InputConstants.MOD_CONTROL) != 0) {
 				selectAll = true;
+				updateFieldHistoryCursor();
 				return true;
 			}
 			if (event.key() == InputConstants.KEY_BACKSPACE || event.key() == GLFW.GLFW_KEY_DELETE) {
+				String before = fieldText;
 				if (selectAll) {
 					fieldText = "";
 					fieldCursor = 0;
@@ -2008,17 +2569,24 @@ public final class ScratchMacroEditorScreen extends Screen {
 					int next = fieldCursor + Character.charCount(fieldText.codePointAt(fieldCursor));
 					fieldText = fieldText.substring(0, fieldCursor) + fieldText.substring(next);
 				}
-				applyFocusedField();
+				if (!before.equals(fieldText)) recordFieldDraft();
+				else updateFieldHistoryCursor();
+				if ("palette-search".equals(focusedField)) {
+					paletteSearch = fieldText;
+					paletteScroll = 0;
+				}
 				return true;
 			}
 			if (event.key() == GLFW.GLFW_KEY_LEFT) {
-				fieldCursor = Math.max(0, fieldCursor - 1);
+				if (fieldCursor > 0) fieldCursor -= Character.charCount(fieldText.codePointBefore(fieldCursor));
 				selectAll = false;
+				updateFieldHistoryCursor();
 				return true;
 			}
 			if (event.key() == GLFW.GLFW_KEY_RIGHT) {
-				fieldCursor = Math.min(fieldText.length(), fieldCursor + 1);
+				if (fieldCursor < fieldText.length()) fieldCursor += Character.charCount(fieldText.codePointAt(fieldCursor));
 				selectAll = false;
+				updateFieldHistoryCursor();
 				return true;
 			}
 			if (event.key() == InputConstants.KEY_RETURN) { commitFocusedField(); return true; }
@@ -2031,11 +2599,6 @@ public final class ScratchMacroEditorScreen extends Screen {
 		if (event.key() == InputConstants.KEY_ESCAPE) {
 			if (isBindingInThisEditor()) ModuleKeybindManager.cancelBinding();
 			else onClose();
-			return true;
-		}
-		if (focusedField == null && (event.modifiers() & InputConstants.MOD_CONTROL) != 0
-			&& event.key() == GLFW.GLFW_KEY_Z) {
-			undoLastEdit();
 			return true;
 		}
 		if (event.key() == GLFW.GLFW_KEY_DELETE || event.key() == InputConstants.KEY_BACKSPACE) {
@@ -2081,14 +2644,21 @@ public final class ScratchMacroEditorScreen extends Screen {
 		if (macro == null || lastLayout == null) return;
 		Rect viewport = canvasViewport(lastLayout);
 		float oldZoom = macro.canvasZoom();
-		float newZoom = clamp(oldZoom * factor, 0.45f, 2.0f);
+		float oldFactor = canvasZoomFactor(oldZoom);
+		float newZoom = (float) Math.max(1.0, Math.min(100.0, (double) oldZoom * factor));
 		if (newZoom == oldZoom) return;
-		double worldX = (mouseX - (viewport.x + 16 + macro.canvasPanX())) / oldZoom;
-		double worldY = (mouseY - (viewport.y + 14 + macro.canvasPanY())) / oldZoom;
-		float panX = (float) (mouseX - viewport.x - 16 - worldX * newZoom);
-		float panY = (float) (mouseY - viewport.y - 14 - worldY * newZoom);
+		float newFactor = canvasZoomFactor(newZoom);
+		double worldX = (mouseX - (viewport.x + 16 + macro.canvasPanX())) / oldFactor;
+		double worldY = (mouseY - (viewport.y + 14 + macro.canvasPanY())) / oldFactor;
+		float panX = (float) (mouseX - viewport.x - 16 - worldX * newFactor);
+		float panY = (float) (mouseY - viewport.y - 14 - worldY * newFactor);
 		macro.setCanvasView(panX, panY, newZoom);
 		viewChanged();
+	}
+
+	/** Mouse wheel changes only the canvas scale; the user's chosen pan remains fixed. */
+	private static float canvasZoomFactor(float zoomPercent) {
+		return Math.max(1.0f, Math.min(100.0f, zoomPercent)) / 100.0f;
 	}
 
 	private boolean canvasViewportContains(int x, int y) {
@@ -2117,6 +2687,13 @@ public final class ScratchMacroEditorScreen extends Screen {
 
 	private void insertPalette(PaletteBlock block, DropSlot target) {
 		if (block == null) return;
+		if (block.detachedOnly) {
+			Rect viewport = lastLayout == null ? null : canvasViewport(lastLayout);
+			int x = viewport == null ? width / 2 : viewport.x + viewport.w / 2 - 64;
+			int y = viewport == null ? height / 2 : viewport.y + viewport.h / 2 - 64;
+			insertPaletteDetached(block, x, y);
+			return;
+		}
 		List<MacroStep> owner;
 		int index;
 		if (target != null) {
@@ -2130,18 +2707,56 @@ public final class ScratchMacroEditorScreen extends Screen {
 		MacroStep step = block.factory.get();
 		if (step == null) return;
 		owner.add(clamp(index, 0, owner.size()), step);
-		registerUndo("block add", () -> {
-			if (owner.remove(step)) {
-				clearSelection();
-				dirty();
-			}
-		});
 		selectedStep = step;
 		selectedOwner = owner;
 		if (target != null) selectDropContext(target);
 		else if (tab == Tab.CODE && selectedScript == null) selectedScript = macro.primaryKeyScript();
 		inspectorScroll = 0;
 		dirty();
+	}
+
+	private void insertPaletteDetached(PaletteBlock block, int screenX, int screenY) {
+		if (macro == null || block == null) return;
+		MacroStep step = block.factory.get();
+		if (!(step instanceof MacroStep.Base base)) return;
+		base.setEditorPosition(canvasWorldX(screenX), canvasWorldY(screenY));
+		List<MacroStep> detached = macro.detachedBlocks();
+		detached.add(step);
+		selectedStep = step;
+		selectedOwner = detached;
+		inspectorScroll = 0;
+		dirty();
+	}
+
+	private void moveStepToDetached(DragState source, int screenX, int screenY) {
+		if (macro == null || source == null || source.step == null || source.owner == null
+			|| !(source.step instanceof MacroStep.Base base)) return;
+		int originalIndex = source.owner.indexOf(source.step);
+		if (originalIndex < 0) return;
+		List<MacroStep> originalOwner = source.owner;
+		List<MacroStep> detached = macro.detachedBlocks();
+		if (originalOwner == detached) {
+			base.setEditorPosition(canvasWorldX(screenX), canvasWorldY(screenY));
+		} else {
+			originalOwner.remove(originalIndex);
+			base.setEditorPosition(canvasWorldX(screenX), canvasWorldY(screenY));
+			detached.add(source.step);
+		}
+		selectedStep = source.step;
+		selectedOwner = detached;
+		selectedScript = null;
+		selectedFunction = null;
+		dirty();
+	}
+
+	private float canvasWorldX(int screenX) {
+		Rect viewport = canvasViewport(lastLayout);
+		return (screenX - viewport.x - 16 - macro.canvasPanX()) / canvasZoomFactor(macro.canvasZoom());
+	}
+
+	private float canvasWorldY(int screenY) {
+		Rect viewport = canvasViewport(lastLayout);
+		return (screenY - viewport.y - 14 - macro.canvasPanY()) / canvasZoomFactor(macro.canvasZoom());
 	}
 
 	private void moveStep(DragState source, DropSlot target) {
@@ -2151,24 +2766,11 @@ public final class ScratchMacroEditorScreen extends Screen {
 		int sourceIndex = source.owner.indexOf(source.step);
 		if (sourceIndex < 0) return;
 		List<MacroStep> originalOwner = source.owner;
-		int originalIndex = sourceIndex;
-		MacroStep movedStep = source.step;
-		MacroScript originalScript = source.script;
-		MacroFunction originalFunction = source.function;
 		int destination = clamp(target.index, 0, target.owner.size());
 		if (source.owner == target.owner && (destination == sourceIndex || destination == sourceIndex + 1)) return;
 		source.owner.remove(sourceIndex);
 		if (source.owner == target.owner && sourceIndex < destination) destination--;
 		target.owner.add(clamp(destination, 0, target.owner.size()), source.step);
-		List<MacroStep> destinationOwner = target.owner;
-		registerUndo("block move", () -> {
-			int currentIndex = destinationOwner.indexOf(movedStep);
-			if (currentIndex < 0) return;
-			destinationOwner.remove(currentIndex);
-			originalOwner.add(clamp(originalIndex, 0, originalOwner.size()), movedStep);
-			selectStep(movedStep, originalOwner, originalScript, originalFunction);
-			dirty();
-		});
 		selectedStep = source.step;
 		selectedOwner = target.owner;
 		selectDropContext(target);
@@ -2186,31 +2788,11 @@ public final class ScratchMacroEditorScreen extends Screen {
 	}
 
 	private boolean isDescendantOwner(MacroStep step, List<MacroStep> owner) {
-		if (step instanceof MacroStep.IfElse branch) {
-			return branch.thenSteps() == owner || branch.elseSteps() == owner
-				|| containsDescendant(branch.thenSteps(), owner) || containsDescendant(branch.elseSteps(), owner);
-		}
-		if (step instanceof MacroStep.Repeat repeat) return repeat.steps() == owner || containsDescendant(repeat.steps(), owner);
-		if (step instanceof MacroStep.RepeatUntil repeat) return repeat.steps() == owner || containsDescendant(repeat.steps(), owner);
-		return false;
-	}
-
-	private boolean containsDescendant(List<MacroStep> steps, List<MacroStep> owner) {
-		for (MacroStep nested : steps) if (isDescendantOwner(nested, owner)) return true;
-		return false;
+		return MacroTreeRules.containsDescendantList(step, owner);
 	}
 
 	private int subtreeDepth(MacroStep step) {
-		if (step instanceof MacroStep.IfElse branch) return 1 + Math.max(listDepth(branch.thenSteps()), listDepth(branch.elseSteps()));
-		if (step instanceof MacroStep.Repeat repeat) return 1 + listDepth(repeat.steps());
-		if (step instanceof MacroStep.RepeatUntil repeat) return 1 + listDepth(repeat.steps());
-		return 1;
-	}
-
-	private int listDepth(List<MacroStep> list) {
-		int depth = 0;
-		for (MacroStep step : list) depth = Math.max(depth, subtreeDepth(step));
-		return depth;
+		return MacroTreeRules.subtreeDepth(step);
 	}
 
 	private void removeSelectedStep() {
@@ -2218,15 +2800,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		int index = selectedOwner.indexOf(selectedStep);
 		if (index < 0) return;
 		List<MacroStep> owner = selectedOwner;
-		MacroStep removed = selectedStep;
-		MacroScript script = selectedScript;
-		MacroFunction function = selectedFunction;
 		owner.remove(index);
-		registerUndo("block delete", () -> {
-			owner.add(clamp(index, 0, owner.size()), removed);
-			selectStep(removed, owner, script, function);
-			dirty();
-		});
 		selectedStep = null;
 		selectedOwner = null;
 		inspectorScroll = 0;
@@ -2234,19 +2808,18 @@ public final class ScratchMacroEditorScreen extends Screen {
 		dirty();
 	}
 
-	private void registerUndo(String label, Runnable action) {
-		undoLabel = label;
-		undoAction = action;
+	private void undoLastEdit() {
+		DocumentSnapshot previous = documentHistory.undo();
+		if (previous == null) return;
+		restoreDocumentSnapshot(previous);
+		flash("Undid the previous edit");
 	}
 
-	private void undoLastEdit() {
-		if (undoAction == null) return;
-		Runnable action = undoAction;
-		String label = undoLabel;
-		undoAction = null;
-		undoLabel = "";
-		action.run();
-		flash("Undid " + label);
+	private void redoLastEdit() {
+		DocumentSnapshot next = documentHistory.redo();
+		if (next == null) return;
+		restoreDocumentSnapshot(next);
+		flash("Redid the edit");
 	}
 
 	private List<MacroStep> insertionList() {
@@ -2302,7 +2875,6 @@ public final class ScratchMacroEditorScreen extends Screen {
 		MacroFunction function = MacrosModule.INSTANCE.createFunction();
 		selectFunction(function);
 		tab = Tab.FUNCTIONS;
-		compactPane = CompactPane.INSPECTOR;
 		dirty();
 	}
 
@@ -2375,11 +2947,19 @@ public final class ScratchMacroEditorScreen extends Screen {
 
 	private void focusField(FieldBinding binding) {
 		if (binding == null) return;
+		if (binding.id.equals(focusedField)) {
+			// Clicking the active field should not replace its in-progress draft or reset its undo stack.
+			focusedSetter = binding.setter;
+			return;
+		}
 		focusedField = binding.id;
 		focusedSetter = binding.setter;
 		fieldText = safe(binding.getter.get());
+		fieldInitialText = fieldText;
 		fieldCursor = fieldText.length();
 		selectAll = false;
+		fieldHistory = "palette-search".equals(focusedField)
+			? null : new BoundedUndoHistory<>(HISTORY_LIMIT, currentFieldDraft());
 	}
 
 	private void applyFocusedField() {
@@ -2394,22 +2974,148 @@ public final class ScratchMacroEditorScreen extends Screen {
 		focusedSetter = null;
 		fieldCursor = 0;
 		selectAll = false;
+		fieldHistory = null;
 	}
 
 	private void cancelFocusedField() {
+		if ("palette-search".equals(focusedField)) {
+			paletteSearch = fieldInitialText;
+			paletteScroll = 0;
+		}
+		fieldText = fieldInitialText;
 		focusedField = null;
 		focusedSetter = null;
 		fieldCursor = 0;
 		selectAll = false;
+		fieldHistory = null;
 	}
 
 	private void dirty() {
+		recordDocumentEdit();
 		workspaceRevision++;
 		canvasTargetCacheValid = false;
 		measuredStepHeights.clear();
 		measuredListLayouts.clear();
+		measuredStepWidths.clear();
+		measuredListWidths.clear();
 		visibleScriptsRevision = -1;
+		visibleDetachedRevision = -1;
 		ModConfig.markDirty();
+	}
+
+	private void recordDocumentEdit() {
+		if (!restoringHistory) documentHistory.record(captureDocumentSnapshot());
+	}
+
+	private DocumentSnapshot captureDocumentSnapshot() {
+		String scripts = macro == null ? null : MacroScriptConfigCodec.encode(macro.scripts()).toString();
+		String detached = macro == null ? null : MacroStepConfigCodec.encode(macro.detachedBlocks()).toString();
+		List<FunctionSnapshot> functionSnapshots = new ArrayList<>();
+		for (MacroFunction function : MacrosModule.INSTANCE.functions()) {
+			functionSnapshots.add(new FunctionSnapshot(function.id(), function.name(),
+				List.copyOf(function.parameters()), MacroStepConfigCodec.encode(function.steps()).toString(),
+				function.canvasX(), function.canvasY()));
+		}
+		MacroVariableStore store = MacrosModule.INSTANCE.globalVariables();
+		List<GlobalVariableSnapshot> globalSnapshots = new ArrayList<>();
+		for (MacroVariableStore.Definition definition : store.definitions()) {
+			globalSnapshots.add(new GlobalVariableSnapshot(definition, safe(String.valueOf(store.value(definition.id())))));
+		}
+		return new DocumentSnapshot(scripts, detached, List.copyOf(functionSnapshots), List.copyOf(globalSnapshots));
+	}
+
+	private void restoreDocumentSnapshot(DocumentSnapshot snapshot) {
+		restoringHistory = true;
+		try {
+			if (macro != null) {
+				macro.scripts().clear();
+				macro.scripts().addAll(MacroScriptConfigCodec.decode(
+					JsonParser.parseString(snapshot.scriptsJson).getAsJsonArray()));
+				macro.primaryKeyScript();
+				macro.detachedBlocks().clear();
+				macro.detachedBlocks().addAll(MacroStepConfigCodec.decode(
+					JsonParser.parseString(snapshot.detachedJson).getAsJsonArray()));
+			}
+			List<MacroFunction> restoredFunctions = new ArrayList<>(snapshot.functions.size());
+			for (FunctionSnapshot saved : snapshot.functions) {
+				MacroFunction function = new MacroFunction(saved.id);
+				function.setName(saved.name);
+				function.parameters().addAll(saved.parameters);
+				function.steps().addAll(MacroStepConfigCodec.decode(
+					JsonParser.parseString(saved.stepsJson).getAsJsonArray()));
+				function.setCanvasPosition(saved.canvasX, saved.canvasY);
+				restoredFunctions.add(function);
+			}
+			MacrosModule.INSTANCE.restoreFunctions(restoredFunctions);
+
+			MacroVariableStore store = MacrosModule.INSTANCE.globalVariables();
+			List<MacroVariableStore.SavedVariable> savedVariables = snapshot.globals.stream()
+				.map(saved -> new MacroVariableStore.SavedVariable(saved.definition,
+					saved.definition.persistValue() ? saved.liveValue : null))
+				.toList();
+			store.restore(savedVariables);
+			for (GlobalVariableSnapshot saved : snapshot.globals) {
+				store.setValue(saved.definition.id(), saved.liveValue);
+			}
+		} finally {
+			restoringHistory = false;
+		}
+
+		clearSelection();
+		selectedScript = macro == null ? null : macro.primaryKeyScript();
+		selectedFunction = firstFunction();
+		if (tab == Tab.FUNCTIONS) ensureFunction();
+		focusedField = null;
+		focusedSetter = null;
+		fieldHistory = null;
+		fieldCursor = 0;
+		selectAll = false;
+		drag = null;
+		workspaceRevision++;
+		canvasTargetCacheValid = false;
+		measuredStepHeights.clear();
+		measuredListLayouts.clear();
+		measuredStepWidths.clear();
+		measuredListWidths.clear();
+		visibleScriptsRevision = -1;
+		visibleDetachedRevision = -1;
+		documentHistory.resetCurrent(captureDocumentSnapshot());
+		ModConfig.markDirty();
+	}
+
+	private FieldDraftState currentFieldDraft() {
+		return new FieldDraftState(fieldText, fieldCursor, selectAll);
+	}
+
+	private void recordFieldDraft() {
+		if (fieldHistory == null) return;
+		fieldHistory.record(currentFieldDraft());
+	}
+
+	private void updateFieldHistoryCursor() {
+		if (fieldHistory != null) fieldHistory.resetCurrent(currentFieldDraft());
+	}
+
+	private void undoFieldDraft() {
+		if (fieldHistory == null) return;
+		FieldDraftState previous = fieldHistory.undo();
+		if (previous != null) restoreFieldDraft(previous);
+	}
+
+	private void redoFieldDraft() {
+		if (fieldHistory == null) return;
+		FieldDraftState next = fieldHistory.redo();
+		if (next != null) restoreFieldDraft(next);
+	}
+
+	private void restoreFieldDraft(FieldDraftState draft) {
+		fieldText = draft.text;
+		fieldCursor = clamp(draft.cursor, 0, fieldText.length());
+		selectAll = draft.selectAll;
+		if ("palette-search".equals(focusedField)) {
+			paletteSearch = fieldText;
+			paletteScroll = 0;
+		}
 	}
 
 	private void viewChanged() {
@@ -2424,75 +3130,80 @@ public final class ScratchMacroEditorScreen extends Screen {
 		noticeUntil = System.currentTimeMillis() + 2_400;
 	}
 
-	private List<PaletteRow> paletteRows(String search) {
-		String query = safe(search).strip().toLowerCase(Locale.ROOT);
+	private PaletteLayout paletteLayout(String search) {
+		String input = safe(search);
+		if (cachedPaletteLayout != null && input.equals(cachedPaletteInput)
+			&& cachedPaletteCategory == category) return cachedPaletteLayout;
+		String query = input.strip().toLowerCase(Locale.ROOT);
 		List<PaletteRow> rows = new ArrayList<>();
+		int contentHeight = 0;
 		if (query.isEmpty()) {
 			for (PaletteBlock block : PALETTE_BLOCKS) {
-				if (block.category == category) rows.add(new PaletteRow(category, block, false));
+				if (block.category == category) {
+					rows.add(new PaletteRow(category, block, false));
+					contentHeight += 39;
+				}
 			}
-			return rows;
-		}
-		for (Category group : Category.values()) {
-			List<PaletteBlock> matches = new ArrayList<>();
-			for (PaletteBlock block : PALETTE_BLOCKS) {
-				if (block.category != group) continue;
-				if (block.label.toLowerCase(Locale.ROOT).contains(query)
-					|| block.hint.toLowerCase(Locale.ROOT).contains(query)
-					|| group.label.toLowerCase(Locale.ROOT).contains(query)) matches.add(block);
+		} else {
+			for (Category group : Category.values()) {
+				List<PaletteBlock> matches = new ArrayList<>();
+				for (PaletteBlock block : PALETTE_BLOCKS) {
+					if (block.category != group) continue;
+					if (block.label.toLowerCase(Locale.ROOT).contains(query)
+						|| block.hint.toLowerCase(Locale.ROOT).contains(query)
+						|| group.label.toLowerCase(Locale.ROOT).contains(query)) matches.add(block);
+				}
+				if (matches.isEmpty()) continue;
+				rows.add(new PaletteRow(group, null, true));
+				contentHeight += 21;
+				for (PaletteBlock block : matches) {
+					rows.add(new PaletteRow(group, block, false));
+					contentHeight += 39;
+				}
 			}
-			if (matches.isEmpty()) continue;
-			rows.add(new PaletteRow(group, null, true));
-			for (PaletteBlock block : matches) rows.add(new PaletteRow(group, block, false));
 		}
-		return rows;
+		cachedPaletteInput = input;
+		cachedPaletteCategory = category;
+		cachedPaletteLayout = new PaletteLayout(List.copyOf(rows), contentHeight);
+		return cachedPaletteLayout;
 	}
 
 	private static List<PaletteBlock> createPaletteBlocks() {
 		return List.of(
-			new PaletteBlock("Run command", "Send a slash command to chat", Category.ACTIONS,
-				() -> new MacroStep.Command("/")),
-			new PaletteBlock("Send chat", "Send a normal chat message", Category.ACTIONS,
-				() -> new MacroStep.Chat("Hello!")),
-			new PaletteBlock("Wait", "Pause for a fixed or random duration", Category.CONTROL,
+			new PaletteBlock("Send message", "Send chat text; a leading / runs it as a command", Category.ACTIONS,
+				() -> new MacroStep.Chat("")),
+			new PaletteBlock("Wait", "Pause for time or until a condition is met", Category.CONTROL,
 				() -> new MacroStep.Wait(250, 250)),
 			new PaletteBlock("If / else", "Branch into then and else stacks", Category.CONTROL,
 				() -> new MacroStep.IfElse(new MacroCondition.Always(true))),
 			new PaletteBlock("Repeat", "Repeat a nested stack a set number of times", Category.CONTROL,
 				() -> new MacroStep.Repeat(false, 3)),
-			new PaletteBlock("Repeat until", "Loop while a condition is false", Category.CONTROL,
-				() -> new MacroStep.RepeatUntil(new MacroCondition.Always(false))),
-			new PaletteBlock("Wait until", "Pause until a condition becomes true", Category.CONTROL,
-				() -> new MacroStep.WaitUntil(new MacroCondition.Always(true))),
+			new PaletteBlock("Switch", "Choose a nested stack from a variable value", Category.CONTROL,
+				MacroStep.Switch::new),
+			new PaletteBlock("Comment", "Leave a note in this macro", Category.CONTROL,
+				() -> new MacroStep.Comment("Comment"), true),
+			new PaletteBlock("Stop run", "Stop this macro and release held input", Category.CONTROL,
+				MacroStep.StopRun::new),
 			new PaletteBlock("Call another macro", "Run that macro’s On Call stack", Category.CONTROL,
 				() -> new MacroStep.MacroCall(-1)),
 			new PaletteBlock("Press or hold key", "Capture a keyboard key in the inspector", Category.INPUT,
 				() -> new MacroStep.Key("", false, 250)),
-			new PaletteBlock("Mouse button", "Click or hold left, right, or middle", Category.INPUT,
-				() -> new MacroStep.MouseButton(MacroStep.MouseButton.Button.LEFT, false, 250)),
 			new PaletteBlock("Block player input", "Block controls for a duration", Category.INPUT,
 				() -> new MacroStep.BlockPlayerInput(500)),
 			new PaletteBlock("Start input block", "Block controls until stopped", Category.INPUT,
 				MacroStep.StartBlockPlayerInput::new),
 			new PaletteBlock("Stop input block", "Release a started input block", Category.INPUT,
 				MacroStep.StopBlockPlayerInput::new),
-			new PaletteBlock("Select hotbar slot", "Select slot 1–9 outside inventories", Category.INPUT,
-				() -> new MacroStep.SelectHotbarSlot(1)),
-			new PaletteBlock("Click inventory slot", "Click by slot id and mouse button", Category.INVENTORY,
-				() -> new MacroStep.ClickSlot(0, 0, false)),
-			new PaletteBlock("Click item by name", "Find and click a matching container or player item", Category.INVENTORY,
-				() -> new MacroStep.ClickItem("", false, "container", 0, 0, false)),
+			new PaletteBlock("Inventory click", "Click a slot directly or find an item by name", Category.INVENTORY,
+				MacroStep.InventoryClick::new),
 			new PaletteBlock("Show title", "Display text over the game view", Category.DISPLAY,
 				MacroStep.Title::new),
 			new PaletteBlock("Play sound", "Play a sound by registry id", Category.DISPLAY,
 				() -> new MacroStep.Sound("minecraft:entity.player.levelup")),
 			new PaletteBlock("Close screen", "Close the currently open menu", Category.DISPLAY,
 				MacroStep.CloseScreen::new),
-			new PaletteBlock("Set variable", "Set a per-run local value", Category.VARIABLES,
-				() -> new MacroStep.SetVariable("value", MacroValue.Type.TEXT,
-					MacroValue.literal(MacroValue.Type.TEXT, ""))),
-			new PaletteBlock("Change number", "Add an amount to a numeric variable", Category.VARIABLES,
-				() -> new MacroStep.ChangeVariable("value", 1)),
+			new PaletteBlock("Update variable", "Set or adjust a local or global variable", Category.VARIABLES,
+				MacroStep.UpdateVariable::new),
 			new PaletteBlock("Call a function", "Run a reusable My Block", Category.FUNCTIONS,
 				() -> new MacroStep.FunctionCall("")),
 			new PaletteBlock("Switch world", "Travel and wait for the destination to load", Category.WORLD,
@@ -2501,18 +3212,44 @@ public final class ScratchMacroEditorScreen extends Screen {
 	}
 
 	private int categoryColor(Category category) {
-		return VisualModule.INSTANCE.themeMacroColors().value() ? CATEGORY_SELECTED : category.color;
+		int custom = switch (category) {
+			case ACTIONS -> MacrosModule.INSTANCE.actionsNodeColor();
+			case CONTROL -> MacrosModule.INSTANCE.controlNodeColor();
+			case INPUT -> MacrosModule.INSTANCE.inputNodeColor();
+			case INVENTORY -> MacrosModule.INSTANCE.inventoryNodeColor();
+			case DISPLAY -> MacrosModule.INSTANCE.displayNodeColor();
+			case VARIABLES -> MacrosModule.INSTANCE.dataNodeColor();
+			case FUNCTIONS -> MacrosModule.INSTANCE.reusableNodeColor();
+			case WORLD -> MacrosModule.INSTANCE.worldNodeColor();
+		};
+		if (!VisualModule.INSTANCE.themeSurfaces().value()) return custom;
+		// Preserve the macro editor's category distinction while tying its palette to the selected theme.
+		return lerpColor(custom, SLIDER_FILL, 0.42f);
 	}
 
 	private int macroAccentText(int fallback) {
-		return VisualModule.INSTANCE.themeMacroColors().value() ? TEXT_ON_ACCENT : fallback;
+		return VisualModule.INSTANCE.themeSurfaces().value() ? TEXT_ON_ACCENT : fallback;
 	}
 
 	private String blockLabel(MacroStep step) {
+		if (step instanceof MacroStep.Unknown unknown) return "unknown block  " + unknown.originalType();
 		if (step instanceof MacroStep.Command command) return "run command  " + command.command();
 		if (step instanceof MacroStep.Chat chat) return "send chat  " + chat.message();
-		if (step instanceof MacroStep.Key key) return (key.hold() ? "hold key  " : "press key  ") + (key.key().isBlank() ? "[capture]" : key.key());
+		if (step instanceof MacroStep.Key key) return switch (key.inputMode()) {
+			case KEYBOARD -> (key.hold() ? "hold key  " : "press key  ") + (key.key().isBlank() ? "[capture]" : key.key());
+			case MOUSE -> (key.hold() ? "hold " : "click ") + key.mouseButton().name().toLowerCase(Locale.ROOT) + " mouse";
+			case HOTBAR -> "select hotbar slot  " + key.hotbarSlot();
+		};
 		if (step instanceof MacroStep.Wait wait) return "wait  " + wait.minMillis() + "–" + wait.maxMillis() + " ms";
+		if (step instanceof MacroStep.Comment comment) return "comment  " + comment.text();
+		if (step instanceof MacroStep.StopRun) return "stop this macro run";
+		if (step instanceof MacroStep.Scroll scroll) return "scroll " + scroll.direction().name().toLowerCase(Locale.ROOT)
+			+ "  " + scroll.amount() + " step" + (scroll.amount() == 1 ? "" : "s");
+		if (step instanceof MacroStep.InventoryClick click) return click.target() == MacroStep.InventoryClick.Target.SLOT
+			? "inventory click  slot " + click.slotId()
+			: "inventory click  " + (click.name().isBlank() ? "[item name]" : click.name());
+		if (step instanceof MacroStep.UpdateVariable update) return update.operation().name().toLowerCase(Locale.ROOT)
+			+ " variable  " + update.name();
 		if (step instanceof MacroStep.CloseScreen) return "close current screen";
 		if (step instanceof MacroStep.SelectHotbarSlot slot) return "select hotbar slot  " + slot.slot();
 		if (step instanceof MacroStep.MouseButton mouse) return (mouse.hold() ? "hold " : "click ") + mouse.button().name().toLowerCase(Locale.ROOT) + " mouse";
@@ -2531,9 +3268,14 @@ public final class ScratchMacroEditorScreen extends Screen {
 			return call.condition() == null ? base : base + "  if  " + conditionLabel(call.condition());
 		}
 		if (step instanceof MacroStep.IfElse branch) return "if  " + conditionLabel(branch.condition()) + "  then";
-		if (step instanceof MacroStep.Repeat repeat) return repeat.forever() ? "repeat forever" : "repeat  " + repeat.count() + "  times";
+		if (step instanceof MacroStep.Repeat repeat) return switch (repeat.mode()) {
+			case COUNT -> "repeat  " + repeat.count() + "  times";
+			case FOREVER -> "repeat forever";
+			case UNTIL -> "repeat until  " + conditionLabel(repeat.condition());
+		};
 		if (step instanceof MacroStep.RepeatUntil repeat) return "repeat until  " + conditionLabel(repeat.condition());
 		if (step instanceof MacroStep.WaitUntil wait) return "wait until  " + conditionLabel(wait.condition());
+		if (step instanceof MacroStep.Switch value) return "switch  " + value.name() + "  ·  " + value.cases().size() + " cases";
 		if (step instanceof MacroStep.ClickSlot slot) return "click slot  " + slot.slotId();
 		if (step instanceof MacroStep.ClickItem item) return "click item  " + (item.name().isBlank() ? "[name]" : item.name());
 		if (step instanceof MacroStep.Title title) return "show title  " + title.text();
@@ -2542,8 +3284,12 @@ public final class ScratchMacroEditorScreen extends Screen {
 		return step.type();
 	}
 
-	private void drawInlineBlockPreview(GuiGraphicsExtractor graphics, Rect bounds, int headH,
+	private void drawInlineBlockPreview(GuiGraphicsExtractor graphics, Rect viewport, Rect bounds, int headH,
 		MacroStep step, int color) {
+		Rect clip = bounds.intersection(viewport);
+		if (clip == null) return;
+		graphics.enableScissor(clip.x, clip.y, clip.x + clip.w, clip.y + clip.h);
+		try {
 		BlockPreview preview = inlinePreview(step);
 		if (preview == null) {
 			graphics.text(font, trim(blockLabel(step), bounds.w - 17), bounds.x + 9, bounds.y + 8, color);
@@ -2563,7 +3309,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		graphics.text(font, preview.prefix, x, textY, color);
 		x += prefixWidth + 4;
 		int chipY = bounds.y + (headH - 17) / 2;
-		boolean themed = VisualModule.INSTANCE.themeMacroColors().value();
+		boolean themed = VisualModule.INSTANCE.themeSurfaces().value();
 		int chipSurface = themed ? BUTTON_BG : withOpacity(0xFF17232C, 0.42f);
 		roundedRectBordered(graphics, x, chipY, chipWidth, 17, 6,
 			chipSurface, chipSurface, themed ? BORDER : withOpacity(0xFFFFFFFF, 0.24f));
@@ -2571,15 +3317,35 @@ public final class ScratchMacroEditorScreen extends Screen {
 			chipY + 4, themed ? TEXT_PRIMARY : 0xFFFFFFFF);
 		x += chipWidth + 4;
 		if (!preview.suffix.isBlank()) graphics.text(font, preview.suffix, x, textY, color);
+		} finally {
+			graphics.disableScissor();
+		}
 	}
 
 	private BlockPreview inlinePreview(MacroStep step) {
+		if (step instanceof MacroStep.Unknown unknown) {
+			return new BlockPreview("preserved block", unknown.originalType(), "stops this run");
+		}
 		if (step instanceof MacroStep.Command command) return new BlockPreview("run command", command.command(), "");
 		if (step instanceof MacroStep.Chat chat) return new BlockPreview("send chat", chat.message(), "");
-		if (step instanceof MacroStep.Key key) return new BlockPreview(key.hold() ? "hold key" : "press key",
-			key.key().isBlank() ? "capture" : key.key(), "");
-		if (step instanceof MacroStep.Wait wait) return new BlockPreview("wait",
-			wait.minMillis() + "–" + wait.maxMillis() + " ms", "");
+		if (step instanceof MacroStep.Key key) return switch (key.inputMode()) {
+			case KEYBOARD -> new BlockPreview(key.hold() ? "hold key" : "press key",
+				key.key().isBlank() ? "capture" : key.key(), "");
+			case MOUSE -> new BlockPreview(key.hold() ? "hold" : "click",
+				key.mouseButton().name().toLowerCase(Locale.ROOT), "mouse");
+			case HOTBAR -> new BlockPreview("select hotbar slot", Integer.toString(key.hotbarSlot()), "");
+		};
+		if (step instanceof MacroStep.Wait wait) return wait.mode() == MacroStep.Wait.Mode.CONDITION
+			? new BlockPreview("wait until", conditionLabel(wait.condition()), "")
+			: new BlockPreview("wait", wait.minMillis() + "–" + wait.maxMillis() + " ms", "");
+		if (step instanceof MacroStep.Comment comment) return new BlockPreview("note", comment.text(), "");
+		if (step instanceof MacroStep.Scroll scroll) return new BlockPreview("scroll",
+			scroll.direction().name().toLowerCase(Locale.ROOT), scroll.amount() + " step(s)");
+		if (step instanceof MacroStep.InventoryClick click) return new BlockPreview("inventory click",
+			click.target() == MacroStep.InventoryClick.Target.SLOT ? "slot " + click.slotId() : click.name(), "");
+		if (step instanceof MacroStep.UpdateVariable update) return new BlockPreview(update.operation().name().toLowerCase(Locale.ROOT),
+			update.name(), update.operation() == MacroStep.UpdateVariable.Operation.SET ? update.value().value()
+				: Double.toString(update.amount()));
 		if (step instanceof MacroStep.SelectHotbarSlot slot) return new BlockPreview("select hotbar slot",
 			Integer.toString(slot.slot()), "");
 		if (step instanceof MacroStep.MouseButton mouse) return new BlockPreview(mouse.hold() ? "hold" : "click",
@@ -2601,12 +3367,17 @@ public final class ScratchMacroEditorScreen extends Screen {
 		}
 		if (step instanceof MacroStep.IfElse branch) return new BlockPreview("if",
 			conditionLabel(branch.condition()), "then");
-		if (step instanceof MacroStep.Repeat repeat) return new BlockPreview("repeat",
-			repeat.forever() ? "forever" : Integer.toString(repeat.count()), repeat.forever() ? "" : "times");
+		if (step instanceof MacroStep.Repeat repeat) return switch (repeat.mode()) {
+			case COUNT -> new BlockPreview("repeat", Integer.toString(repeat.count()), "times");
+			case FOREVER -> new BlockPreview("repeat", "forever", "");
+			case UNTIL -> new BlockPreview("repeat until", conditionLabel(repeat.condition()), "");
+		};
 		if (step instanceof MacroStep.RepeatUntil repeat) return new BlockPreview("repeat until",
 			conditionLabel(repeat.condition()), "");
 		if (step instanceof MacroStep.WaitUntil wait) return new BlockPreview("wait until",
 			conditionLabel(wait.condition()), "");
+		if (step instanceof MacroStep.Switch value) return new BlockPreview("switch", value.name(), value.cases().size() + " cases");
+		if (step instanceof MacroStep.StopRun) return new BlockPreview("stop run", "release inputs", "");
 		if (step instanceof MacroStep.ClickSlot slot) return new BlockPreview("click slot", Integer.toString(slot.slotId()), "");
 		if (step instanceof MacroStep.ClickItem item) return new BlockPreview("click item", item.name(), "");
 		if (step instanceof MacroStep.Title title) return new BlockPreview("show title", title.text(), "");
@@ -2615,19 +3386,24 @@ public final class ScratchMacroEditorScreen extends Screen {
 	}
 
 	private int blockColor(MacroStep step) {
+		if (step instanceof MacroStep.Unknown) return TEXT_ERROR;
 		if (step instanceof MacroStep.IfElse || step instanceof MacroStep.Repeat
-			|| step instanceof MacroStep.RepeatUntil || step instanceof MacroStep.WaitUntil
+			|| step instanceof MacroStep.RepeatUntil || step instanceof MacroStep.Switch
+			|| step instanceof MacroStep.WaitUntil || step instanceof MacroStep.Comment
 			|| step instanceof MacroStep.Wait || step instanceof MacroStep.MacroCall) return categoryColor(Category.CONTROL);
-		if (step instanceof MacroStep.SetVariable || step instanceof MacroStep.ChangeVariable) return categoryColor(Category.VARIABLES);
+		if (step instanceof MacroStep.SetVariable || step instanceof MacroStep.ChangeVariable
+			|| step instanceof MacroStep.UpdateVariable) return categoryColor(Category.VARIABLES);
 		if (step instanceof MacroStep.FunctionCall) return categoryColor(Category.FUNCTIONS);
 		if (step instanceof MacroStep.WorldSwitch) return categoryColor(Category.WORLD);
-		if (step instanceof MacroStep.ClickSlot || step instanceof MacroStep.ClickItem) return categoryColor(Category.INVENTORY);
+		if (step instanceof MacroStep.ClickSlot || step instanceof MacroStep.ClickItem
+			|| step instanceof MacroStep.InventoryClick) return categoryColor(Category.INVENTORY);
 		if (step instanceof MacroStep.Title || step instanceof MacroStep.Sound || step instanceof MacroStep.CloseScreen) {
 			return categoryColor(Category.DISPLAY);
 		}
 		if (step instanceof MacroStep.Key || step instanceof MacroStep.MouseButton || step instanceof MacroStep.SelectHotbarSlot
 			|| step instanceof MacroStep.BlockPlayerInput || step instanceof MacroStep.StartBlockPlayerInput
-			|| step instanceof MacroStep.StopBlockPlayerInput) return categoryColor(Category.INPUT);
+			|| step instanceof MacroStep.StopBlockPlayerInput || step instanceof MacroStep.Scroll
+			|| step instanceof MacroStep.StopRun) return categoryColor(Category.INPUT);
 		return categoryColor(Category.ACTIONS);
 	}
 
@@ -2658,6 +3434,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		return switch (state) {
 			case RUNNING -> 0xFF37D997;
 			case WAITING -> 0xFFFFC55C;
+			case PAUSED -> 0xFFFF755D;
 			case FINISHED -> 0xFF8CB7FF;
 			case IDLE -> 0xFF394653;
 		};
@@ -2667,6 +3444,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		return switch (state) {
 			case RUNNING -> "RUN";
 			case WAITING -> "WAIT";
+			case PAUSED -> "PAUSE";
 			case FINISHED -> "DONE";
 			case IDLE -> "IDLE";
 		};
@@ -2680,6 +3458,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		if (condition instanceof MacroCondition.Item item) return "item " + (item.name().isBlank() ? "exists" : item.name());
 		if (condition instanceof MacroCondition.Chat chat) return "chat " + (chat.text().isBlank() ? "matches" : chat.text());
 		if (condition instanceof MacroCondition.Variable variable) return "variable " + variable.operator().name().toLowerCase(Locale.ROOT);
+		if (condition instanceof MacroCondition.Hypixel hypixel) return "Hypixel " + hypixel.field().name().toLowerCase(Locale.ROOT);
 		if (condition instanceof MacroCondition.All all) return "all (" + all.children().size() + ")";
 		if (condition instanceof MacroCondition.Any any) return "any (" + any.children().size() + ")";
 		if (condition instanceof MacroCondition.Not) return "not";
@@ -2704,16 +3483,34 @@ public final class ScratchMacroEditorScreen extends Screen {
 		return values[(value.ordinal() + 1) % values.length];
 	}
 
+	private static MacroStep.Key.InputMode next(MacroStep.Key.InputMode value) {
+		MacroStep.Key.InputMode[] values = MacroStep.Key.InputMode.values();
+		return values[(value.ordinal() + 1) % values.length];
+	}
+
+	private static MacroStep.Repeat.Mode next(MacroStep.Repeat.Mode value) {
+		MacroStep.Repeat.Mode[] values = MacroStep.Repeat.Mode.values();
+		return values[(value.ordinal() + 1) % values.length];
+	}
+
 	private static MacroValue.Type next(MacroValue.Type value) {
 		MacroValue.Type[] values = MacroValue.Type.values();
 		return values[(value.ordinal() + 1) % values.length];
 	}
 
+	private static <E extends Enum<E>> E nextEnum(E value) {
+		E[] values = value.getDeclaringClass().getEnumConstants();
+		return values[(value.ordinal() + 1) % values.length];
+	}
+
 	private String trim(String value, int width) {
 		if (value == null) return "";
-		if (font.width(value) <= Math.max(0, width)) return value;
+		int maxWidth = Math.max(0, width);
+		if (maxWidth == 0) return "";
+		if (font.width(value) <= maxWidth) return value;
 		String dots = "…";
-		int limit = Math.max(0, width - font.width(dots));
+		if (font.width(dots) > maxWidth) return font.plainSubstrByWidth(value, maxWidth);
+		int limit = Math.max(0, maxWidth - font.width(dots));
 		int end = Math.min(value.length(), font.plainSubstrByWidth(value, limit).length());
 		return end <= 0 ? dots : value.substring(0, end) + dots;
 	}
@@ -2739,12 +3536,7 @@ public final class ScratchMacroEditorScreen extends Screen {
 		return Math.max(min, Math.min(max, value));
 	}
 
-	private record Layout(Rect panel, Rect palette, Rect canvas, Rect inspector,
-		boolean compact, int footerY, Rect compactTabs, Rect compactContent) {
-		private Layout(Rect panel, Rect palette, Rect canvas, Rect inspector, boolean compact,
-			int footerY, Rect compactTabs) {
-			this(panel, palette, canvas, inspector, compact, footerY, compactTabs, canvas);
-		}
+	private record Layout(Rect panel, Rect palette, Rect canvas, Rect inspector, int footerY) {
 	}
 
 	private record Rect(int x, int y, int w, int h) {
@@ -2758,16 +3550,15 @@ public final class ScratchMacroEditorScreen extends Screen {
 	}
 
 	private enum Tab { CODE, FUNCTIONS }
-	private enum CompactPane { PALETTE, CANVAS, INSPECTOR }
 	private enum Category {
 		ACTIONS("Actions", "Act", COLOR_MOTION),
-		CONTROL("Flow", "Flow", COLOR_CONTROL),
-		INPUT("Inputs", "Keys", COLOR_INPUT),
+		CONTROL("Control", "Ctrl", COLOR_CONTROL),
+		INPUT("Player Input", "Input", COLOR_INPUT),
 		INVENTORY("Inventory", "Inv", COLOR_INPUT),
-		DISPLAY("Feedback", "UI", COLOR_REGION),
-		VARIABLES("Variables", "Vars", COLOR_VARIABLE),
-		FUNCTIONS("Functions", "Fn", COLOR_FUNCTION),
-		WORLD("World", "Wld", COLOR_REGION);
+		DISPLAY("Display", "View", 0xFF2EB8D4),
+		VARIABLES("Data", "Data", COLOR_VARIABLE),
+		FUNCTIONS("Reusable", "Reuse", COLOR_FUNCTION),
+		WORLD("World", "Wld", 0xFF668E3D);
 		private final String label;
 		private final String shortLabel;
 		private final int color;
@@ -2776,11 +3567,19 @@ public final class ScratchMacroEditorScreen extends Screen {
 
 	private enum DragKind { PAN, SCRIPT, FUNCTION, STEP, PALETTE }
 
-	private record PaletteBlock(String label, String hint, Category category, Supplier<MacroStep> factory) { }
+	private record PaletteBlock(String label, String hint, Category category, Supplier<MacroStep> factory,
+		boolean detachedOnly) {
+		private PaletteBlock(String label, String hint, Category category, Supplier<MacroStep> factory) {
+			this(label, hint, category, factory, false);
+		}
+	}
 	private record PaletteRow(Category category, PaletteBlock block, boolean header) { }
+private record PaletteLayout(List<PaletteRow> rows, int contentHeight) { }
 	private record BlockPreview(String prefix, String value, String suffix) { }
 	private record PickerOption(String label, Runnable action) { }
 	private record CanvasScriptPlacement(MacroScript script, int x, int y, int width, float zoom) { }
+private record CanvasDetachedPlacement(MacroStep step, int index, int x, int y, int width, int height,
+	boolean note) { }
 	private record ListLayout(int[] starts, int[] heights, int totalHeight) {
 		private int firstIntersecting(int y) {
 			int low = 0;
@@ -2832,6 +3631,12 @@ public final class ScratchMacroEditorScreen extends Screen {
 			return cachedVisibleOptions;
 		}
 	}
+	private record DocumentSnapshot(String scriptsJson, String detachedJson,
+		List<FunctionSnapshot> functions, List<GlobalVariableSnapshot> globals) { }
+	private record FunctionSnapshot(String id, String name, List<MacroFunction.Parameter> parameters,
+		String stepsJson, float canvasX, float canvasY) { }
+	private record GlobalVariableSnapshot(MacroVariableStore.Definition definition, String liveValue) { }
+	private record FieldDraftState(String text, int cursor, boolean selectAll) { }
 	private record FieldBinding(String id, Supplier<String> getter, Consumer<String> setter) { }
 	private record HitTarget(Rect bounds, Runnable action, MacroStep step, List<MacroStep> owner,
 		PaletteBlock paletteBlock, MacroScript script, MacroFunction function, FieldBinding field) { }
@@ -2851,11 +3656,13 @@ public final class ScratchMacroEditorScreen extends Screen {
 		private final MacroStep step;
 		private final List<MacroStep> owner;
 		private final PaletteBlock palette;
+		private final int pointerOffsetX;
+		private final int pointerOffsetY;
 		private boolean moved;
 
 		private DragState(DragKind kind, int startX, int startY, float startPanX, float startPanY,
 			float startCanvasX, float startCanvasY, MacroScript script, MacroFunction function,
-			MacroStep step, List<MacroStep> owner, PaletteBlock palette) {
+			MacroStep step, List<MacroStep> owner, PaletteBlock palette, int pointerOffsetX, int pointerOffsetY) {
 			this.kind = kind;
 			this.startX = startX;
 			this.startY = startY;
@@ -2868,23 +3675,26 @@ public final class ScratchMacroEditorScreen extends Screen {
 			this.step = step;
 			this.owner = owner;
 			this.palette = palette;
+			this.pointerOffsetX = pointerOffsetX;
+			this.pointerOffsetY = pointerOffsetY;
 		}
 
 		private static DragState pan(int x, int y, float panX, float panY) {
-			return new DragState(DragKind.PAN, x, y, panX, panY, 0, 0, null, null, null, null, null);
+			return new DragState(DragKind.PAN, x, y, panX, panY, 0, 0, null, null, null, null, null, 0, 0);
 		}
 		private static DragState palette(PaletteBlock block, int x, int y) {
-			return new DragState(DragKind.PALETTE, x, y, 0, 0, 0, 0, null, null, null, null, block);
+			return new DragState(DragKind.PALETTE, x, y, 0, 0, 0, 0, null, null, null, null, block, 0, 0);
 		}
 		private static DragState script(MacroScript script, int x, int y) {
-			return new DragState(DragKind.SCRIPT, x, y, 0, 0, script.canvasX(), script.canvasY(), script, null, null, null, null);
+			return new DragState(DragKind.SCRIPT, x, y, 0, 0, script.canvasX(), script.canvasY(), script, null, null, null, null, 0, 0);
 		}
 		private static DragState function(MacroFunction function, int x, int y) {
-			return new DragState(DragKind.FUNCTION, x, y, 0, 0, function.canvasX(), function.canvasY(), null, function, null, null, null);
+			return new DragState(DragKind.FUNCTION, x, y, 0, 0, function.canvasX(), function.canvasY(), null, function, null, null, null, 0, 0);
 		}
 		private static DragState step(MacroStep step, List<MacroStep> owner, MacroScript script,
-			MacroFunction function, int x, int y) {
-			return new DragState(DragKind.STEP, x, y, 0, 0, 0, 0, script, function, step, owner, null);
+			MacroFunction function, int x, int y, Rect bounds) {
+			return new DragState(DragKind.STEP, x, y, 0, 0, 0, 0, script, function, step, owner, null,
+				x - bounds.x, y - bounds.y);
 		}
 	}
 }

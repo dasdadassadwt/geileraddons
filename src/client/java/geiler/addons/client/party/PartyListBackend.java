@@ -27,7 +27,10 @@ public final class PartyListBackend {
 	private static final Pattern CLASS_IN_JOIN = Pattern.compile("^Party Finder > (?:\\[[^]]*]\\s*)?([A-Za-z0-9_]{1,16}) joined the dungeon group! \\((?:MM )?([A-Za-z]+) Level \\d+\\)$");
 
 	private static final Map<String, PartyMember> MEMBERS = new LinkedHashMap<>();
+	/** Changes only when a name leaves and joins again, not when metadata is refreshed. */
+	private static final Map<String, Long> MEMBERSHIP_IDENTITIES = new LinkedHashMap<>();
 	private static Map<String, PartyMember> listMetadata = Map.of();
+	private static Map<String, Long> listMembershipIdentities = Map.of();
 	private static String leaderName;
 	private static boolean inParty;
 	/** Session token: ordinary joins/leaves and repeated /p list snapshots do not invalidate work. */
@@ -36,6 +39,8 @@ public final class PartyListBackend {
 	private static long lastListMessageTick = Long.MIN_VALUE;
 	private static boolean listMessageDirty;
 	private static boolean stableListObserved;
+	private static long lastUpdatedNanos;
+	private static long nextMembershipIdentity = 1L;
 	private static ClientLevel lastLevel;
 
 	private PartyListBackend() {
@@ -58,6 +63,8 @@ public final class PartyListBackend {
 			|| message.equals("You are not currently in a party.")) {
 			GeilerAddons.LOGGER.debug("[Party List] Clearing party state because of: {}", message);
 			clear();
+			stableListObserved = true;
+			lastUpdatedNanos = System.nanoTime();
 			return;
 		}
 
@@ -150,10 +157,14 @@ public final class PartyListBackend {
 		if (!listMessageDirty || tick - lastListMessageTick < 2) return false;
 		listMessageDirty = false;
 		listMetadata = Map.of();
+		listMembershipIdentities = Map.of();
 		if (MEMBERS.isEmpty()) {
 			clear();
+			stableListObserved = true;
+			lastUpdatedNanos = System.nanoTime();
 		} else {
 			stableListObserved = true;
+			lastUpdatedNanos = System.nanoTime();
 		}
 		return true;
 	}
@@ -163,8 +174,20 @@ public final class PartyListBackend {
 		return stableListObserved;
 	}
 
+	/** Requires a recent complete roster; an old party list cannot decide a macro condition. */
+	public static boolean hasFreshSnapshot() {
+		long age = System.nanoTime() - lastUpdatedNanos;
+		return stableListObserved && lastUpdatedNanos > 0L && age >= 0L && age <= 120_000_000_000L;
+	}
+
 	public static PartySnapshot snapshot() {
 		return new PartySnapshot(new ArrayList<>(MEMBERS.values()), leaderName, inParty, generation);
+	}
+
+	/** Identity of this continuous membership episode, or {@code 0} when the name is not tracked. */
+	public static long membershipIdentity(String name) {
+		if (name == null || name.isBlank()) return 0L;
+		return MEMBERSHIP_IDENTITIES.getOrDefault(key(name), 0L);
 	}
 
 	public static void setUuid(String name, UUID uuid) {
@@ -199,21 +222,27 @@ public final class PartyListBackend {
 	public static void clear() {
 		GeilerAddons.LOGGER.debug("[Party List] State cleared (generation {})", generation + 1);
 		MEMBERS.clear();
+		MEMBERSHIP_IDENTITIES.clear();
 		leaderName = null;
 		inParty = false;
 		generation++;
 		listMessageDirty = false;
 		stableListObserved = false;
+		lastUpdatedNanos = 0L;
 		listMetadata = Map.of();
+		listMembershipIdentities = Map.of();
 	}
 
 	private static void beginList() {
 		GeilerAddons.LOGGER.debug("[Party List] Beginning /p list response");
 		listMetadata = new LinkedHashMap<>(MEMBERS);
+		listMembershipIdentities = new LinkedHashMap<>(MEMBERSHIP_IDENTITIES);
 		MEMBERS.clear();
+		MEMBERSHIP_IDENTITIES.clear();
 		leaderName = null;
 		inParty = true;
 		stableListObserved = false;
+		lastUpdatedNanos = System.nanoTime();
 		markListMessage();
 	}
 
@@ -223,16 +252,26 @@ public final class PartyListBackend {
 		if (normalized == null) return;
 		String key = key(normalized);
 		PartyMember previous = listMetadata.get(key);
+		long identity = MEMBERSHIP_IDENTITIES.getOrDefault(key, 0L);
+		if (identity == 0L) identity = listMembershipIdentities.getOrDefault(key, 0L);
+		if (identity == 0L) identity = nextMembershipIdentity++;
 		PartyMember member = previous == null ? new PartyMember(normalized, null, null)
 			: new PartyMember(normalized, previous.uuid(), previous.dungeonClass());
 		boolean added = MEMBERS.putIfAbsent(key, member) == null;
+		MEMBERSHIP_IDENTITIES.putIfAbsent(key, identity);
 		inParty = true;
+		lastUpdatedNanos = System.nanoTime();
 		if (added) GeilerAddons.LOGGER.debug("[Party List] Member now tracked: {}", normalized);
 	}
 
 	private static void removeMember(String name) {
 		if (name == null) return;
-		MEMBERS.remove(key(name));
+		String memberKey = key(name);
+		MEMBERS.remove(memberKey);
+		MEMBERSHIP_IDENTITIES.remove(memberKey);
+		if (listMetadata instanceof LinkedHashMap<?, ?>) listMetadata.remove(memberKey);
+		if (listMembershipIdentities instanceof LinkedHashMap<?, ?>) listMembershipIdentities.remove(memberKey);
+		lastUpdatedNanos = System.nanoTime();
 		if (leaderName != null && leaderName.equalsIgnoreCase(name)) leaderName = null;
 		inParty = true;
 		// An empty tracked roster can mean the local player is the only remaining member. The

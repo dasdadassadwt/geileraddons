@@ -9,6 +9,7 @@ import geiler.addons.client.module.impl.InventoryButtonLayout;
 import geiler.addons.client.module.impl.InventoryButtonPlacement;
 import geiler.addons.client.module.impl.InventoryButtonsModule;
 import geiler.addons.client.module.impl.InventoryButtonRules;
+import geiler.addons.client.module.impl.InventoryButtonTextAction;
 import geiler.addons.client.module.impl.MacrosModule;
 import geiler.addons.client.module.impl.VisualModule;
 import geiler.addons.client.mixin.AbstractContainerScreenInvoker;
@@ -54,11 +55,12 @@ public final class InventoryButtonOverlay {
 	private static final Map<String, IconTexture> PNG_TEXTURES = new HashMap<>();
 	private static final Set<String> FAILED_PNGS = new HashSet<>();
 	private static final int PANEL_WIDTH = 204;
-	private static final int PANEL_HEIGHT = 198;
+	private static final int PANEL_HEIGHT = 218;
 	private static final int PANEL_ROW_TOP = 37;
 	private static final int PANEL_ROW_HEIGHT = 17;
 	private static final int EDIT_GRID_COLOR = 0x20FFFFFF;
 	private static final int NO_PENDING_CELL = Integer.MIN_VALUE;
+	private static final int EDITOR_ROW_COUNT = 9;
 	private static boolean editing;
 	private static int selectedMacroId = -1;
 	private static int selectedPlacementId = -1;
@@ -71,11 +73,20 @@ public final class InventoryButtonOverlay {
 	private static InventoryButtonPlacement.Appearance appearance = InventoryButtonPlacement.Appearance.ITEM;
 	private static String appearanceValue = "minecraft:stone";
 	private static String hoverTooltipValue = "";
+	private static String selectedTextAction;
+	private static boolean textActionMode;
 	private static String status = "";
 	private static Screen editorReturnScreen;
 	private static InventoryScreen editorInventoryScreen;
 
 	private InventoryButtonOverlay() { }
+
+	/** Drops runtime texture handles before an imported profile or reset replaces icon files. */
+	public static void clearIconTextureCache() {
+		for (IconTexture texture : PNG_TEXTURES.values()) Minecraft.getInstance().getTextureManager().release(texture.id);
+		PNG_TEXTURES.clear();
+		FAILED_PNGS.clear();
+	}
 
 	public static boolean isEditing() { return editing; }
 
@@ -102,12 +113,16 @@ public final class InventoryButtonOverlay {
 		appearance = InventoryButtonPlacement.Appearance.ITEM;
 		appearanceValue = "minecraft:stone";
 		hoverTooltipValue = "";
+		selectedTextAction = null;
+		textActionMode = false;
 		InventoryButtonPlacement selected = InventoryButtonsModule.INSTANCE.placement(placementId);
 		if (selected != null) {
 			selectedPlacementId = selected.id();
 			appearance = selected.appearance();
 			appearanceValue = selected.value();
 			hoverTooltipValue = selected.hoverTooltip();
+			selectedTextAction = selected.textAction();
+			textActionMode = selected.hasTextAction();
 			status = "Selected button " + selected.id() + ". Drag it, choose Move, or edit its settings.";
 		} else {
 			status = "Click any faint exterior grid cell to choose or create a macro button.";
@@ -131,6 +146,7 @@ public final class InventoryButtonOverlay {
 					pendingMacroTargetPlacementId = -1;
 					if (target != null) {
 						target.setMacroId(macroId);
+						target.setTextAction(null);
 						ModConfig.markDirty();
 						status = "Button assigned to " + macroName(macroId) + ".";
 					}
@@ -166,6 +182,7 @@ public final class InventoryButtonOverlay {
 		pendingMacroId = -1;
 		pendingMacroTargetPlacementId = -1;
 		status = "";
+		selectedTextAction = null;
 	}
 
 	public static List<String> listPngIcons() {
@@ -212,11 +229,13 @@ public final class InventoryButtonOverlay {
 					screenWidth, screenHeight);
 				continue;
 			}
-			if (!editSurface && (placement.macroId() < 0 || MacrosModule.INSTANCE.macro(placement.macroId()) == null)) continue;
+			if (!editSurface && !placement.hasTextAction()
+				&& (placement.macroId() < 0 || MacrosModule.INSTANCE.macro(placement.macroId()) == null)) continue;
 			int x = InventoryButtonLayout.placementPixelX(placement, left);
 			int y = InventoryButtonLayout.placementPixelY(placement, top);
 			MacroDefinition macro = placement.macroId() < 0 ? null : MacrosModule.INSTANCE.macro(placement.macroId());
-			InventoryButtonRules.Eligibility eligibility = MacroRunner.inventoryButtonEligibility(macro, minecraft, screen);
+			InventoryButtonRules.Eligibility eligibility = placement.hasTextAction() ? null
+				: MacroRunner.inventoryButtonEligibility(macro, minecraft, screen);
 			boolean hovered = mouseX >= x && mouseX < x + InventoryButtonLayout.CELL_SIZE
 				&& mouseY >= y && mouseY < y + InventoryButtonLayout.CELL_SIZE;
 			drawButton(graphics, placement, macro, x, y, editSurface,
@@ -230,7 +249,7 @@ public final class InventoryButtonOverlay {
 			int ghostGridY = InventoryButtonLayout.gridY(mouseY, top);
 			int movingId = draggingId >= 0 ? draggingId : (moveMode ? selectedPlacementId : -1);
 			InventoryButtonPlacement moving = movingId < 0 ? null : module.placement(movingId);
-			boolean showingGhost = moving != null || selectedMacroId >= 0;
+			boolean showingGhost = moving != null || selectedMacroId >= 0 || selectedTextAction != null;
 			if (showingGhost && InventoryButtonLayout.fitsViewportAndBounds(ghostGridX, ghostGridY,
 				screenWidth, screenHeight, left, top, editBounds)) {
 				boolean valid = InventoryButtonLayout.canPlace(placements, movingId, ghostGridX, ghostGridY,
@@ -241,13 +260,20 @@ public final class InventoryButtonOverlay {
 					ghost = new InventoryButtonPlacement(moving);
 					ghost.setGrid(ghostGridX, ghostGridY);
 					macro = moving.macroId() < 0 ? null : MacrosModule.INSTANCE.macro(moving.macroId());
-				} else {
+				} else if (selectedMacroId >= 0) {
 					ghost = new InventoryButtonPlacement(-1);
 					ghost.setMacroId(selectedMacroId);
 					ghost.setGrid(ghostGridX, ghostGridY);
 					ghost.setAppearance(appearance, appearanceValue);
 					ghost.setHoverTooltip(hoverTooltipValue);
 					macro = MacrosModule.INSTANCE.macro(selectedMacroId);
+				} else {
+					ghost = new InventoryButtonPlacement(-1);
+					ghost.setGrid(ghostGridX, ghostGridY);
+					ghost.setAppearance(appearance, appearanceValue);
+					ghost.setHoverTooltip(hoverTooltipValue);
+					ghost.setTextAction(selectedTextAction);
+					macro = null;
 				}
 				drawButton(graphics, ghost, macro, InventoryButtonLayout.pixelX(ghostGridX, left),
 					InventoryButtonLayout.pixelY(ghostGridY, top), true, valid, false, false, 145);
@@ -288,6 +314,8 @@ public final class InventoryButtonOverlay {
 					appearance = hit.appearance();
 					appearanceValue = hit.value();
 					hoverTooltipValue = hit.hoverTooltip();
+					selectedTextAction = hit.textAction();
+					textActionMode = hit.hasTextAction();
 					draggingId = event.button() == 0 ? hit.id() : -1;
 					status = "Invalid saved position. Drag this button or use Reflow to move it outside the inventory.";
 					return true;
@@ -299,6 +327,8 @@ public final class InventoryButtonOverlay {
 				appearance = hit.appearance();
 				appearanceValue = hit.value();
 				hoverTooltipValue = hit.hoverTooltip();
+				selectedTextAction = hit.textAction();
+				textActionMode = hit.hasTextAction();
 				if (event.button() == 0 && moveMode) {
 					status = "Choose an open grid cell for the selected button.";
 				} else {
@@ -308,9 +338,10 @@ public final class InventoryButtonOverlay {
 				return true;
 			}
 			if (event.button() != 0) {
-				if (event.button() == 1 && selectedMacroId >= 0) {
+				if (event.button() == 1 && (selectedMacroId >= 0 || selectedTextAction != null)) {
 					selectedMacroId = -1;
-					status = "Macro placement cancelled.";
+					selectedTextAction = null;
+					status = "Button placement cancelled.";
 					return true;
 				}
 				return false;
@@ -348,6 +379,19 @@ public final class InventoryButtonOverlay {
 				}
 				return true;
 			}
+			if (selectedTextAction != null) {
+				if (InventoryButtonLayout.canPlace(placements, -1, gridX, gridY,
+					screenWidth, screenHeight, left, top, editBounds)) {
+					InventoryButtonsModule.INSTANCE.createTextAction(selectedTextAction, gridX, gridY,
+						appearance, appearanceValue).setHoverTooltip(hoverTooltipValue);
+					ModConfig.markDirty();
+					selectedPlacementId = InventoryButtonsModule.INSTANCE.placements().getLast().id();
+					status = "Text action button placed.";
+				} else {
+					status = "That exterior cell is occupied.";
+				}
+				return true;
+			}
 			if (!InventoryButtonLayout.canPlace(placements, -1, gridX, gridY,
 				screenWidth, screenHeight, left, top, editBounds)) {
 				status = "That exterior cell is occupied.";
@@ -355,7 +399,8 @@ public final class InventoryButtonOverlay {
 			}
 			pendingGridX = gridX;
 			pendingGridY = gridY;
-			openMacroPicker(screen);
+			if (textActionMode) openTextActionEditor(screen);
+			else openMacroPicker(screen);
 			return true;
 		}
 
@@ -364,7 +409,9 @@ public final class InventoryButtonOverlay {
 			screenWidth, screenHeight, vanillaBounds);
 		if (hit == null) return false;
 		// Consume every click on a valid button so the inventory slot beneath it stays inert.
-		if (event.button() == 0 && hit.macroId() >= 0) {
+		if (event.button() == 0 && hit.hasTextAction()) {
+			executeTextAction(hit.textAction());
+		} else if (event.button() == 0 && hit.macroId() >= 0) {
 			InventoryButtonRules.Eligibility eligibility = MacroRunner.activateInventoryButton(hit.macroId());
 			if (!eligibility.eligible()) status = eligibility.reason();
 		}
@@ -417,14 +464,24 @@ public final class InventoryButtonOverlay {
 		List<InventoryButtonLayout.Bounds> blocked, List<InventoryButtonPlacement> placements,
 		int left, int top, int screenWidth, int screenHeight) {
 		int row = (mouseY - panel.y - PANEL_ROW_TOP) / panel.rowHeight;
-		if (row < 0 || row >= 8 || mouseY < panel.y + PANEL_ROW_TOP
+		if (row < 0 || row >= EDITOR_ROW_COUNT || mouseY < panel.y + PANEL_ROW_TOP
 			|| mouseX < panel.x + 4 || mouseX >= panel.x + panel.width - 4) return;
 		switch (row) {
-			case 0 -> openMacroPicker(screen);
-			case 1 -> cycleAppearance();
-			case 2 -> openAppearancePicker(screen);
-			case 3 -> openTooltipEditor(screen);
-			case 4 -> {
+			case 0 -> {
+				textActionMode = !textActionMode;
+				selectedTextAction = textActionMode && selectedPlacement() != null
+					? selectedPlacement().textAction() : null;
+				selectedMacroId = -1;
+				status = "Button type: " + (textActionMode ? "direct text action" : "macro") + ".";
+			}
+			case 1 -> {
+				if (textActionMode) openTextActionEditor(screen);
+				else openMacroPicker(screen);
+			}
+			case 2 -> cycleAppearance();
+			case 3 -> openAppearancePicker(screen);
+			case 4 -> openTooltipEditor(screen);
+			case 5 -> {
 				if (selectedPlacementId < 0) status = "Select a button before moving it.";
 				else {
 					moveMode = !moveMode;
@@ -432,7 +489,7 @@ public final class InventoryButtonOverlay {
 						: "Move mode cancelled.";
 				}
 			}
-			case 5 -> {
+			case 6 -> {
 				if (selectedPlacementId < 0) status = "Select a button before deleting it.";
 				else {
 					InventoryButtonsModule.INSTANCE.remove(selectedPlacementId);
@@ -441,8 +498,8 @@ public final class InventoryButtonOverlay {
 					status = "Button deleted.";
 				}
 			}
-			case 6 -> reflow(placements, left, top, screenWidth, screenHeight, blocked);
-			case 7 -> stopEditing();
+			case 7 -> reflow(placements, left, top, screenWidth, screenHeight, blocked);
+			case 8 -> stopEditing();
 			default -> { }
 		}
 	}
@@ -458,9 +515,12 @@ public final class InventoryButtonOverlay {
 		int macroId;
 		try { macroId = Integer.parseInt(value); }
 		catch (NumberFormatException ignored) { return; }
+		textActionMode = false;
+		selectedTextAction = null;
 		InventoryButtonPlacement selected = selectedPlacement();
 		if (selected != null && pendingGridX == NO_PENDING_CELL) {
 			selected.setMacroId(macroId);
+			selected.setTextAction(null);
 			ModConfig.markDirty();
 			selectedMacroId = -1;
 			status = "Button assigned to " + macroName(macroId) + ".";
@@ -474,6 +534,8 @@ public final class InventoryButtonOverlay {
 	}
 
 	private static void createMacroAndOpenEditor(Screen parent) {
+		textActionMode = false;
+		selectedTextAction = null;
 		MacroDefinition macro = MacrosModule.INSTANCE.createMacro();
 		pendingMacroId = macro.id();
 		pendingMacroTargetPlacementId = hasPendingCell() ? -1 : selectedPlacementId;
@@ -499,6 +561,7 @@ public final class InventoryButtonOverlay {
 			return;
 		}
 		InventoryButtonPlacement created = InventoryButtonsModule.INSTANCE.create(macroId, x, y, appearance, appearanceValue);
+		created.setTextAction(null);
 		created.setHoverTooltip(hoverTooltipValue);
 		ModConfig.markDirty();
 		selectedPlacementId = created.id();
@@ -674,11 +737,12 @@ public final class InventoryButtonOverlay {
 		int previewX = panel.x + panel.width - 27;
 		int previewY = panel.y + 4;
 		InventoryButtonPlacement preview = selected;
-		if (preview == null && selectedMacroId >= 0) {
+		if (preview == null && (selectedMacroId >= 0 || selectedTextAction != null)) {
 			preview = new InventoryButtonPlacement(-1);
-			preview.setMacroId(selectedMacroId);
+			if (selectedMacroId >= 0) preview.setMacroId(selectedMacroId);
 			preview.setAppearance(appearance, appearanceValue);
 			preview.setHoverTooltip(hoverTooltipValue);
+			preview.setTextAction(selectedTextAction);
 		}
 		if (preview != null) {
 			drawButton(graphics, preview, macro, previewX, previewY, true, true,
@@ -689,23 +753,28 @@ public final class InventoryButtonOverlay {
 					buttonTooltip(preview, macro, null, true), mouseX, mouseY);
 			}
 		}
-		String target = selected == null ? (macro == null ? "No button selected" : "New · " + macro.name())
+		String target = selected == null
+			? selectedTextAction != null ? "New · Text action" : (macro == null ? "No button selected" : "New · " + macro.name())
+			: selected.hasTextAction() ? "Text action · " + trim(selected.textAction(), panel.width - 88)
 			: (macro == null ? "Unassigned button " + selected.id() : macro.name());
 		graphics.text(Minecraft.getInstance().font, trim(target, panel.width - 18),
 			panel.x + 7, panel.y + 24, TEXT_MUTED);
 		int invalid = InventoryButtonLayout.invalidCount(placements, screenWidth, screenHeight, left, top, blocked);
-		drawPanelRow(graphics, panel, 0, selected == null ? "Choose macro / create new" : "Change assigned macro", mouseX, mouseY);
-		drawPanelRow(graphics, panel, 1, "Style: " + appearance.name(), mouseX, mouseY);
-		drawPanelRow(graphics, panel, 2, switch (appearance) {
+		drawPanelRow(graphics, panel, 0, "Button type: " + (textActionMode ? "Text action" : "Macro"), mouseX, mouseY);
+		drawPanelRow(graphics, panel, 1, textActionMode
+			? (selectedTextAction == null ? "Set command / chat text" : "Edit command / chat text")
+			: (selected == null ? "Choose macro / create new" : "Change assigned macro"), mouseX, mouseY);
+		drawPanelRow(graphics, panel, 2, "Style: " + appearance.name(), mouseX, mouseY);
+		drawPanelRow(graphics, panel, 3, switch (appearance) {
 			case ITEM -> "Choose registered icon";
 			case TEXT -> "Edit button text";
 			case PNG -> "Choose PNG file";
 		}, mouseX, mouseY);
-		drawPanelRow(graphics, panel, 3, "Hover tooltip: " + (hoverTooltipValue.isBlank() ? "none" : "edit"), mouseX, mouseY);
-		drawPanelRow(graphics, panel, 4, moveMode ? "Click a cell to move…" : "Move selected button", mouseX, mouseY);
-		drawPanelRow(graphics, panel, 5, "Delete selected button", mouseX, mouseY);
-		drawPanelRow(graphics, panel, 6, "Reflow invalid (" + invalid + ")", mouseX, mouseY);
-		drawPanelRow(graphics, panel, 7, "Done editing", mouseX, mouseY);
+		drawPanelRow(graphics, panel, 4, "Hover tooltip: " + (hoverTooltipValue.isBlank() ? "none" : "edit"), mouseX, mouseY);
+		drawPanelRow(graphics, panel, 5, moveMode ? "Click a cell to move…" : "Move selected button", mouseX, mouseY);
+		drawPanelRow(graphics, panel, 6, "Delete selected button", mouseX, mouseY);
+		drawPanelRow(graphics, panel, 7, "Reflow invalid (" + invalid + ")", mouseX, mouseY);
+		drawPanelRow(graphics, panel, 8, "Done editing", mouseX, mouseY);
 		if (!status.isBlank()) graphics.text(Minecraft.getInstance().font,
 			trim(status, panel.width - 14), panel.x + 7, panel.y + panel.height - 12, TEXT_MUTED);
 	}
@@ -727,7 +796,8 @@ public final class InventoryButtonOverlay {
 			MacroDefinition macro = placement.macroId() < 0 ? null : MacrosModule.INSTANCE.macro(placement.macroId());
 			List<String> lines = new ArrayList<>();
 			if (!placement.hoverTooltip().isBlank()) lines.add(placement.hoverTooltip());
-			lines.add(macro == null ? "Unassigned button" : macro.name());
+			lines.add(placement.hasTextAction() ? "Text action: " + placement.textAction()
+				: macro == null ? "Unassigned button" : macro.name());
 			lines.add("Invalid saved position · drag or use Reflow");
 			graphics.setTooltipForNextFrame(Minecraft.getInstance().font,
 				Component.literal(String.join("\n", lines)), mouseX, mouseY);
@@ -750,7 +820,7 @@ public final class InventoryButtonOverlay {
 	private static void drawButton(GuiGraphicsExtractor graphics, InventoryButtonPlacement placement,
 		MacroDefinition macro, int x, int y, boolean edit, boolean eligible, boolean selected,
 		boolean hovered, int alpha) {
-		boolean themed = VisualModule.INSTANCE.themeMacroColors().value();
+		boolean themed = VisualModule.INSTANCE.themeSurfaces().value();
 		int backgroundAlpha = Math.min(alpha, 208);
 		int defaultRgb = edit ? (eligible ? 0x00181B23 : 0x003A1C1C) :
 			(eligible ? 0x00181B23 : 0x003C2525);
@@ -759,7 +829,7 @@ public final class InventoryButtonOverlay {
 		int border = selected ? 0xFFFFD65A : (hovered ? 0xFFFFFFFF
 			: eligible ? (themed ? withOpacity(CATEGORY_SELECTED, 0.85f) : 0xFFC5C7D2) : 0xFFE07070);
 		graphics.outline(x, y, InventoryButtonLayout.CELL_SIZE, InventoryButtonLayout.CELL_SIZE, border);
-		if (placement.macroId() < 0) {
+		if (placement.macroId() < 0 && !placement.hasTextAction()) {
 			graphics.centeredText(Minecraft.getInstance().font, "?", x + 9, y + 5, 0xFFFFD65A);
 		} else {
 			drawAppearance(graphics, placement, x, y);
@@ -852,7 +922,7 @@ public final class InventoryButtonOverlay {
 		int panelWidth = Math.max(1, Math.min(PANEL_WIDTH, screenWidth - 8));
 		int panelHeight = Math.max(1, Math.min(PANEL_HEIGHT, screenHeight - 8));
 		int rowHeight = Math.max(10, Math.min(PANEL_ROW_HEIGHT,
-			(panelHeight - PANEL_ROW_TOP - 12) / 8));
+			(panelHeight - PANEL_ROW_TOP - 12) / EDITOR_ROW_COUNT));
 		int sideMargin = Math.max(0, Math.min(8, (screenWidth - panelWidth) / 2));
 		int leftSideX = sideMargin;
 		int rightSideX = screenWidth - panelWidth - sideMargin;
@@ -918,11 +988,73 @@ public final class InventoryButtonOverlay {
 		InventoryButtonRules.Eligibility eligibility, boolean editSurface) {
 		List<String> lines = new ArrayList<>();
 		if (!placement.hoverTooltip().isBlank()) lines.add(placement.hoverTooltip());
-		lines.add(macro == null ? "Unassigned button" : macro.name());
+		if (placement.hasTextAction()) {
+			lines.add("Text action: " + placement.textAction());
+			lines.add(placement.textAction().startsWith("/") ? "Sends a command" : "Sends a chat message");
+		} else lines.add(macro == null ? "Unassigned button" : macro.name());
 		if (eligibility != null && !eligibility.eligible()) lines.add(eligibility.reason());
 		else if (editSurface) lines.add("Click to select · drag or use Move to reposition");
-		else lines.add("Click to run");
+		else lines.add(placement.hasTextAction() ? "Click to send" : "Click to run");
 		return Component.literal(String.join("\n", lines));
+	}
+
+	private static void openTextActionEditor(Screen parent) {
+		String initial = selectedPlacement() == null ? selectedTextAction : selectedPlacement().textAction();
+		Minecraft.getInstance().setScreen(new InventoryButtonTextScreen(parent, "Inventory Button Action",
+			"Start with / to send a command; otherwise the text is sent as a chat message.", initial,
+			InventoryButtonOverlay::selectTextAction));
+	}
+
+	private static void selectTextAction(String value) {
+		String action = value == null ? "" : value.trim();
+		if (action.isEmpty()) {
+			status = "Enter a command or chat message before saving.";
+			return;
+		}
+		selectedTextAction = action.substring(0, Math.min(256, action.length()));
+		textActionMode = true;
+		selectedMacroId = -1;
+		InventoryButtonPlacement selected = selectedPlacement();
+		if (selected != null && !hasPendingCell()) {
+			selected.setMacroId(-1);
+			selected.setTextAction(selectedTextAction);
+			ModConfig.markDirty();
+			status = "Text action saved.";
+			return;
+		}
+		if (hasPendingCell() && Minecraft.getInstance().screen instanceof InventoryScreen screen) {
+			int left = left(screen);
+			int top = top(screen);
+			List<InventoryButtonLayout.Bounds> vanilla = vanillaBounds(screen);
+			Panel panel = panel(left, top, imageWidth(screen), screenWidth(), screenHeight(), vanilla);
+			List<InventoryButtonLayout.Bounds> blocked = editingBounds(vanilla, panel);
+			int gridX = pendingGridX;
+			int gridY = pendingGridY;
+			pendingGridX = NO_PENDING_CELL;
+			pendingGridY = NO_PENDING_CELL;
+			if (InventoryButtonLayout.canPlace(InventoryButtonsModule.INSTANCE.placements(), -1,
+				gridX, gridY, screenWidth(), screenHeight(), left, top, blocked)) {
+				InventoryButtonPlacement created = InventoryButtonsModule.INSTANCE.createTextAction(
+					selectedTextAction, gridX, gridY, appearance, appearanceValue);
+				created.setHoverTooltip(hoverTooltipValue);
+				selectedPlacementId = created.id();
+				status = "Text action button placed.";
+			} else status = "That exterior cell is no longer available.";
+			ModConfig.markDirty();
+			return;
+		}
+		selectedPlacementId = -1;
+		status = "Text action ready. Click an open exterior cell to place the button.";
+	}
+
+	private static void executeTextAction(String raw) {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.player == null || minecraft.player.connection == null) return;
+		InventoryButtonTextAction.Dispatch dispatch = InventoryButtonTextAction.parse(raw);
+		if (dispatch == null) return;
+		if (dispatch.kind() == InventoryButtonTextAction.Kind.COMMAND)
+			minecraft.player.connection.sendCommand(dispatch.payload());
+		else minecraft.player.connection.sendChat(dispatch.payload());
 	}
 
 	private static String macroName(int id) {

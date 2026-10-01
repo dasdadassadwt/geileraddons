@@ -70,7 +70,7 @@ public final class MacroEditorScreen extends Screen {
 	private final List<HitTarget> hitTargets = new ArrayList<>();
 
 	public MacroEditorScreen(Screen parent, MacroDefinition macro) {
-		super(Component.literal("Macro Workflow"));
+		super(Component.literal("Macro Editor"));
 		this.parent = parent;
 		this.macro = macro;
 		this.insertionList = macro.steps();
@@ -144,7 +144,7 @@ public final class MacroEditorScreen extends Screen {
 	private void renderHeader(GuiGraphicsExtractor graphics, Layout layout, int mouseX, int mouseY) {
 		Font font = this.font;
 		Rect panel = layout.panel;
-		graphics.text(font, "Macro Workflow", panel.x + 12, panel.y + 8, TEXT_PRIMARY);
+		graphics.text(font, "Macro Editor", panel.x + 12, panel.y + 8, TEXT_PRIMARY);
 		boolean binding = ModuleKeybindManager.bindingMacro() == macro;
 		if (panel.w < 520) {
 			graphics.text(font, trimToWidth(font, macro.name(), panel.w - 24), panel.x + 12, panel.y + 20, TEXT_MUTED);

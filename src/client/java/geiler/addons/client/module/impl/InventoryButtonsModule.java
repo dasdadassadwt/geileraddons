@@ -54,6 +54,14 @@ public final class InventoryButtonsModule extends Module {
 		return placement;
 	}
 
+	public InventoryButtonPlacement createTextAction(String action, int gridX, int gridY,
+		InventoryButtonPlacement.Appearance appearance, String value) {
+		InventoryButtonPlacement placement = create(-1, gridX, gridY, appearance, value);
+		placement.setTextAction(action);
+		ModConfig.markDirty();
+		return placement;
+	}
+
 	public void restore(List<InventoryButtonPlacement> restored) {
 		placements.clear();
 		if (restored != null) {
@@ -103,7 +111,7 @@ public final class InventoryButtonsModule extends Module {
 			editLayout.description(), editLayout.onClick())));
 		for (InventoryButtonPlacement placement : placements) {
 			MacroDefinition macro = MacrosModule.INSTANCE.macro(placement.macroId());
-			String target = macro == null ? "Unassigned" : macro.name();
+			String target = placement.hasTextAction() ? "Text Action" : macro == null ? "Unassigned" : macro.name();
 			ModuleAction edit = new ModuleAction("Edit in Inventory", "Open the layout editor with this button selected.",
 				() -> openEditor(placement.id()));
 			ModuleAction assign = new ModuleAction("Choose Macro", "Bind this button to an existing macro.",
@@ -111,13 +119,17 @@ public final class InventoryButtonsModule extends Module {
 					Screen parent = Minecraft.getInstance().screen;
 					Minecraft.getInstance().setScreen(new InventoryButtonPickerScreen(parent,
 						InventoryButtonPickerScreen.Mode.MACRO, value -> {
-							try { placement.setMacroId(Integer.parseInt(value)); }
+							try { placement.setMacroId(Integer.parseInt(value)); placement.setTextAction(null); }
 							catch (NumberFormatException ignored) { placement.setMacroId(-1); }
 							ModConfig.markDirty();
 						}));
 				});
 			ModuleAction tooltip = new ModuleAction("Set Hover Tooltip", "Edit the custom hover text shown with macro status.",
 				() -> openTooltipEditor(placement));
+			ModuleAction textAction = new ModuleAction("Set Text Action", "Send a command or chat message when this button is clicked.",
+				() -> openTextActionEditor(placement));
+			ModuleAction clearTextAction = new ModuleAction("Clear Text Action", "Remove the direct command or chat action from this button.",
+				() -> { placement.setTextAction(null); ModConfig.markDirty(); });
 			ModuleAction unassign = new ModuleAction("Unassign Macro", "Keep this placement but clear its macro binding.",
 				() -> {
 					placement.setMacroId(-1);
@@ -125,7 +137,7 @@ public final class InventoryButtonsModule extends Module {
 				});
 			ModuleAction delete = new ModuleAction("Delete Button", "Remove this local placement.", () -> remove(placement.id()));
 			groups.add(new SettingGroup("Button " + placement.id() + " · " + target,
-				null, true, List.of(edit, assign, tooltip, unassign, delete), List.of(), false,
+				null, true, List.of(edit, assign, textAction, clearTextAction, tooltip, unassign, delete), List.of(), false,
 				"inventory-button:" + placement.id()));
 		}
 		return groups;
@@ -151,6 +163,18 @@ public final class InventoryButtonsModule extends Module {
 			"Shown above the macro name and eligibility when the button is hovered.",
 			placement.hoverTooltip(), value -> {
 				placement.setHoverTooltip(value);
+				ModConfig.markDirty();
+			}));
+	}
+
+	private static void openTextActionEditor(InventoryButtonPlacement placement) {
+		Minecraft minecraft = Minecraft.getInstance();
+		Screen parent = minecraft.screen;
+		minecraft.setScreen(new InventoryButtonTextScreen(parent, "Inventory Button Action",
+			"Start with / to send a command; otherwise the text is sent as a chat message.",
+			placement.textAction(), value -> {
+				placement.setMacroId(-1);
+				placement.setTextAction(value);
 				ModConfig.markDirty();
 			}));
 	}

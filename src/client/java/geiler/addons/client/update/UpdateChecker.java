@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
+import geiler.addons.client.net.BoundedHttpBodyReader;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -15,9 +16,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
@@ -134,17 +133,13 @@ public final class UpdateChecker {
 				.GET()
 				.build();
 
-			HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+			HttpResponse<byte[]> response = BoundedHttpBodyReader.send(client, request, MAX_RESPONSE_BYTES, TIMEOUT);
 			if (response.statusCode() != 200) {
-				response.body().close();
 				GeilerAddons.LOGGER.debug("Update check got HTTP {}", response.statusCode());
 				return;
 			}
 
-			String body;
-			try (InputStream input = response.body()) {
-				body = readLimited(input, MAX_RESPONSE_BYTES);
-			}
+			String body = new String(response.body(), StandardCharsets.UTF_8);
 			JsonObject json = new Gson().fromJson(body, JsonObject.class);
 			if (json == null || !json.has("tag_name")) return;
 			String tag = stripPrefix(json.get("tag_name").getAsString());
@@ -163,21 +158,6 @@ public final class UpdateChecker {
 			// Offline, rate-limited, DNS-blocked, malformed body - none of it is worth a warning.
 			GeilerAddons.LOGGER.debug("Update check failed", e);
 		}
-	}
-
-	private static String readLimited(InputStream input, int maximumBytes) throws IOException {
-		ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(maximumBytes, 16 * 1024));
-		byte[] buffer = new byte[4096];
-		int total = 0;
-		while (true) {
-			int read = input.read(buffer);
-			if (read < 0) break;
-			if (read == 0) continue;
-			total += read;
-			if (total > maximumBytes) throw new IOException("Update response exceeded " + maximumBytes + " bytes");
-			output.write(buffer, 0, read);
-		}
-		return output.toString(StandardCharsets.UTF_8);
 	}
 
 	private static String stripPrefix(String tag) {

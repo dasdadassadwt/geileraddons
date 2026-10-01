@@ -14,6 +14,7 @@ import java.util.List;
 public final class ChoiceSetting implements Setting {
 	private final String name;
 	private final List<String> choices;
+	private final String defaultValue;
 	private String value;
 
 	public ChoiceSetting(String name, String defaultValue, String... choices) {
@@ -28,6 +29,7 @@ public final class ChoiceSetting implements Setting {
 			throw new IllegalArgumentException("Default choice is not in the choice list");
 		}
 		this.value = defaultValue;
+		this.defaultValue = defaultValue;
 	}
 
 	@Override
@@ -59,6 +61,9 @@ public final class ChoiceSetting implements Setting {
 	public void selectPrevious() {
 		select(index() - 1);
 	}
+
+	/** Restores the value declared by the setting's constructor. */
+	public void reset() { value = defaultValue; }
 
 	private void select(int requested) {
 		int wrapped = Math.floorMod(requested, choices.size());

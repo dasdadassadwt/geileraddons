@@ -81,6 +81,9 @@ public final class EspRenderer {
 
 	/** @param depthTested true to let world geometry hide the box, false to draw it through walls */
 	public static void renderBox(PoseStack poseStack, MultiBufferSource bufferSource, double x, double y, double z, double sizeX, double sizeY, double sizeZ, int fillColor, int lineColor, float lineWidth, boolean depthTested) {
+		boolean drawFill = hasAlpha(fillColor);
+		boolean drawOutline = lineWidth > 0 && hasAlpha(lineColor);
+		if (!drawFill && !drawOutline) return;
 		PoseStack.Pose pose = poseStack.last();
 		// Nudged outward when the depth test is on, because the surfaces this wraps are exactly the
 		// ones it is being compared against: a box around a block is coplanar with that block's
@@ -95,35 +98,87 @@ public final class EspRenderer {
 		float y1 = (float) (y + sizeY + margin);
 		float z1 = (float) (z + sizeZ + margin);
 
-		VertexConsumer quads = bufferSource.getBuffer(GeilerAddonsRenderTypes.quads(depthTested));
-		quad(quads, pose, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, fillColor);
-		quad(quads, pose, x1, y0, z1, x0, y0, z1, x0, y1, z1, x1, y1, z1, fillColor);
-		quad(quads, pose, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1, fillColor);
-		quad(quads, pose, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, fillColor);
-		quad(quads, pose, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, fillColor);
-		quad(quads, pose, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, fillColor);
+		if (drawFill) {
+			VertexConsumer quads = bufferSource.getBuffer(GeilerAddonsRenderTypes.quads(depthTested));
+			quad(quads, pose, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, fillColor);
+			quad(quads, pose, x1, y0, z1, x0, y0, z1, x0, y1, z1, x1, y1, z1, fillColor);
+			quad(quads, pose, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1, fillColor);
+			quad(quads, pose, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, fillColor);
+			quad(quads, pose, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, fillColor);
+			quad(quads, pose, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, fillColor);
+		}
 
 		// Written out rather than walked from a corner and edge table: the table was rebuilt for
 		// every box every frame, and with a route's worth of waypoints on screen that was the bulk
 		// of this renderer's garbage.
-		VertexConsumer lines = bufferSource.getBuffer(GeilerAddonsRenderTypes.lines(depthTested));
-		line(lines, pose, x0, y0, z0, x1, y0, z0, lineColor, lineWidth);
-		line(lines, pose, x1, y0, z0, x1, y0, z1, lineColor, lineWidth);
-		line(lines, pose, x1, y0, z1, x0, y0, z1, lineColor, lineWidth);
-		line(lines, pose, x0, y0, z1, x0, y0, z0, lineColor, lineWidth);
-		line(lines, pose, x0, y1, z0, x1, y1, z0, lineColor, lineWidth);
-		line(lines, pose, x1, y1, z0, x1, y1, z1, lineColor, lineWidth);
-		line(lines, pose, x1, y1, z1, x0, y1, z1, lineColor, lineWidth);
-		line(lines, pose, x0, y1, z1, x0, y1, z0, lineColor, lineWidth);
-		line(lines, pose, x0, y0, z0, x0, y1, z0, lineColor, lineWidth);
-		line(lines, pose, x1, y0, z0, x1, y1, z0, lineColor, lineWidth);
-		line(lines, pose, x1, y0, z1, x1, y1, z1, lineColor, lineWidth);
-		line(lines, pose, x0, y0, z1, x0, y1, z1, lineColor, lineWidth);
+		if (drawOutline) {
+			VertexConsumer lines = bufferSource.getBuffer(GeilerAddonsRenderTypes.lines(depthTested));
+			line(lines, pose, x0, y0, z0, x1, y0, z0, lineColor, lineWidth);
+			line(lines, pose, x1, y0, z0, x1, y0, z1, lineColor, lineWidth);
+			line(lines, pose, x1, y0, z1, x0, y0, z1, lineColor, lineWidth);
+			line(lines, pose, x0, y0, z1, x0, y0, z0, lineColor, lineWidth);
+			line(lines, pose, x0, y1, z0, x1, y1, z0, lineColor, lineWidth);
+			line(lines, pose, x1, y1, z0, x1, y1, z1, lineColor, lineWidth);
+			line(lines, pose, x1, y1, z1, x0, y1, z1, lineColor, lineWidth);
+			line(lines, pose, x0, y1, z1, x0, y1, z0, lineColor, lineWidth);
+			line(lines, pose, x0, y0, z0, x0, y1, z0, lineColor, lineWidth);
+			line(lines, pose, x1, y0, z0, x1, y1, z0, lineColor, lineWidth);
+			line(lines, pose, x1, y0, z1, x1, y1, z1, lineColor, lineWidth);
+			line(lines, pose, x0, y0, z1, x0, y1, z1, lineColor, lineWidth);
+		}
+	}
+
+	/** Centered marker box whose yaw affects both its fill and its outline. */
+	public static void renderRotatedBox(PoseStack poseStack, MultiBufferSource bufferSource,
+		double centerX, double baseY, double centerZ, float size, float degrees,
+		int fillColor, int lineColor, float lineWidth, boolean depthTested) {
+		boolean drawFill = hasAlpha(fillColor);
+		boolean drawOutline = lineWidth > 0 && hasAlpha(lineColor);
+		if (!drawFill && !drawOutline) return;
+		PoseStack.Pose pose = poseStack.last();
+		float half = size / 2.0f;
+		float sin = (float) Math.sin(Math.toRadians(degrees));
+		float cos = (float) Math.cos(Math.toRadians(degrees));
+		float[][] corner = new float[4][2];
+		for (int i = 0; i < 4; i++) {
+			float x = (i == 0 || i == 3 ? -half : half);
+			float z = (i < 2 ? -half : half);
+			corner[i][0] = (float) centerX + x * cos - z * sin;
+			corner[i][1] = (float) centerZ + x * sin + z * cos;
+		}
+		float bottom = (float) baseY, top = bottom + size;
+		VertexConsumer quads = drawFill ? bufferSource.getBuffer(GeilerAddonsRenderTypes.quads(depthTested)) : null;
+		VertexConsumer lines = drawOutline ? bufferSource.getBuffer(GeilerAddonsRenderTypes.lines(depthTested)) : null;
+		for (int i = 0; i < 4; i++) {
+			float[] a = corner[i], b = corner[(i + 1) % 4];
+			if (drawFill) quad(quads, pose, a[0], bottom, a[1], b[0], bottom, b[1], b[0], top, b[1], a[0], top, a[1], fillColor);
+			if (drawOutline) {
+				line(lines, pose, a[0], bottom, a[1], b[0], bottom, b[1], lineColor, lineWidth);
+				line(lines, pose, a[0], top, a[1], b[0], top, b[1], lineColor, lineWidth);
+				line(lines, pose, a[0], bottom, a[1], a[0], top, a[1], lineColor, lineWidth);
+			}
+		}
+		if (drawFill) {
+			quad(quads, pose, corner[0][0], top, corner[0][1], corner[1][0], top, corner[1][1],
+				corner[2][0], top, corner[2][1], corner[3][0], top, corner[3][1], fillColor);
+			quad(quads, pose, corner[3][0], bottom, corner[3][1], corner[2][0], bottom, corner[2][1],
+				corner[1][0], bottom, corner[1][1], corner[0][0], bottom, corner[0][1], fillColor);
+		}
+	}
+
+	private static boolean hasAlpha(int argb) {
+		return (argb >>> 24) != 0;
 	}
 
 	public static void renderSphere(PoseStack poseStack, MultiBufferSource bufferSource, double cx, double cy, double cz, float radius, int fillColor) {
+		renderSphere(poseStack, bufferSource, cx, cy, cz, radius, fillColor, false);
+	}
+
+	/** Sphere highlight with the same optional world-geometry occlusion used by other ESP shapes. */
+	public static void renderSphere(PoseStack poseStack, MultiBufferSource bufferSource, double cx, double cy, double cz,
+		float radius, int fillColor, boolean depthTested) {
 		PoseStack.Pose pose = poseStack.last();
-		VertexConsumer quads = bufferSource.getBuffer(GeilerAddonsRenderTypes.ESP_QUADS);
+		VertexConsumer quads = bufferSource.getBuffer(GeilerAddonsRenderTypes.quads(depthTested));
 
 		for (int lat = 0; lat < SPHERE_LATITUDES; lat++) {
 			for (int lon = 0; lon < SPHERE_LONGITUDES; lon++) {

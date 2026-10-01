@@ -1,8 +1,10 @@
 package geiler.addons.client.macro;
 
 import com.google.gson.JsonParser;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
+import geiler.addons.client.config.ClickGuiState;
 import geiler.addons.client.config.MacroStepConfigCodec;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.module.BooleanSetting;
@@ -12,6 +14,7 @@ import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.module.impl.MacrosModule;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
@@ -21,7 +24,15 @@ public final class MacroChecks {
 	}
 
 	public static void run() {
+		checkReusableFunctionLimits();
 		MacroDefinition macro = new MacroDefinition(7);
+		macro.setCanvasView(120, -45, 1.0f);
+		macro.setCanvasZoom(30.0f);
+		assertEquals(30.0f, macro.canvasZoom(), "macro canvas stores zoom as a percentage");
+		assertEquals(120.0f, macro.canvasPanX(), "changing zoom alone leaves horizontal pan unchanged");
+		assertEquals(-45.0f, macro.canvasPanY(), "changing zoom alone leaves vertical pan unchanged");
+		macro.setCanvasZoom(0.001f);
+		assertEquals(1.0f, macro.canvasZoom(), "macro canvas can zoom out to the one percent floor");
 		assertSame(MacroTriggerContext.ANY_NON_TEXT_SCREEN, macro.triggerContext(),
 			"new macros are allowed in non-text contexts by default");
 		MacroStep.Command delayed = new MacroStep.Command("/example");
@@ -89,6 +100,18 @@ public final class MacroChecks {
 		assertSame(movableNode, movable.steps().get(1), "same-list movement adjusts the insertion index after removal");
 		assertEquals(45, movableNode.delayMin(), "tree movement preserves node delay settings");
 		assertEquals(90, movableNode.delayMax(), "tree movement preserves node delay settings");
+		MacroDefinition switchMove = new MacroDefinition(16);
+		MacroStep.Switch switchNode = new MacroStep.Switch();
+		MacroStep.Repeat switchNested = new MacroStep.Repeat(false, 1);
+		switchNested.steps().add(new MacroStep.Command("/inside-switch"));
+		switchNode.cases().getFirst().steps().add(switchNested);
+		switchMove.steps().add(switchNode);
+		assertTrue(MacroTreeRules.containsDescendantList(switchNode, switchNested.steps()),
+			"switch case stacks participate in descendant traversal");
+		assertEquals(2, MacroTreeRules.subtreeDepth(switchNode),
+			"switch case and nested repeat bodies contribute to subtree depth");
+		assertFalse(MacroTreeRules.canMove(switchMove, switchMove.steps(), switchNode, switchNested.steps(), 0),
+			"tree rules reject moving a switch into a nested case descendant");
 		MacroDefinition tooDeep = new MacroDefinition(15);
 		List<MacroStep> deepTarget = tooDeep.steps();
 		for (int i = 0; i <= MacroTreeRules.MAX_DEPTH; i++) {
@@ -98,6 +121,15 @@ public final class MacroChecks {
 		}
 		assertFalse(MacroTreeRules.canInsert(tooDeep, new MacroStep.Command("/too-deep"), deepTarget),
 			"tree rules reject an insertion beyond the codec nesting limit");
+		MacroDefinition maximumDepth = new MacroDefinition(17);
+		List<MacroStep> maximumDepthTarget = maximumDepth.steps();
+		for (int i = 0; i < MacroTreeRules.MAX_DEPTH; i++) {
+			MacroStep.Repeat nested = new MacroStep.Repeat(false, 1);
+			maximumDepthTarget.add(nested);
+			maximumDepthTarget = nested.steps();
+		}
+		assertTrue(MacroTreeRules.canInsert(maximumDepth, new MacroStep.Chat("at max depth"), maximumDepthTarget),
+			"a leaf remains insertable at the codec's maximum nesting depth");
 		assertTrue(MacroCondition.ItemScope.CONTAINER.includesPlayerSlot(false),
 			"container scope includes non-player slots");
 		assertFalse(MacroCondition.ItemScope.CONTAINER.includesPlayerSlot(true),
@@ -192,10 +224,20 @@ public final class MacroChecks {
 		oldFormat.steps().add(new MacroStep.Command("/legacy"));
 		JsonObject legacyPackage = JsonParser.parseString(MacroTransfer.encode(List.of(oldFormat))).getAsJsonObject();
 		legacyPackage.addProperty("version", 1);
+		JsonObject legacyZoomMacro = legacyPackage.getAsJsonArray("macros").get(0).getAsJsonObject();
+		legacyZoomMacro.addProperty("canvasZoom", 0.01f);
+		legacyZoomMacro.remove("canvasZoomVersion");
 		MacroTransfer.ImportResult importedV1 = MacroTransfer.decode(legacyPackage.toString(), 120);
 		assertTrue(importedV1.success(), "version 1 macro transfer packages remain importable");
-		assertEquals("/legacy", ((MacroStep.Command) importedV1.macros().getFirst().steps().getFirst()).command(),
-			"version 1 import retains the legacy workflow content");
+		assertEquals("/legacy", ((MacroStep.Chat) importedV1.macros().getFirst().steps().getFirst()).message(),
+			"version 1 import migrates a legacy command without changing its behavior");
+		assertEquals(100.0f, importedV1.macros().getFirst().canvasZoom(),
+			"legacy one-percent zoom migrates to the new 100-percent value");
+		legacyZoomMacro.addProperty("canvasZoom", 1.0f);
+		legacyZoomMacro.addProperty("canvasZoomVersion", 1);
+		MacroTransfer.ImportResult importedVersion1Zoom = MacroTransfer.decode(legacyPackage.toString(), 120);
+		assertEquals(100.0f, importedVersion1Zoom.macros().getFirst().canvasZoom(),
+			"previous percent-based transfers map old 1 percent to new 100 percent");
 
 		MacroDefinition effects = new MacroDefinition(22);
 		MacroStep.Title title = new MacroStep.Title();
@@ -213,7 +255,7 @@ public final class MacroChecks {
 		effects.steps().add(title);
 		effects.steps().add(sound);
 		JsonObject currentPackage = JsonParser.parseString(MacroTransfer.encode(List.of(effects))).getAsJsonObject();
-		assertEquals(5, currentPackage.get("version").getAsInt(), "new macro transfers use format version 5");
+		assertEquals(7, currentPackage.get("version").getAsInt(), "new macro transfers use format version 7");
 		MacroDefinition effectsCopy = MacroTransfer.decode(currentPackage.toString(), 121).macros().getFirst();
 		MacroStep.Title titleCopy = (MacroStep.Title) effectsCopy.steps().get(0);
 		assertEquals(title.text(), titleCopy.text(), "v4 transfer preserves macro title text");
@@ -252,10 +294,11 @@ public final class MacroChecks {
 		MacroTransfer.ImportResult nestedImport = MacroTransfer.decode(MacroTransfer.encode(List.of(nested)), 101);
 		assertTrue(nestedImport.success(), "clipboard preserves nested Repeat Until workflows");
 		MacroStep.IfElse restoredBranch = (MacroStep.IfElse) nestedImport.macros().getFirst().steps().getFirst();
-		MacroStep.RepeatUntil restoredUntil = (MacroStep.RepeatUntil) restoredBranch.thenSteps().getFirst();
+		MacroStep.Repeat restoredUntil = (MacroStep.Repeat) restoredBranch.thenSteps().getFirst();
+		assertEquals(MacroStep.Repeat.Mode.UNTIL, restoredUntil.mode(), "legacy Repeat Until maps to unified Repeat");
 		assertEquals(stopWhenMissing, restoredUntil.condition(), "clipboard preserves Repeat Until item condition");
 		assertEquals(2, restoredUntil.steps().size(), "clipboard preserves Repeat Until children");
-		assertEquals("Confirm, Claim", ((MacroStep.ClickItem) restoredUntil.steps().getFirst()).name(),
+		assertEquals("Confirm, Claim", ((MacroStep.InventoryClick) restoredUntil.steps().getFirst()).name(),
 			"clipboard preserves comma-separated click alternatives");
 		assertEquals(250, restoredUntil.steps().getFirst().delayMin(), "clipboard preserves child node delays");
 		assertEquals(400, restoredUntil.steps().getFirst().delayMax(), "clipboard preserves child delay ranges");
@@ -267,7 +310,7 @@ public final class MacroChecks {
 		var configTree = MacroStepConfigCodec.encode(nested.steps());
 		var configRoundTrip = MacroStepConfigCodec.decode(JsonParser.parseString(configTree.toString()).getAsJsonArray());
 		MacroStep.IfElse configBranch = (MacroStep.IfElse) configRoundTrip.getFirst();
-		MacroStep.RepeatUntil configUntil = (MacroStep.RepeatUntil) configBranch.thenSteps().getFirst();
+		MacroStep.Repeat configUntil = (MacroStep.Repeat) configBranch.thenSteps().getFirst();
 		assertEquals(stopWhenMissing, configUntil.condition(), "config round trip preserves Repeat Until condition");
 		assertEquals(2, configUntil.steps().size(), "config round trip preserves nested loop body");
 		assertEquals(80, configUntil.delayMin(), "config round trip preserves loop delay minimum");
@@ -276,7 +319,7 @@ public final class MacroChecks {
 		MacroStep.Key configKey = (MacroStep.Key) configBranch.elseSteps().getFirst();
 		assertEquals(125, configKey.holdMinMillis(), "config round trip preserves randomized hold minimum");
 		assertEquals(375, configKey.holdMaxMillis(), "config round trip preserves randomized hold maximum");
-		assertEquals("Confirm, Claim", ((MacroStep.ClickItem) configUntil.steps().getFirst()).name(),
+		assertEquals("Confirm, Claim", ((MacroStep.InventoryClick) configUntil.steps().getFirst()).name(),
 			"config round trip preserves comma-separated click alternatives");
 		assertEquals("Confirm, Claim", ((MacroCondition.Item) configUntil.condition()).name(),
 			"config round trip preserves comma-separated condition alternatives");
@@ -355,7 +398,8 @@ public final class MacroChecks {
 		MacroDefinition selectable = new MacroDefinition(8);
 		selectable.setIslands(List.of(Island.GARDEN));
 		MacrosModule.INSTANCE.restore(List.of(selectable));
-		SettingGroup macroGroup = MacrosModule.INSTANCE.groups().get(1);
+		SettingGroup macroGroup = findGroup(MacrosModule.INSTANCE.groups(), "macro-entry:" + selectable.id());
+		assertTrue(macroGroup != null, "macro has a stable keyed settings group");
 		TextSetting rename = null;
 		for (Setting setting : macroGroup.settings()) {
 			if (setting instanceof TextSetting text && "Rename Macro".equals(text.displayName())) rename = text;
@@ -377,10 +421,71 @@ public final class MacroChecks {
 		MacrosModule.INSTANCE.syncSettings();
 		assertFalse(selectable.islands().contains(Island.GARDEN), "unchecking an island updates the macro");
 
+		// Every macro's Islands section carries the same heading, so its fold state has to be keyed by
+		// the macro. Sharing one key means expanding Islands in one macro expands it in all of them.
+		MacroDefinition secondMacro = new MacroDefinition(9);
+		MacrosModule.INSTANCE.restore(List.of(selectable, secondMacro));
+		MacrosModule.INSTANCE.syncSettings();
+		List<SettingGroup> islandSections = new ArrayList<>();
+		collectGroups(MacrosModule.INSTANCE.groups(), "Islands", islandSections);
+		assertEquals(2, islandSections.size(), "each macro contributes its own Islands section");
+		assertTrue(islandSections.get(0).stateKey() != null && islandSections.get(1).stateKey() != null,
+			"a repeated Islands heading states its own identity");
+		assertFalse(islandSections.get(0).stateKey().equals(islandSections.get(1).stateKey()),
+			"two macros do not share one Islands fold key");
+
+		ClickGuiState.toggleCollapsed(MacrosModule.INSTANCE, islandSections.get(0));
+		assertTrue(ClickGuiState.isCollapsed(MacrosModule.INSTANCE, islandSections.get(0))
+				!= ClickGuiState.isCollapsed(MacrosModule.INSTANCE, islandSections.get(1)),
+			"expanding one macro's Islands section leaves the other alone");
+
 		assertEquals("None", ModuleKeybind.NONE.displayName(), "macro keybind uses the shared display format");
 		MacroRuntimeChecks.run();
 		MacroChatTriggerChecks.run();
-		MacroCheatRulesChecks.run();
+	}
+
+	private static void checkReusableFunctionLimits() {
+		List<MacroFunction> tooMany = new ArrayList<>();
+		for (int index = 0; index <= MacroFunction.MAX_FUNCTIONS; index++) tooMany.add(new MacroFunction());
+		boolean exportRejected = false;
+		try {
+			MacroTransfer.encode(List.of(new MacroDefinition(900)), tooMany);
+		} catch (IllegalArgumentException expected) {
+			exportRejected = true;
+		}
+		assertTrue(exportRejected, "macro export refuses to truncate a function catalog over the save limit");
+
+		JsonObject packageRoot = JsonParser.parseString(
+			MacroTransfer.encode(List.of(new MacroDefinition(901)))).getAsJsonObject();
+		JsonArray functions = new JsonArray();
+		for (int index = 0; index <= MacroFunction.MAX_FUNCTIONS; index++) {
+			JsonObject function = new JsonObject();
+			function.addProperty("id", "function-" + index);
+			function.addProperty("name", "Function " + index);
+			function.add("steps", new JsonArray());
+			functions.add(function);
+		}
+		packageRoot.add("functions", functions);
+		MacroTransfer.ImportResult imported = MacroTransfer.decode(packageRoot.toString(), 902);
+		assertFalse(imported.success(), "macro import refuses a function catalog over the save limit");
+		assertTrue(imported.error().contains(Integer.toString(MacroFunction.MAX_FUNCTIONS)),
+			"over-limit macro import explains the function limit");
+	}
+
+	private static SettingGroup findGroup(List<SettingGroup> groups, String stateKey) {
+		for (SettingGroup group : groups) {
+			if (stateKey.equals(group.stateKey())) return group;
+			SettingGroup nested = findGroup(group.children(), stateKey);
+			if (nested != null) return nested;
+		}
+		return null;
+	}
+
+	private static void collectGroups(List<SettingGroup> groups, String name, List<SettingGroup> result) {
+		for (SettingGroup group : groups) {
+			if (name.equals(group.name())) result.add(group);
+			collectGroups(group.children(), name, result);
+		}
 	}
 
 	private static void assertSame(Object expected, Object actual, String label) {

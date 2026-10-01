@@ -3,6 +3,7 @@ package geiler.addons.client.entity;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.AABB;
@@ -64,12 +65,40 @@ public final class Nameplates {
 		for (LivingEntity candidate : nearby) {
 			if (!allowedBody(candidate, includePlayers)) continue;
 			double distance = candidate.position().distanceToSqr(at);
+			// Match the world-query overload above: labels may only bind to a body in the local
+			// nameplate area, never to an arbitrary entity elsewhere in the caller's larger scan.
+			if (distance > SEARCH_RADIUS * SEARCH_RADIUS) continue;
 			if (distance < bestDistance) {
 				bestDistance = distance;
 				best = candidate;
 			}
 		}
 		return best;
+	}
+
+	/**
+	 * Resolves a marker only when one living body is clearly closer than every other candidate.
+	 * Dungeon mob name stands can overlap in busy rooms; choosing the nearest tied entity paints the
+	 * wrong mob, so visual classifiers should prefer a missed marker over a false association.
+	 */
+	public static Entity resolveUnambiguousBody(Entity matched, List<? extends LivingEntity> nearby,
+		boolean includePlayers) {
+		if (matched == null) return null;
+		if (!(matched instanceof ArmorStand) && allowedBody(matched, includePlayers)) return matched;
+		if (nearby == null) return null;
+		Vec3 at = matched.position();
+		LivingEntity best = null;
+		double bestDistance = Double.MAX_VALUE;
+		double secondDistance = Double.MAX_VALUE;
+		for (LivingEntity candidate : nearby) {
+			if (candidate == matched || candidate instanceof ArmorStand || !allowedBody(candidate, includePlayers)) continue;
+			double distance = candidate.position().distanceToSqr(at);
+			if (distance > SEARCH_RADIUS * SEARCH_RADIUS) continue;
+			if (distance < bestDistance) { secondDistance = bestDistance; bestDistance = distance; best = candidate; }
+			else if (distance < secondDistance) secondDistance = distance;
+		}
+		return best != null && (secondDistance == Double.MAX_VALUE || secondDistance - bestDistance >= 0.75)
+			? best : null;
 	}
 
 	private static boolean allowedBody(Entity entity, boolean includePlayers) {

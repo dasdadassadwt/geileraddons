@@ -1,0 +1,2 @@
+<!-- GeilerAddons four-way move control, drawn as a scalable arrow cross. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M7 0h2v2h3L8 6 4 2h3zM16 7v2h-2v3l-4-4 4-4v3zM9 16H7v-2H4l4-4 4 4H9zM0 9V7h2V4l4 4-4 4V9z"/></svg>

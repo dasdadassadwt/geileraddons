@@ -5,6 +5,7 @@ public final class NumberSetting implements Setting {
 	private final String displayName;
 	private final float min;
 	private final float max;
+	private final float defaultValue;
 	/** Whole-number setting (tick counts and the like): snapped on every write, shown without decimals. */
 	private final boolean integer;
 	private float value;
@@ -32,7 +33,8 @@ public final class NumberSetting implements Setting {
 		this.min = min;
 		this.max = max;
 		this.integer = integer;
-		this.value = clamp(defaultValue);
+		this.defaultValue = clamp(defaultValue);
+		this.value = this.defaultValue;
 	}
 
 	@Override
@@ -64,6 +66,9 @@ public final class NumberSetting implements Setting {
 	public float max() {
 		return max;
 	}
+
+	/** Restores the value declared by the setting's constructor. */
+	public void reset() { value = defaultValue; }
 
 	/** Large ranges are faster and more precise to edit directly than to drag across a slider. */
 	public boolean prefersTextInput() {

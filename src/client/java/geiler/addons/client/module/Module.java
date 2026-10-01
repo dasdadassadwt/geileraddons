@@ -9,6 +9,7 @@ public abstract class Module {
 	private final String name;
 	private final String description;
 	private final Category category;
+	private final boolean defaultEnabled;
 	private final List<Setting> settings;
 	private final List<ColorSetting> colorSettings;
 	private final List<NumberSetting> numberSettings;
@@ -29,9 +30,19 @@ public abstract class Module {
 	 * and the settings panel read, so nothing downstream had to change.
 	 */
 	protected Module(String name, String description, Category category, Setting... settings) {
+		this(name, description, category, true, settings);
+	}
+
+	/**
+	 * Constructor for modules whose fresh-install enabled state differs from the normal enabled default.
+	 * Saved user state is still applied later by {@code ModConfig}.
+	 */
+	protected Module(String name, String description, Category category, boolean enabledByDefault,
+		Setting... settings) {
 		this.name = name;
 		this.description = description;
 		this.category = category;
+		this.defaultEnabled = enabledByDefault;
 		this.settings = List.of(settings);
 		this.colorSettings = ofType(ColorSetting.class);
 		this.numberSettings = ofType(NumberSetting.class);
@@ -52,6 +63,11 @@ public abstract class Module {
 	}
 
 	public String name() {
+		return name;
+	}
+
+	/** Stable persisted key for a visible module whose display name changes. */
+	public String configName() {
 		return name;
 	}
 
@@ -113,6 +129,16 @@ public abstract class Module {
 		return !settings.isEmpty();
 	}
 
+	/** Whether the module grid should expose an enable switch for this module. */
+	public boolean showsToggleControl() {
+		return true;
+	}
+
+	/** Whether the module grid should expose a keybind capture control for this module. */
+	public boolean showsKeybindControl() {
+		return true;
+	}
+
 	/**
 	 * Whether a setting should currently be shown in the Click GUI.
 	 *
@@ -126,6 +152,11 @@ public abstract class Module {
 
 	public boolean isEnabled() {
 		return enabled;
+	}
+
+	/** Fresh-install enabled state, used when a config has no saved value for this module. */
+	public boolean defaultEnabled() {
+		return defaultEnabled;
 	}
 
 	public ModuleKeybind keybind() {

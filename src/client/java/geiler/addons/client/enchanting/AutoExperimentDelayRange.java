@@ -6,8 +6,8 @@ import java.util.function.LongUnaryOperator;
 public record AutoExperimentDelayRange(int minimumMillis, int maximumMillis) {
 	public static final int MINIMUM_MILLIS = 0;
 	public static final int MAXIMUM_MILLIS = 2_000;
-	public static final int DEFAULT_MINIMUM_MILLIS = 190;
-	public static final int DEFAULT_MAXIMUM_MILLIS = 260;
+	public static final int DEFAULT_MINIMUM_MILLIS = 250;
+	public static final int DEFAULT_MAXIMUM_MILLIS = 350;
 	private static final int LEGACY_RANGE_MILLIS = 70;
 
 	public AutoExperimentDelayRange {

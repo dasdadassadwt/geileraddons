@@ -2,8 +2,12 @@ package geiler.addons.client;
 
 import geiler.addons.GeilerAddons;
 import geiler.addons.client.config.ModConfig;
+import geiler.addons.client.config.ConfigTransferService;
 import geiler.addons.client.config.GeilerAddonsLog;
 import geiler.addons.client.dungeon.DungeonStatsService;
+import geiler.addons.client.dungeon.DungeonRoomTracker;
+import geiler.addons.client.dungeon.ClientJsonFile;
+import geiler.addons.client.dungeon.DungeonGuideStore;
 import geiler.addons.client.command.GeilerAddonsCommand;
 import geiler.addons.client.hud.HudManager;
 import geiler.addons.client.hud.MacroTitleOverlay;
@@ -14,6 +18,7 @@ import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.HideyhoFinderModule;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.MobHighlightModule;
+import geiler.addons.client.module.impl.DungeonMobEspModule;
 import geiler.addons.client.module.impl.BlockEspModule;
 import geiler.addons.client.module.impl.InventoryButtonsModule;
 import geiler.addons.client.module.impl.AutoKickModule;
@@ -35,10 +40,14 @@ import geiler.addons.client.render.ProjectedLabelRenderer;
 import geiler.addons.client.module.impl.ExperimentSolverModule;
 import geiler.addons.client.module.impl.AutoExperimentsModule;
 import geiler.addons.client.module.impl.MacrosModule;
+import geiler.addons.client.module.impl.DungeonHelperModule;
+import geiler.addons.client.module.impl.BoxDoorsModule;
+import geiler.addons.client.dungeon.DungeonContextTracker;
 import geiler.addons.client.macro.MacroRunner;
 import geiler.addons.client.update.UpdateChecker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
@@ -60,6 +69,8 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModuleManager.register(AutoExperimentsModule.INSTANCE);
 		ModuleManager.register(AutoKickModule.INSTANCE);
 		ModuleManager.register(PartyFinderStatsModule.INSTANCE);
+		ModuleManager.register(DungeonHelperModule.INSTANCE);
+		ModuleManager.register(BoxDoorsModule.INSTANCE);
 		ModuleManager.register(TikiHelperModule.INSTANCE);
 		ModuleManager.register(SafariFloorDropsModule.INSTANCE);
 		ModuleManager.register(HideyhoFinderModule.INSTANCE);
@@ -71,10 +82,12 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		ModuleManager.register(MacrosModule.INSTANCE);
 		ModuleManager.register(VisualModule.INSTANCE);
 		ModuleManager.register(MobHighlightModule.INSTANCE);
+		ModuleManager.register(DungeonMobEspModule.INSTANCE);
 		ModuleManager.register(BlockEspModule.INSTANCE);
 		ModuleManager.register(InventoryButtonsModule.INSTANCE);
 		HudManager.register(TreeTrackerModule.INSTANCE, 0.01f, 0.10f);
 		HudManager.register(TreeNotifierModule.INSTANCE, 0.5f, 0.28f);
+		HudManager.register(DungeonHelperModule.INSTANCE, 0.50f, 0.03f);
 		HudManager.register(SlotIdsModule.INSTANCE, 0.72f, 0.72f);
 		// Must come after registration: this is what restores saved settings, HUD positions and
 		// gift counts onto the things that were just registered.
@@ -85,9 +98,12 @@ public class GeilerAddonsClient implements ClientModInitializer {
 		HypixelModApi.init();
 		ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> {
 			String content = ChatText.plain(message.getString()).trim();
+			DungeonContextTracker.onChatMessage(content);
 			PartyListBackend.onChatMessage(content);
 			GardenPlotBordersModule.INSTANCE.onChatMessage(content);
 			PartyFinderStatsModule.INSTANCE.onChatMessage(content);
+			DungeonHelperModule.INSTANCE.onChatMessage(content);
+			BoxDoorsModule.INSTANCE.onChatMessage(content);
 			I4HelperModule.INSTANCE.onChatMessage(content);
 			TikiHelperModule.INSTANCE.onChatMessage(content);
 			TreeTrackerModule.INSTANCE.onChatMessage(content);
@@ -97,8 +113,13 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			boolean suppress = TreeNotifierModule.INSTANCE.onChatMessage(content, message);
 			return overlay || !suppress;
 		});
-
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			// Whole-profile import/reset pauses live feature mutation until its disk transaction and
+			// client-thread reload finish, so no periodic writer can race the installed profile.
+			if (ConfigTransferService.isBusy()) return;
+			boolean dungeonMobEspEnabled = DungeonMobEspModule.INSTANCE.isEnabled();
+			boolean mapGeometryConsumerEnabled = dungeonMobEspEnabled || BoxDoorsModule.INSTANCE.isEnabled();
+			DungeonContextTracker.tick(client, mapGeometryConsumerEnabled, dungeonMobEspEnabled);
 			String logFailure = GeilerAddonsLog.failure();
 			if (logFailure == null) reportedLogFailure = null;
 			if (logFailure != null && !logFailure.equals(reportedLogFailure) && client.gui != null) {
@@ -109,6 +130,9 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			PartyListBackend.tick();
 			AutoKickModule.INSTANCE.tick();
 			PartyFinderStatsModule.INSTANCE.tick();
+			DungeonRoomTracker.tick(client, dungeonMobEspEnabled);
+			DungeonHelperModule.INSTANCE.tick();
+			BoxDoorsModule.INSTANCE.tick();
 			// After the island, which is what decides whether a biome lookup is worth doing.
 			SafariBiome.tick();
 			TorrhusPresence.tick();
@@ -123,21 +147,28 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			PestHighlighterModule.INSTANCE.tick();
 			GardenPlotBordersModule.INSTANCE.tick();
 			MobHighlightModule.INSTANCE.tick();
+			DungeonMobEspModule.INSTANCE.tick();
 			BlockEspModule.INSTANCE.tick();
 			InventoryButtonsModule.INSTANCE.tick();
 			// Releases any chat line held back while the mod worked out whether it opened a gift
 			// block, so nothing can be withheld for longer than a tick.
 			TreeNotifierModule.INSTANCE.tick();
 			MacrosModule.INSTANCE.tick();
+			DungeonGuideStore.tick();
 			ModConfig.flushIfDirty();
 		});
 		// Quitting cleanly must not drop the gifts counted since the last debounced write.
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
 			MacroRunner.cancel("client stopping");
+			DungeonMobEspModule.INSTANCE.clearShadowAssassinPackets();
 			DungeonStatsService.close();
 			ModConfig.flushNow();
+			DungeonGuideStore.flush();
+			ClientJsonFile.flush();
 			GeilerAddonsLog.close();
 		});
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) ->
+			DungeonMobEspModule.INSTANCE.clearShadowAssassinPackets());
 		LevelRenderEvents.AFTER_TRANSLUCENT_FEATURES.register(context -> {
 			I4HelperModule.INSTANCE.render(context);
 			TikiHelperModule.INSTANCE.render(context);
@@ -146,7 +177,10 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			SparklingCritterModule.INSTANCE.render(context);
 			PestHighlighterModule.INSTANCE.render(context);
 			GardenPlotBordersModule.INSTANCE.render(context);
+			DungeonHelperModule.INSTANCE.render(context);
+			BoxDoorsModule.INSTANCE.render(context);
 			MobHighlightModule.INSTANCE.render(context);
+			DungeonMobEspModule.INSTANCE.render(context);
 			BlockEspModule.INSTANCE.render(context);
 		});
 		HudElementRegistry.addFirst(GeilerAddons.id("projected_label_frame"),
@@ -157,6 +191,8 @@ public class GeilerAddonsClient implements ClientModInitializer {
 			(graphics, tickCounter) -> TikiHelperModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("mob_highlight_labels"),
 			(graphics, tickCounter) -> MobHighlightModule.INSTANCE.renderHud(graphics));
+		HudElementRegistry.addLast(GeilerAddons.id("dungeon_mob_esp"),
+			(graphics, tickCounter) -> DungeonMobEspModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("block_esp_labels"),
 			(graphics, tickCounter) -> BlockEspModule.INSTANCE.renderHud(graphics));
 		HudElementRegistry.addLast(GeilerAddons.id("sparkling_labels"),

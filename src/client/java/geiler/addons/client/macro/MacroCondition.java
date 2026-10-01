@@ -7,7 +7,8 @@ import java.util.Locale;
 /** Immutable condition tree used by If/Else and Wait-Until steps. */
 public sealed interface MacroCondition permits MacroCondition.Always, MacroCondition.Screen,
 	MacroCondition.Slot, MacroCondition.Item, MacroCondition.Chat, MacroCondition.World,
-	MacroCondition.All, MacroCondition.Any, MacroCondition.Not, MacroCondition.Variable {
+	MacroCondition.All, MacroCondition.Any, MacroCondition.Not, MacroCondition.Variable,
+	MacroCondition.Hypixel {
 	record Always(boolean expected) implements MacroCondition {
 	}
 
@@ -88,6 +89,25 @@ public sealed interface MacroCondition permits MacroCondition.Always, MacroCondi
 				? null : globalVariableId.substring(0, Math.min(64, globalVariableId.length()));
 		}
 		public boolean comparesGlobal() { return globalVariableId != null; }
+	}
+
+	record Hypixel(Field field, Operator operator, String expected, String argument, int plotId)
+		implements MacroCondition {
+		public enum Field {
+			ISLAND, DUNGEON_FLOOR, PARTY_MEMBER, PARTY_HAS_MEMBER, PARTY_SIZE, PARTY_LEADER,
+			GARDEN_PEST_STATUS, GARDEN_PEST_COUNT
+		}
+		public enum Operator { EQUALS, NOT_EQUALS, CONTAINS, GREATER_THAN, GREATER_OR_EQUAL, LESS_THAN, LESS_OR_EQUAL }
+		public Hypixel(Field field, Operator operator, String expected) {
+			this(field, operator, expected, "", -1);
+		}
+		public Hypixel {
+			if (field == null) field = Field.ISLAND;
+			if (operator == null) operator = Operator.EQUALS;
+			expected = expected == null ? "" : expected.substring(0, Math.min(128, expected.length()));
+			argument = argument == null ? "" : argument.substring(0, Math.min(32, argument.length()));
+			if (plotId < -1 || plotId > 24) plotId = -1;
+		}
 	}
 
 	record All(List<MacroCondition> children) implements MacroCondition {

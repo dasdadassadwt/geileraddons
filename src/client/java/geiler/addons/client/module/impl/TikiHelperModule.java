@@ -201,11 +201,12 @@ public final class TikiHelperModule extends Module {
 		group(
 			new SettingGroup("Waypoints", s.waypoints, s.validColor, s.invalidColor, s.scanInterval,
 				s.tracer, s.tracerColor, s.tracerWidth),
-			new SettingGroup("Solver", s.solver, s.leftColor, s.rightColor, s.lockedColor, s.range,
-				s.labelHeight, s.textSize, s.showLocked, s.showUnknown, s.worldLabels, s.hypixelRule,
-				s.showFuturePlan, s.futureColor),
-			SettingGroup.debug("Debug Logging", s.debugLogging, s.trackRadius, s.trackSounds,
+			new SettingGroup("Solver", s.solver, s.hypixelRule, s.trackRadius, s.trackSounds,
 				s.trackChat, s.verifySolver, s.echoToChat),
+			new SettingGroup("Appearance", s.leftColor, s.rightColor, s.lockedColor, s.range,
+				s.labelHeight, s.textSize, s.showLocked, s.showUnknown, s.worldLabels,
+				s.showFuturePlan, s.futureColor),
+			SettingGroup.debug("Debug Logging", s.debugLogging),
 			new SettingGroup("Coordinates", s.manageCoords)
 		);
 	}
@@ -216,10 +217,10 @@ public final class TikiHelperModule extends Module {
 		final BooleanSetting solver = new BooleanSetting("Solver", true);
 		final BooleanSetting debugLogging = BooleanSetting.debug("Debug Logging", false);
 
-		final ColorSetting validColor = new ColorSetting("Valid Color", 0, 255, 0, 128);
-		final ColorSetting invalidColor = new ColorSetting("Invalid Color", 255, 0, 0, 128);
+		final ColorSetting validColor = new ColorSetting("Valid Color", 0, 255, 0, 19);
+		final ColorSetting invalidColor = new ColorSetting("Invalid Color", 255, 0, 0, 20);
 		final ColorSetting tracerColor = new ColorSetting("Tracer Color", 0, 255, 0, 255);
-		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 40, true);
+		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 20, true);
 		final NumberSetting tracerWidth = new NumberSetting("Tracer Width", 0.5f, 10.0f, 2.0f);
 		final BooleanSetting tracer = new BooleanSetting("Tracer Line", true);
 

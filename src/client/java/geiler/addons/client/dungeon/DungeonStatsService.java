@@ -5,10 +5,10 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import geiler.addons.GeilerAddons;
+import geiler.addons.client.net.BoundedHttpBodyReader;
 import net.minecraft.client.Minecraft;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
@@ -33,7 +33,6 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -82,19 +81,13 @@ public final class DungeonStatsService {
 	private static final DungeonRequestLimiter REQUEST_LIMITER = new DungeonRequestLimiter(
 		MAX_QUEUED_LOOKUPS + 1, LOOKUP_START_INTERVAL_NANOS);
 	private static final DungeonRequestLimiter HTTP_REQUEST_PACER = new DungeonRequestLimiter(
-		1, TimeUnit.MILLISECONDS.toNanos(350));
+		1, TimeUnit.MILLISECONDS.toNanos(800));
 	private static final ExecutorService EXECUTOR = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
 		new ArrayBlockingQueue<>(MAX_QUEUED_LOOKUPS), r -> {
 		Thread thread = new Thread(r, "GeilerAddons dungeon stats");
 		thread.setDaemon(true);
 		return thread;
 		}, new ThreadPoolExecutor.AbortPolicy());
-	/** Network requests started after UUID resolution must not block the profile worker threads. */
-	private static final ExecutorService HTTP_EXECUTOR = Executors.newFixedThreadPool(2, r -> {
-		Thread thread = new Thread(r, "GeilerAddons dungeon stats HTTP");
-		thread.setDaemon(true);
-		return thread;
-	});
 	private static final HttpClient HTTP = HttpClient.newBuilder()
 		.connectTimeout(TIMEOUT)
 		.followRedirects(HttpClient.Redirect.NEVER)
@@ -174,7 +167,6 @@ public final class DungeonStatsService {
 		IN_FLIGHT.clear();
 		CACHE.clear();
 		EXECUTOR.shutdownNow();
-		HTTP_EXECUTOR.shutdownNow();
 	}
 
 	private static void pruneCache(long now) {
@@ -214,19 +206,17 @@ public final class DungeonStatsService {
 			}
 			UUID uuid = UUID.fromString(withDashes(id));
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Loading profile {} ({})", returnedName == null ? name : returnedName, id);
-			// The profile and dedicated secrets endpoint are independent. Fetch them together so a
-			// party scan is not serialized behind two large profile responses per player.
-			CompletableFuture<JsonObject> profileFuture = CompletableFuture.supplyAsync(
-				() -> getJsonUnchecked(API_BASE + "get/" + id), HTTP_EXECUTOR);
-			CompletableFuture<JsonElement> secretsFuture = CompletableFuture.supplyAsync(
-				() -> getJsonElementUnchecked(API_BASE + "secrets/" + id), HTTP_EXECUTOR);
-			JsonObject profile = profileFuture.join();
-			Long endpointSecrets = readLong(secretsFuture);
+			// A profile usually already includes total secrets. Fetching the dedicated endpoint for
+			// every party member doubled traffic and triggered the provider's HTTP 429 limit.
+			JsonObject profile = getJson(API_BASE + "get/" + id);
 			JsonObject member = profileMember(profile, id);
 			if (member == null) {
 				GeilerAddons.LOGGER.debug("[Dungeon Stats] No profile member data for {}", name);
 				return Result.failure("Profile data is unavailable");
 			}
+			NumberValue profileSecrets = findNumber(object(member, "dungeons"),
+				"total_secrets", "totalSecrets", "secrets", "secrets_found");
+			Long endpointSecrets = profileSecrets.present() ? null : fetchEndpointSecrets(id);
 
 			DungeonStats stats = parseStats(returnedName == null ? name : returnedName, uuid, profile, member,
 				endpointSecrets);
@@ -245,32 +235,14 @@ public final class DungeonStatsService {
 		}
 	}
 
-	private static Long readLong(CompletableFuture<JsonElement> future) {
+	private static Long fetchEndpointSecrets(String id) {
 		try {
-			JsonElement value = future.join();
-			if (value == null || !value.isJsonPrimitive()) return null;
-			return value.getAsLong();
-		} catch (RuntimeException exception) {
+			JsonElement value = getJsonElement(API_BASE + "secrets/" + id);
+			return value != null && value.isJsonPrimitive() ? value.getAsLong() : null;
+		} catch (IOException | InterruptedException | RuntimeException exception) {
+			if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
 			GeilerAddons.LOGGER.debug("[Dungeon Stats] Dedicated secrets lookup failed: {}", errorText(exception));
 			return null;
-		}
-	}
-
-	private static JsonObject getJsonUnchecked(String url) {
-		try {
-			return getJson(url);
-		} catch (IOException | InterruptedException exception) {
-			if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
-			throw new RuntimeException(exception);
-		}
-	}
-
-	private static JsonElement getJsonElementUnchecked(String url) {
-		try {
-			return getJsonElement(url);
-		} catch (IOException | InterruptedException exception) {
-			if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
-			throw new RuntimeException(exception);
 		}
 	}
 
@@ -283,8 +255,9 @@ public final class DungeonStatsService {
 	private static JsonElement getJsonElement(String url) throws IOException, InterruptedException {
 		URI current = URI.create(url);
 		if (!allowedUri(current)) throw new IOException("Refusing untrusted endpoint " + current.getHost());
-		HttpResponse<InputStream> response;
+		HttpResponse<byte[]> response;
 		int redirects = 0;
+		int rateLimitRetries = 0;
 		while (true) {
 			long requestDelay = HTTP_REQUEST_PACER.reserveStartDelayNanos(System.nanoTime());
 			if (requestDelay > 0) TimeUnit.NANOSECONDS.sleep(requestDelay);
@@ -292,41 +265,37 @@ public final class DungeonStatsService {
 				.header("User-Agent", "GeilerAddons")
 				.header("Accept", "application/json")
 				.GET().build();
-			response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
+			response = BoundedHttpBodyReader.send(HTTP, request, MAX_RESPONSE_BYTES, TIMEOUT);
 			int status = response.statusCode();
+			if (status == 429 && rateLimitRetries == 0) {
+				long retryDelayMillis = retryAfterMillis(response);
+				if (retryDelayMillis >= 0) {
+					rateLimitRetries++;
+					TimeUnit.MILLISECONDS.sleep(retryDelayMillis);
+					continue;
+				}
+			}
 			if (status < 300 || status >= 400) break;
 			if (redirects++ >= 1) {
-				try (InputStream ignored = response.body()) {
-					// Close the response before rejecting an unexpected redirect chain.
-				}
 				throw new IOException("Too many redirects");
 			}
 			String location = response.headers().firstValue("Location").orElse(null);
-			try (InputStream ignored = response.body()) {
-				// The redirect body is not part of the profile contract.
-			}
 			if (location == null) throw new IOException("Redirect had no location");
 			URI next = current.resolve(location);
 			if (!allowedUri(next)) throw new IOException("Refusing redirected endpoint " + next.getHost());
 			current = next;
 		}
 		if (!allowedUri(response.uri())) {
-			try (InputStream ignored = response.body()) {
-				// Close a response that should never have been accepted.
-			}
 			throw new IOException("Refusing redirected endpoint " + response.uri().getHost());
 		}
 		GeilerAddons.LOGGER.debug("[Dungeon Stats] GET {} -> {} (final URI {})", url, response.statusCode(), response.uri());
 		if (response.statusCode() < 200 || response.statusCode() >= 300) {
-			try (InputStream ignored = response.body()) {
-				// Drain nothing on an error response; the status is enough to classify it.
-			}
-			throw new IOException("HTTP " + response.statusCode());
+			String retryAfter = response.statusCode() == 429
+				? response.headers().firstValue("Retry-After").map(value -> " (retry after " + value + ")").orElse("")
+				: "";
+			throw new IOException("HTTP " + response.statusCode() + retryAfter);
 		}
-		String body;
-		try (InputStream input = response.body()) {
-			body = readLimited(input, MAX_RESPONSE_BYTES);
-		}
+		String body = new String(response.body(), StandardCharsets.UTF_8);
 		JsonElement parsed;
 		try {
 			parsed = JsonParser.parseString(body);
@@ -336,27 +305,31 @@ public final class DungeonStatsService {
 		return parsed;
 	}
 
+	/** Retry one short provider backoff; longer Retry-After values are surfaced to manual retry. */
+	private static long retryAfterMillis(HttpResponse<?> response) {
+		String value = response.headers().firstValue("Retry-After").orElse(null);
+		if (value == null || value.isBlank()) return 1_000;
+		long waitMillis;
+		try {
+			waitMillis = Math.multiplyExact(Long.parseLong(value.trim()), 1_000L);
+		} catch (NumberFormatException | ArithmeticException ignored) {
+			try {
+				java.time.Instant retryAt = java.time.ZonedDateTime.parse(value.trim(),
+					java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+				waitMillis = Math.max(0L, java.time.Duration.between(java.time.Instant.now(), retryAt).toMillis());
+			} catch (java.time.format.DateTimeParseException invalidDate) {
+				return -1L;
+			}
+		}
+		return waitMillis <= 2_000 ? waitMillis : -1L;
+	}
+
 	private static boolean allowedUri(URI uri) {
 		if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())) return false;
 		String host = uri.getHost();
 		return "api.minecraftservices.com".equalsIgnoreCase(host)
 			|| "api.odtheking.com".equalsIgnoreCase(host)
 			|| "hypixel.odtheking.com".equalsIgnoreCase(host);
-	}
-
-	private static String readLimited(InputStream input, int maximumBytes) throws IOException {
-		ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(maximumBytes, 64 * 1024));
-		byte[] buffer = new byte[8192];
-		int total = 0;
-		while (true) {
-			int read = input.read(buffer);
-			if (read < 0) break;
-			if (read == 0) continue;
-			total += read;
-			if (total > maximumBytes) throw new IOException("Response exceeded " + maximumBytes + " bytes");
-			output.write(buffer, 0, read);
-		}
-		return output.toString(StandardCharsets.UTF_8);
 	}
 
 	private static JsonObject profileMember(JsonObject root, String uuid) {
@@ -934,6 +907,16 @@ public final class DungeonStatsService {
 		long experienceForLevel, long overflowExperience, boolean capped) {
 	}
 
+	/** Formats the capped API progression, optionally showing level-50 overflow to two decimals. */
+	public static String formatCatacombsLevel(long totalExperience, boolean showOverflow) {
+		CataProgress progress = catacombsProgress(totalExperience);
+		if (!showOverflow || !progress.capped() || progress.overflowExperience() <= 0) {
+			return Integer.toString(progress.level());
+		}
+		double level = 50.0 + progress.overflowExperience() / 200_000_000.0;
+		return String.format(Locale.ROOT, "%.2f", level);
+	}
+
 	/** Breaks down the API's raw Catacombs XP without discarding level-50 overflow. */
 	public static CataProgress catacombsProgress(long totalExperience) {
 		long xp = Math.max(0, totalExperience);
@@ -1418,7 +1401,7 @@ public final class DungeonStatsService {
 				case 5 -> input.readFloat();
 				case 6 -> input.readDouble();
 				case 7 -> {
-					NbtTextReader.skipArray(input, input.readInt(), 1);
+					NbtTextReader.skipArray(input, input.readInt(), 1, budget);
 					yield null;
 				}
 				case 8 -> readString(input, budget);
@@ -1445,11 +1428,11 @@ public final class DungeonStatsService {
 					yield compound;
 				}
 				case 11 -> {
-					NbtTextReader.skipArray(input, input.readInt(), 4);
+					NbtTextReader.skipArray(input, input.readInt(), 4, budget);
 					yield null;
 				}
 				case 12 -> {
-					NbtTextReader.skipArray(input, input.readInt(), 8);
+					NbtTextReader.skipArray(input, input.readInt(), 8, budget);
 					yield null;
 				}
 				default -> throw new IOException("Unknown NBT tag " + type);
@@ -1487,7 +1470,7 @@ public final class DungeonStatsService {
 				case 4 -> input.readLong();
 				case 5 -> input.readFloat();
 				case 6 -> input.readDouble();
-				case 7 -> skipBytes(input, input.readInt());
+				case 7 -> skipBytes(input, input.readInt(), budget);
 				case 8 -> {
 					String value = readString(input, budget);
 					String normalizedKey = key == null ? "" : key.toLowerCase(Locale.ROOT);
@@ -1507,8 +1490,8 @@ public final class DungeonStatsService {
 						readPayload(input, childType, out, budget, depth + 1, childKey);
 					}
 				}
-				case 11 -> skipArray(input, input.readInt(), 4);
-				case 12 -> skipArray(input, input.readInt(), 8);
+				case 11 -> skipArray(input, input.readInt(), 4, budget);
+				case 12 -> skipArray(input, input.readInt(), 8, budget);
 				default -> throw new IOException("Unknown NBT tag " + type);
 			}
 		}
@@ -1523,15 +1506,24 @@ public final class DungeonStatsService {
 			return new String(bytes, StandardCharsets.UTF_8);
 		}
 
-		private static void skipArray(DataInputStream input, int count, int bytesPerValue) throws IOException {
-			if (count < 0 || (long) count * bytesPerValue > MAX_NBT_BYTES) {
+		private static void skipArray(DataInputStream input, int count, int bytesPerValue,
+			NbtBudget budget) throws IOException {
+			long byteCount = (long) count * bytesPerValue;
+			if (count < 0 || byteCount > MAX_NBT_BYTES || byteCount > Integer.MAX_VALUE
+				|| !budget.consumeBytes((int) byteCount)) {
 				throw new IOException("NBT array limit exceeded");
 			}
-			skipBytes(input, count * bytesPerValue);
+			skipRawBytes(input, (int) byteCount);
 		}
 
-		private static void skipBytes(DataInputStream input, int count) throws IOException {
-			if (count < 0 || count > MAX_NBT_BYTES) throw new IOException("NBT byte limit exceeded");
+		private static void skipBytes(DataInputStream input, int count, NbtBudget budget) throws IOException {
+			if (count < 0 || count > MAX_NBT_BYTES || !budget.consumeBytes(count)) {
+				throw new IOException("NBT byte limit exceeded");
+			}
+			skipRawBytes(input, count);
+		}
+
+		private static void skipRawBytes(DataInputStream input, int count) throws IOException {
 			input.skipNBytes(count);
 		}
 	}
@@ -1575,6 +1567,14 @@ public final class DungeonStatsService {
 			int read = super.read(bytes, offset, allowed);
 			if (read > 0) remaining -= read;
 			return read;
+		}
+
+		@Override
+		public long skip(long count) throws IOException {
+			if (count <= 0 || remaining <= 0) return 0L;
+			long skipped = super.skip(Math.min(count, remaining));
+			if (skipped > 0) remaining -= (int) skipped;
+			return skipped;
 		}
 	}
 }

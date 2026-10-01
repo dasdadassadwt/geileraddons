@@ -72,8 +72,17 @@ public final class PestHighlighterModule extends Module {
 
 	/** Rebuilt wholesale by the client-thread scan and consumed by world/HUD rendering. */
 	private final List<Sighting> sightings = new ArrayList<>();
-	/** Negative detections are cached too, so ordinary ArmorStands are cheap on every tick. */
-	private final PestDetectionCache detectionCache = new PestDetectionCache();
+	/**
+	 * The immutable list the render and HUD hooks read.
+	 *
+	 * <p>The tick hook rebuilds the working list in two steps - clear, then add - so publishing that
+	 * same list meant a reader could observe it half-updated, and every reader shared mutable state
+	 * with the writer. A published copy is replaced whole instead, which is the same contract the
+	 * plot-border module already uses for its snapshots.
+	 */
+	private volatile List<Sighting> publishedSightings = List.of();
+	/** Shared with the plot-border fallback scan: the same heads are classified once per tick. */
+	private final PestDetectionCache detectionCache = PestDetectionCache.SHARED;
 	private int ticksSinceScan;
 	private boolean wasActive;
 	private ClientLevel lastLevel;
@@ -109,35 +118,46 @@ public final class PestHighlighterModule extends Module {
 
 		group(
 			new SettingGroup("Display", s.box, s.circle, s.tracer, s.showName, s.depthCheck, s.scanInterval),
-			new SettingGroup("Box", s.outlineColor, s.outlineWidth, s.fillColor),
-			new SettingGroup("Circle", s.circleColor, s.circleWidth, s.circleRadius, s.circleSpeed, s.ringCount),
-			new SettingGroup("Tracer", s.tracerColor, s.tracerWidth),
-			new SettingGroup("Name", s.nameColor, s.labelSize)
+			new SettingGroup("Appearance").containing(
+				new SettingGroup("Box", s.outlineColor, s.outlineWidth, s.fillColor),
+				new SettingGroup("Ring", s.circleColor, s.circleWidth, s.circleRadius, s.circleSpeed, s.ringCount),
+				new SettingGroup("Tracer", s.tracerColor, s.tracerWidth),
+				new SettingGroup("Name", s.nameColor, s.labelSize))
 		);
+	}
+
+	@Override
+	public boolean isSettingVisible(geiler.addons.client.module.Setting setting) {
+		if (setting == outlineColor || setting == outlineWidth || setting == fillColor) return box.value();
+		if (setting == circleColor || setting == circleWidth || setting == circleRadius
+			|| setting == circleSpeed || setting == ringCount) return circle.value();
+		if (setting == tracerColor || setting == tracerWidth) return tracer.value();
+		if (setting == nameColor || setting == labelSize) return showName.value();
+		return true;
 	}
 
 	/** Carrier used to construct the settings once and pass the same instances to Module and groups. */
 	private static final class Settings {
-		final BooleanSetting box = new BooleanSetting("Box", true);
+		final BooleanSetting box = new BooleanSetting("Box", false);
 		// Keep the persisted key "Circle" for existing configs while naming the feature the way it
 		// behaves: this is the animated ring mode users connect the tracer to.
-		final BooleanSetting circle = new BooleanSetting("Circle", "Ring Mode", false);
-		final BooleanSetting tracer = new BooleanSetting("Tracer", false);
-		final BooleanSetting showName = new BooleanSetting("Show Name", true);
-		final BooleanSetting depthCheck = BooleanSetting.cheat("Depth Check", "Depth Check", false, true);
-		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 1, true);
+		final BooleanSetting circle = new BooleanSetting("Circle", "Ring Mode", true);
+		final BooleanSetting tracer = new BooleanSetting("Tracer", true);
+		final BooleanSetting showName = new BooleanSetting("Show Name", false);
+		final BooleanSetting depthCheck = new BooleanSetting("Depth Check", true);
+		final NumberSetting scanInterval = new NumberSetting("Scan Interval", 1, 200, 20, true);
 
 		final ColorSetting outlineColor = new ColorSetting("Outline Color", 182, 47, 0, 255);
 		final NumberSetting outlineWidth = new NumberSetting("Outline Width", 0.5f, 5.0f, 2.0f);
 		final ColorSetting fillColor = new ColorSetting("Fill Color", 182, 47, 0, 60);
 
-		final ColorSetting circleColor = new ColorSetting("Circle Color", 182, 47, 0, 255);
-		final NumberSetting circleWidth = new NumberSetting("Circle Width", 0.5f, 5.0f, 2.0f);
-		final NumberSetting circleRadius = new NumberSetting("Circle Radius", 0.1f, 3.0f, 0.6f);
-		final NumberSetting circleSpeed = new NumberSetting("Circle Speed", 0.1f, 4.0f, 0.8f);
-		final NumberSetting ringCount = new NumberSetting("Ring Count", 1, 8, 3, true);
+		final ColorSetting circleColor = new ColorSetting("Circle Color", 0, 167, 255, 255);
+		final NumberSetting circleWidth = new NumberSetting("Circle Width", 0.5f, 5.0f, 5.0f);
+		final NumberSetting circleRadius = new NumberSetting("Circle Radius", 0.1f, 3.0f, 0.99761915f);
+		final NumberSetting circleSpeed = new NumberSetting("Circle Speed", 0.1f, 4.0f, 0.20129871f);
+		final NumberSetting ringCount = new NumberSetting("Ring Count", 1, 8, 1, true);
 
-		final ColorSetting tracerColor = new ColorSetting("Tracer Color", 182, 47, 0, 255);
+		final ColorSetting tracerColor = new ColorSetting("Tracer Color", 0, 201, 255, 255);
 		final NumberSetting tracerWidth = new NumberSetting("Tracer Width", 0.5f, 5.0f, 2.0f);
 
 		final ColorSetting nameColor = new ColorSetting("Name Color", 182, 47, 0, 255);
@@ -151,7 +171,7 @@ public final class PestHighlighterModule extends Module {
 
 	@Override
 	public boolean isActive() {
-		return isEnabled() && HypixelModApi.currentIsland() == Island.GARDEN;
+		return isEnabled() && HypixelModApi.onGarden();
 	}
 
 	@Override
@@ -167,10 +187,17 @@ public final class PestHighlighterModule extends Module {
 
 	private void reset() {
 		sightings.clear();
-		detectionCache.clear();
+		publishSightings();
+		// The detection cache is shared with the plot-border fallback scan, so it is not cleared
+		// here: switching one module off must not discard the other module's classifications.
 		ticksSinceScan = 0;
 		wasActive = false;
 		lastLevel = null;
+	}
+
+	/** Publishes the working list as one immutable replacement for the render hooks to read. */
+	private void publishSightings() {
+		publishedSightings = List.copyOf(sightings);
 	}
 
 	/** Runs on the client tick and never performs network or blocking work. */
@@ -187,13 +214,15 @@ public final class PestHighlighterModule extends Module {
 		if (level != lastLevel) {
 			lastLevel = level;
 			sightings.clear();
-			detectionCache.clear();
+			publishSightings();
 			ticksSinceScan = 0;
 		}
 		if (level == null || player == null) return;
 
 		// A pest disappears as soon as it is caught; do not keep its last box until the next sweep.
-		sightings.removeIf(sighting -> sighting.entity().isRemoved() || !sighting.entity().isAlive());
+		if (sightings.removeIf(sighting -> sighting.entity().isRemoved() || !sighting.entity().isAlive())) {
+			publishSightings();
+		}
 		if (++ticksSinceScan < scanInterval.intValue()) return;
 		ticksSinceScan = 0;
 		scan(level, player);
@@ -217,12 +246,14 @@ public final class PestHighlighterModule extends Module {
 		detectionCache.retainAll(visible);
 		sightings.clear();
 		sightings.addAll(found);
+		publishSightings();
 	}
 
 	// ---- rendering ----------------------------------------------------------------------
 
 	public void render(LevelRenderContext context) {
-		if (!isActive() || sightings.isEmpty()) return;
+		List<Sighting> visibleSightings = publishedSightings;
+		if (!isActive() || visibleSightings.isEmpty()) return;
 
 		Minecraft mc = Minecraft.getInstance();
 		Camera camera = mc.gameRenderer.getMainCamera();
@@ -235,7 +266,7 @@ public final class PestHighlighterModule extends Module {
 		double elapsedTicks = mc.level == null ? 0 : mc.level.getGameTime() + partialTick;
 		boolean drew = false;
 
-		for (Sighting sighting : sightings) {
+		for (Sighting sighting : visibleSightings) {
 			ArmorStand entity = sighting.entity();
 			if (entity.isRemoved() || !entity.isAlive()) continue;
 			AABB bounds = entity.getBoundingBox();
@@ -287,13 +318,14 @@ public final class PestHighlighterModule extends Module {
 
 	/** Projects pest names onto the HUD because 26.1's reachable level stages cannot draw Font text. */
 	public void renderHud(GuiGraphicsExtractor graphics) {
-		if (!isActive() || !showName.value() || sightings.isEmpty()) return;
+		List<Sighting> visibleSightings = publishedSightings;
+		if (!isActive() || !showName.value() || visibleSightings.isEmpty()) return;
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.level == null || mc.player == null || mc.options.hideGui) return;
 
 		Camera camera = mc.gameRenderer.getMainCamera();
 		float scale = labelSize.value();
-		for (Sighting sighting : sightings) {
+		for (Sighting sighting : visibleSightings) {
 			ArmorStand entity = sighting.entity();
 			if (entity.isRemoved() || !entity.isAlive()) continue;
 			String label = "Pest: " + sighting.kind().displayName();

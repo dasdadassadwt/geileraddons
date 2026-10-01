@@ -4,10 +4,12 @@ import geiler.addons.client.config.GeilerAddonsLog;
 import geiler.addons.client.enchanting.AutoExperimentAutomation;
 import geiler.addons.client.enchanting.AutoExperimentDelayRange;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
+import geiler.addons.client.enchanting.ExperimentClickGate;
 import geiler.addons.client.enchanting.ExperimentPhase;
 import geiler.addons.client.enchanting.ExperimentTier;
 import geiler.addons.client.enchanting.ExperimentType;
 import geiler.addons.client.enchanting.SolverView;
+import geiler.addons.client.enchanting.UltrasequencerSequenceExecutor;
 import geiler.addons.client.mixin.AbstractContainerScreenInvoker;
 import geiler.addons.client.module.BooleanSetting;
 import geiler.addons.client.module.Category;
@@ -22,6 +24,7 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.Slot;
 
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
 /** Automatically replays the shared Chronomatron and Ultrasequencer solutions. */
@@ -35,6 +38,7 @@ public final class AutoExperimentsModule extends Module {
 	private final NumberSetting maximumClickDelay;
 	private final BooleanSetting debug;
 	private final AutoExperimentAutomation automation = new AutoExperimentAutomation();
+	private final UltrasequencerSequenceExecutor ultrasequencerAutomation = new UltrasequencerSequenceExecutor();
 	private String reportedDecision = "";
 
 	private AutoExperimentsModule() {
@@ -55,19 +59,19 @@ public final class AutoExperimentsModule extends Module {
 		group(
 			new SettingGroup("Experiments", chronomatron, ultrasequencer),
 			new SettingGroup("Timing", firstClickDelay, minimumClickDelay, maximumClickDelay),
-			SettingGroup.debug("Diagnostics", debug)
+			new SettingGroup("Diagnostics", debug)
 		);
 	}
 
 	private static final class Settings {
 		final BooleanSetting chronomatron = new BooleanSetting("Chronomatron", true);
 		final BooleanSetting ultrasequencer = new BooleanSetting("Ultrasequencer", true);
-		final NumberSetting firstClickDelay = new NumberSetting("First Click Delay (ms)", 0, 2000, 360, true);
+		final NumberSetting firstClickDelay = new NumberSetting("First Click Delay (ms)", 0, 2000, 500, true);
 		final NumberSetting minimumClickDelay = new NumberSetting("Minimum Click Delay (ms)", 0, 2000,
 			AutoExperimentDelayRange.DEFAULT_MINIMUM_MILLIS, true);
 		final NumberSetting maximumClickDelay = new NumberSetting("Maximum Click Delay (ms)", 0, 2000,
 			AutoExperimentDelayRange.DEFAULT_MAXIMUM_MILLIS, true);
-		final BooleanSetting debug = BooleanSetting.debug("Debug Automation", false);
+		final BooleanSetting debug = new BooleanSetting("Debug Automation", false);
 	}
 
 	public boolean supports(ExperimentType type) {
@@ -98,16 +102,41 @@ public final class AutoExperimentsModule extends Module {
 		return maximumClickDelay;
 	}
 
+	/** Read-only Auto cursor for the matching live Ultrasequencer screen and solver solution. */
+	public Optional<UltrasequencerSequenceExecutor.ExecutionProgress> ultrasequencerPresentationProgress(
+		AbstractContainerScreen<?> screen, SolverView solverView) {
+		ExperimentController controller = ExperimentController.INSTANCE;
+		if (!isEnabled() || !supports(ExperimentType.ULTRASEQUENCER)
+			|| screen == null || Minecraft.getInstance().screen != screen
+			|| !controller.isAutoEligibleScreen(screen)) return Optional.empty();
+		ExperimentSolverModule.Session session = controller.session();
+		if (session == null || session.type != ExperimentType.ULTRASEQUENCER
+			|| session.attachedMenu != screen.getMenu()
+			|| screen.getMenu().containerId != session.menuId) return Optional.empty();
+		return ultrasequencerAutomation.presentationProgress(screen, screen.getMenu(),
+			controller.sessionGeneration(), solverView);
+	}
+
 	/** Runs after the shared controller has observed the current client tick. */
 	public void tick() {
+		GeilerAddonsLog.setModuleDiagnosticsEnabled(Category.ENCHANTING, name(), debug.value());
 		if (!isEnabled()) {
 			automation.reset();
+			ultrasequencerAutomation.reset();
 			reportInactive();
 			return;
 		}
 		Minecraft minecraft = Minecraft.getInstance();
 		AbstractContainerScreen<?> screen = minecraft.screen instanceof AbstractContainerScreen<?> container
 			? container : null;
+		ExperimentType screenType = screen == null ? null
+			: ExperimentType.fromTitle(screen.getTitle().getString()).orElse(null);
+		if (screenType == ExperimentType.ULTRASEQUENCER && supports(ExperimentType.ULTRASEQUENCER)) {
+			automation.reset();
+			tickUltrasequencer(screen);
+			return;
+		}
+		ultrasequencerAutomation.reset();
 		AbstractContainerMenu menu = screen == null ? null : screen.getMenu();
 		AutoExperimentAutomation.Snapshot snapshot = snapshot(screen);
 		long firstDelayNanos = firstClickDelay.intValue() * 1_000_000L;
@@ -213,27 +242,138 @@ public final class AutoExperimentsModule extends Module {
 		GeilerAddonsLog.write(Category.ENCHANTING, name(), 0L, line);
 	}
 
+	private void tickUltrasequencer(AbstractContainerScreen<?> screen) {
+		ExperimentController controller = ExperimentController.INSTANCE;
+		SolverView solverView = controller.view();
+		long now = System.nanoTime();
+		ExperimentSolverModule.Session session = controller.session();
+		boolean sessionValid = controller.isAutoEligibleScreen(screen) && session != null
+			&& session.attachedMenu == screen.getMenu() && session.type == ExperimentType.ULTRASEQUENCER
+			&& screen.getMenu().containerId == session.menuId;
+		UltrasequencerSequenceExecutor.Decision decision = ultrasequencerAutomation.tick(screen,
+			screen.getMenu(), controller.sessionGeneration(), sessionValid, solverView, now,
+			firstClickDelay.intValue() * 1_000_000L);
+		String pauseNotice = ultrasequencerAutomation.consumePauseNotice();
+		if (!pauseNotice.isBlank()) showMessage(pauseNotice);
+
+		if (decision.action() == UltrasequencerSequenceExecutor.Action.CLOSE_MENU) {
+			applyDecision(screen, screen.getMenu(), new AutoExperimentAutomation.Decision(
+				AutoExperimentAutomation.Action.CLOSE_MENU, -1, -1, ""));
+			reportUltrasequencer(screen, solverView, ultrasequencerAutomation.reason(), "milestone reached; close requested");
+			return;
+		}
+		if (decision.action() != UltrasequencerSequenceExecutor.Action.CLICK) {
+			if (decision.action() == UltrasequencerSequenceExecutor.Action.PAUSED) {
+				applyDecision(screen, screen.getMenu(), new AutoExperimentAutomation.Decision(
+					AutoExperimentAutomation.Action.PAUSED, -1, -1, ""));
+			}
+			reportUltrasequencer(screen, solverView, decision.explanation(), "not attempted");
+			return;
+		}
+
+		boolean dispatched = false;
+		String failure = "";
+		try {
+			dispatched = controller.dispatchAutoUltrasequencerClick(screen, decision.slotId(),
+				(slot, slotId, button, input) -> ((AbstractContainerScreenInvoker) (Object) screen)
+					.geileraddons$invokeSlotClicked(slot, slotId, button, input));
+		} catch (RuntimeException exception) {
+			// The executor already consumed this position, so an uncertain dispatch can never be resent.
+			failure = exception.getClass().getSimpleName()
+				+ (exception.getMessage() == null ? "" : ": " + exception.getMessage());
+		}
+		long nextDelayNanos = sampleBetweenClickDelayNanos();
+		UltrasequencerSequenceExecutor.Decision completion = ultrasequencerAutomation.dispatchFinished(
+			dispatched, System.nanoTime(), nextDelayNanos);
+		pauseNotice = ultrasequencerAutomation.consumePauseNotice();
+		if (!pauseNotice.isBlank()) showMessage(pauseNotice);
+		if (completion.action() == UltrasequencerSequenceExecutor.Action.CLOSE_MENU) {
+			applyDecision(screen, screen.getMenu(), new AutoExperimentAutomation.Decision(
+				AutoExperimentAutomation.Action.CLOSE_MENU, -1, -1, ""));
+			reportUltrasequencer(screen, controller.view(), ultrasequencerAutomation.reason(),
+				"milestone reached; close requested");
+			return;
+		}
+		String dispatch = failure.isEmpty() ? dispatched ? "vanilla dispatched" : "session guard rejected"
+			: "dispatch threw; paused without resend (" + failure + ")";
+		reportUltrasequencer(screen, controller.view(), ultrasequencerAutomation.reason(), dispatch);
+	}
+
+	private void reportUltrasequencer(AbstractContainerScreen<?> screen, SolverView view,
+		String decision, String dispatch) {
+		if (!debug.value()) {
+			reportedDecision = "";
+			return;
+		}
+		ExperimentController controller = ExperimentController.INSTANCE;
+		SolverView solverView = view == null ? SolverView.idle() : view;
+		String current = solverView.current()
+			.map(step -> step.index() + ":" + step.value() + "@" + step.slotIds()).orElse("none");
+		boolean solverOwner = ExperimentSolverModule.INSTANCE.isEnabled()
+			&& ExperimentSolverModule.INSTANCE.supports(ExperimentType.ULTRASEQUENCER);
+		String line = "ultrasequencer: screen=" + (screen == null ? "none" : screen.getTitle().getString())
+			+ ", decision=" + decision
+			+ ", solutionCursor=" + ultrasequencerAutomation.cursor()
+			+ "/" + ultrasequencerAutomation.sequenceLength()
+			+ ", solver=" + solverView.phase()
+			+ ", current=" + current
+			+ ", visual=" + solverView.visualIndex() + "/" + solverView.sequence().size()
+			+ ", paused=" + ultrasequencerAutomation.paused()
+			+ ", pauseReason=" + ultrasequencerAutomation.pauseReason()
+			+ ", owners=auto:" + (isEnabled() && supports(ExperimentType.ULTRASEQUENCER))
+			+ ",solver:" + solverOwner + ",active:" + controller.hasActiveOwner(ExperimentType.ULTRASEQUENCER)
+			+ ", pendingDelay=" + ultrasequencerAutomation.pendingDelay()
+			+ ", dispatch=" + dispatch;
+		String fingerprint = "ultra|" + line;
+		if (fingerprint.equals(reportedDecision)) return;
+		reportedDecision = fingerprint;
+		writeDiagnostic(line);
+	}
+
 	/** Cancels a queued click and pauses until the user toggles the module off and on. */
 	public void pauseAfterManualInput(AbstractContainerScreen<?> screen) {
 		if (!isEnabled() || !ExperimentController.INSTANCE.isAutoEligibleScreen(screen)) return;
-		String explanation = automation.pauseForManualInput();
+		ExperimentType type = ExperimentType.fromTitle(screen.getTitle().getString()).orElse(null);
+		String explanation;
+		if (type == ExperimentType.ULTRASEQUENCER) {
+			explanation = ultrasequencerAutomation.pauseForManualInput(screen, screen.getMenu(),
+				ExperimentController.INSTANCE.sessionGeneration());
+		} else {
+			explanation = automation.pauseForManualInput();
+		}
 		if (!explanation.isBlank()) showMessage(explanation);
 	}
 
-	/**
-	 * Intercepts a vanilla experiment-board click when the Solver replacement surface is disabled.
-	 * Correct manual clicks still use the shared guarded vanilla PICKUP route; wrong/stale slots are
-	 * swallowed after cancelling Auto so they can never turn into an accidental inventory click.
-	 */
+	/** Intercepts Chronomatron clicks when the Solver replacement surface is disabled. */
 	public boolean handleVanillaSlotClick(AbstractContainerScreen<?> screen, Slot clickedSlot,
 		int slotId, int button, ContainerInput input, ExperimentSolverModule.SlotClickDispatcher dispatcher) {
 		if (ExperimentController.INSTANCE.isDispatchingCustomClick()
 			|| !ExperimentController.INSTANCE.isAutoEligibleScreen(screen)
 			|| !isBoardSlot(screen.getMenu(), screen.getTitle().getString(), clickedSlot, slotId)) return false;
 
-		pauseAfterManualInput(screen);
+		ExperimentType type = ExperimentType.fromTitle(screen.getTitle().getString()).orElse(null);
+		if (type == ExperimentType.ULTRASEQUENCER) {
+			pauseAfterManualInput(screen);
+			return false;
+		}
+		boolean correctStep = button == 0 && input == ContainerInput.PICKUP
+			&& ExperimentController.INSTANCE.isExpectedStepClick(slotId);
+		// Only a click that is not the step the solver wants counts as the player taking over. A
+		// correct one is the player doing the same thing automation would have done, and pausing
+		// there cancelled the queued click.
+		if (!correctStep) pauseAfterManualInput(screen);
 		if (button == 0 && input == ContainerInput.PICKUP) {
-			ExperimentController.INSTANCE.dispatchSequenceClick(screen, slotId, dispatcher);
+			ExperimentClickGate.SequenceDispatchResult result =
+				ExperimentController.INSTANCE.dispatchManualSequenceClick(screen, slotId, dispatcher);
+			if (correctStep) {
+				if (result.progressAdvanced()) {
+					AutoExperimentAutomation.Decision synchronizedStep = automation.synchronizeAfterManualProgress(
+						snapshot(screen), System.nanoTime(), sampleBetweenClickDelayNanos());
+					applyDecision(screen, screen.getMenu(), synchronizedStep);
+				} else {
+					pauseAfterManualInput(screen);
+				}
+			}
 		}
 		return true;
 	}
@@ -241,6 +381,7 @@ public final class AutoExperimentsModule extends Module {
 	@Override
 	protected void onEnable() {
 		automation.reset();
+		ultrasequencerAutomation.reset();
 		Minecraft minecraft = Minecraft.getInstance();
 		if (minecraft.screen instanceof AbstractContainerScreen<?> screen) {
 			ExperimentController.INSTANCE.onScreenOpened(screen);
@@ -250,6 +391,7 @@ public final class AutoExperimentsModule extends Module {
 	@Override
 	protected void onDisable() {
 		automation.reset();
+		ultrasequencerAutomation.reset();
 		ExperimentController.INSTANCE.onOwnerDisabled();
 	}
 
@@ -314,6 +456,11 @@ public final class AutoExperimentsModule extends Module {
 			&& ExperimentBoardGeometry.forExperiment(type, tier).containsSlot(slotId);
 	}
 
+	private long sampleBetweenClickDelayNanos() {
+		return new AutoExperimentDelayRange(minimumClickDelay.intValue(), maximumClickDelay.intValue())
+			.sampleNanos(bound -> ThreadLocalRandom.current().nextLong(bound));
+	}
+
 	private void showPause(AutoExperimentAutomation.Decision decision) {
 		if (decision != null && decision.action() == AutoExperimentAutomation.Action.PAUSED
 			&& !decision.explanation().isBlank()) showMessage(decision.explanation());
@@ -336,4 +483,5 @@ public final class AutoExperimentsModule extends Module {
 			minecraft.gui.getChat().addClientSystemMessage(Component.literal("[GeilerAddons] " + message));
 		}
 	}
+
 }

@@ -11,6 +11,7 @@ import geiler.addons.client.enchanting.AutoExperimentDelayRange;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.macro.MacroDefinition;
 import geiler.addons.client.macro.MacroFunction;
+import geiler.addons.client.macro.MacroRunner;
 import geiler.addons.client.macro.MacroScript;
 import geiler.addons.client.macro.MacroValue;
 import geiler.addons.client.macro.MacroTriggerContext;
@@ -25,15 +26,19 @@ import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.TextSetting;
 import geiler.addons.client.module.impl.MobHighlight;
 import geiler.addons.client.module.impl.MobHighlightModule;
+import geiler.addons.client.module.impl.DungeonMobEspModule;
+import geiler.addons.client.module.impl.DungeonMobEspKeybindMigration;
 import geiler.addons.client.module.impl.BlockEspEntry;
 import geiler.addons.client.module.impl.BlockEspModule;
 import geiler.addons.client.module.impl.AutoExperimentsModule;
 import geiler.addons.client.module.impl.GeneralModule;
+import geiler.addons.client.module.impl.GardenPlotBordersModule;
 import geiler.addons.client.module.impl.InventoryButtonPlacement;
 import geiler.addons.client.module.impl.InventoryButtonsModule;
 import geiler.addons.client.module.impl.MacrosModule;
 import geiler.addons.client.module.impl.SlotIdsModule;
 import geiler.addons.client.module.impl.TreeTrackerModule;
+import geiler.addons.client.module.impl.VisualModule;
 import geiler.addons.client.tree.TreeStats;
 import geiler.addons.client.tree.TreeType;
 import net.fabricmc.loader.api.FabricLoader;
@@ -44,7 +49,9 @@ import com.mojang.blaze3d.platform.InputConstants;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
@@ -57,13 +64,19 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.Set;
 
 /** Persists module enabled-state, settings and the Tiki coordinate list across restarts. */
 public final class ModConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-	/** Every GeilerAddons file lives under here - just this config today, but not forever. */
+	/** Root for the settings file and feature-specific data directories. */
 	private static final Path DIR = FabricLoader.getInstance().getConfigDir().resolve("geileraddons");
 	private static final Path PATH = DIR.resolve("config.json");
+	private static final Path MACRO_DIR = DIR.resolve("macros");
+	private static final Path FUNCTION_DIR = DIR.resolve("functions");
+	private static final Path MACRO_INDEX_PATH = DIR.resolve("macro-index.json");
+	private static final int MAX_MACRO_RECORD_BYTES = 1_048_576;
+	private static final int MAX_MACRO_INDEX_BYTES = 65_536;
 	/** Where this file lived before it got its own folder; migrated from on first load. */
 	private static final Path LEGACY_PATH = FabricLoader.getInstance().getConfigDir().resolve("geileraddons.json");
 
@@ -102,15 +115,21 @@ public final class ModConfig {
 		String uiOpenModule;
 		String uiExpandedColor;
 		int uiSettingsScroll;
-		/** Folded-shut settings sections, as "module.group" keys. */
-		List<String> uiCollapsedGroups;
+		int uiCategoryScroll;
+		Map<String, Integer> uiGridScrollByCategory = new HashMap<>();
+		List<String> uiFavoriteCategories = new ArrayList<>();
+		List<String> uiFavoriteModules = new ArrayList<>();
 		/** Legacy/mirror of the General module's update row. See {@link #checkForUpdates()}. */
 		Boolean checkForUpdates;
 		/** Absent means "never saved", which keeps island detection on by default. */
+		/** Legacy/mirror of the General module's island-detection row. See {@link #hypixelModApi()}. */
 		Boolean hypixelModApi;
-		/** User-authored workflows. Absent means no macros have been created yet. */
+		/** Legacy inline workflows, read only for migration to one file per macro. */
 		List<MacroData> macros;
 		List<MacroFunctionData> macroFunctions;
+		/** Snapshot-only payloads; transient fields never enter config.json. */
+		transient List<MacroData> macroFiles;
+		transient List<MacroFunctionData> functionFiles;
 		JsonArray macroVariables;
 		List<FolderTree.Folder> macroFolders;
 		/** Spatial player-inventory layout stays local and is never embedded in macro transfers. */
@@ -170,13 +189,13 @@ public final class ModConfig {
 		String triggerContext;
 		Boolean islandRestricted;
 		List<String> islands;
-		Integer defaultDelayMin;
-		Integer defaultDelayMax;
 		JsonArray steps;
 		JsonArray scripts;
+		JsonArray detachedBlocks;
 		Float canvasPanX;
 		Float canvasPanY;
 		Float canvasZoom;
+		Integer canvasZoomVersion;
 		String folderId;
 	}
 
@@ -195,10 +214,15 @@ public final class ModConfig {
 
 	/**
 	 * Whether the mod may speak the Hypixel Mod API to learn which island it is on.
-	 * Config-file only, like the Cheats gate's neighbours: it decides how the mod talks to the server
-	 * rather than what any one module does, so it is not any module's setting.
+	 *
+	 * <p>Reads the General module now that the switch is a settings-panel row, so the chat notice a
+	 * stranded module prints can point at something the player can actually find. The first load after
+	 * that move seeds the row from the old top-level key, so an install that had turned the API off
+	 * does not silently get it back; the top-level key is still written as a mirror afterwards.
 	 */
-	private static boolean hypixelModApi = true;
+	public static boolean hypixelModApi() {
+		return GeneralModule.INSTANCE.islandDetectionApi().value();
+	}
 
 	/** How long a debounced change may sit unwritten; a crash can cost at most this much of it. */
 	private static final long FLUSH_INTERVAL_MILLIS = 60_000;
@@ -212,6 +236,7 @@ public final class ModConfig {
 	private static volatile boolean dirty;
 	private static volatile long lastFlush;
 	private static volatile long mutationVersion;
+	private static volatile boolean separatedMacroLoadBlocked;
 	private static Future<?> pendingSave;
 	private static long queuedVersion = -1;
 
@@ -226,15 +251,16 @@ public final class ModConfig {
 		return GeneralModule.INSTANCE.checkForUpdates().value();
 	}
 
-	public static boolean hypixelModApi() {
-		return hypixelModApi;
-	}
-
 	public static void load() {
 		Data data = readData();
+		boolean migratedDefaultTheme = migrateLegacyDefaultTheme(data);
+		boolean migratedIconColor = ThemeIconColorMigration.migrate(data.colors,
+			settingKey(VisualModule.INSTANCE, "Icon color"), settingKey(GeneralModule.INSTANCE, "Icon color"));
 		for (Module module : ModuleManager.modules()) {
-			KeybindData savedKeybind = data.keybinds.get(module.name());
-			if (savedKeybind != null && savedKeybind.key != null) {
+			KeybindData savedKeybind = data.keybinds.get(module.configName());
+			if (!module.showsKeybindControl()) {
+				module.setKeybind(ModuleKeybind.NONE);
+			} else if (savedKeybind != null && savedKeybind.key != null) {
 				try {
 					module.setKeybind(new ModuleKeybind(InputConstants.getKey(savedKeybind.key), savedKeybind.modifiers));
 				} catch (RuntimeException ignored) {
@@ -273,9 +299,21 @@ public final class ModConfig {
 					if (legacyNumber != null) setting.setValue(formatLegacyNumber(legacyNumber));
 				}
 			}
-			if (Boolean.TRUE.equals(data.enabled.get(module.name()))) {
-				module.setEnabled(true);
-			}
+			Boolean savedEnabled = data.enabled.get(module.configName());
+			module.setEnabled(savedEnabled != null ? savedEnabled : module.defaultEnabled());
+		}
+		boolean migratedDungeonMobEspKeybind = migrateLegacyDungeonMobEspKeybind(data);
+		DungeonMobEspModule.INSTANCE.restoreLegacySettings(data.numbers, data.toggles,
+			data.choices, data.colors);
+		if (!data.enabled.containsKey(DungeonMobEspModule.INSTANCE.configName())
+			&& (Boolean.TRUE.equals(data.enabled.get("Starred Mob ESP"))
+				|| Boolean.TRUE.equals(data.enabled.get("Miniboss ESP")))) {
+			DungeonMobEspModule.INSTANCE.setEnabled(true);
+		}
+		Float legacyFillOpacity = data.numbers.get("Garden Plot Borders.Fill Opacity");
+		if (legacyFillOpacity != null) {
+			int alpha = Math.round(Math.max(0.0f, Math.min(100.0f, legacyFillOpacity)) * 2.55f);
+			GardenPlotBordersModule.INSTANCE.fillColor().setChannel(ColorSetting.Channel.ALPHA, alpha);
 		}
 		AutoExperimentsModule autoExperiments = AutoExperimentsModule.INSTANCE;
 		Float legacyExperimentDelay = data.numbers.get("Auto Experiments.Click Delay (ms)");
@@ -301,8 +339,21 @@ public final class ModConfig {
 			// wins once it exists, so the legacy key can never undo a change made in the panel.
 			GeneralModule.INSTANCE.checkForUpdates().setValue(data.checkForUpdates);
 		}
-		if (data.hypixelModApi != null) {
-			hypixelModApi = data.hypixelModApi;
+		if (data.hypixelModApi != null
+			&& !data.toggles.containsKey(settingKey(GeneralModule.INSTANCE,
+				GeneralModule.INSTANCE.islandDetectionApi().name()))) {
+			// Same one-time move as the update preference: the module's own key wins once it exists,
+			// so a legacy value can never undo a change made in the settings panel.
+			GeneralModule.INSTANCE.islandDetectionApi().setValue(data.hypixelModApi);
+		}
+		// The macro-editor colour toggle was renamed to name both surfaces it themes. Its value is
+		// carried across once, and only when the new key has never been written, so a player who had
+		// turned it off does not silently get it back.
+		Boolean legacyMacroColors = settingValue(data.toggles, VisualModule.INSTANCE, "Theme Macro Colors");
+		if (legacyMacroColors != null
+			&& !data.toggles.containsKey(settingKey(VisualModule.INSTANCE,
+				VisualModule.INSTANCE.themeSurfaces().name()))) {
+			VisualModule.INSTANCE.themeSurfaces().setValue(legacyMacroColors);
 		}
 		loadTikiCoords(data);
 		loadTikiFingerprints(data);
@@ -316,10 +367,68 @@ public final class ModConfig {
 		loadMobHighlights(data);
 		loadBlockEspEntries(data);
 		MacrosModule.INSTANCE.globalVariables().restore(MacroVariableConfigCodec.decode(data.macroVariables));
+		loadSeparatedMacroData(data);
 		loadMacroFunctions(data);
 		loadMacros(data);
 		loadInventoryButtons(data);
 		loadUiState(data);
+		if (migratedDefaultTheme || migratedDungeonMobEspKeybind || migratedIconColor) markDirty();
+	}
+
+	private static boolean migrateLegacyDungeonMobEspKeybind(Data data) {
+		DungeonMobEspModule module = DungeonMobEspModule.INSTANCE;
+		KeybindData currentData = data.keybinds.get(module.configName());
+		ModuleKeybind current = parseKeybind(currentData);
+		boolean currentPresent = currentData != null && currentData.key != null && current != null;
+		DungeonMobEspKeybindMigration.Resolution migration = DungeonMobEspKeybindMigration.resolve(
+			currentPresent, current,
+			parseKeybind(data.keybinds.get("Starred Mob ESP")),
+			parseKeybind(data.keybinds.get("Miniboss ESP")));
+
+		if (currentPresent) return false;
+		if (migration.conflict()) {
+			module.setKeybind(ModuleKeybind.NONE);
+			GeilerAddons.LOGGER.warn("Legacy Starred Mob ESP and Miniboss ESP keybinds conflict. "
+				+ "Dungeon Mob ESP was left unbound; set its keybind in the Click GUI.");
+			return migration.migrated();
+		}
+		if (!migration.migrated()) return false;
+		module.setKeybind(migration.keybind());
+		return true;
+	}
+
+	private static ModuleKeybind parseKeybind(KeybindData saved) {
+		if (saved == null || saved.key == null) return null;
+		try {
+			return new ModuleKeybind(InputConstants.getKey(saved.key), saved.modifiers);
+		} catch (RuntimeException ignored) {
+			return null;
+		}
+	}
+
+	/** Move only old compiled-default theme channels to the approved Click GUI reference colors. */
+	private static boolean migrateLegacyDefaultTheme(Data data) {
+		VisualModule theme = VisualModule.INSTANCE;
+		boolean migrated = false;
+		migrated |= migrateLegacyThemeColor(data, theme, "Background",
+			new int[]{14, 14, 18, 230}, new int[]{11, 18, 32, 129});
+		migrated |= migrateLegacyThemeColor(data, theme, "Border",
+			new int[]{255, 255, 255, 51}, new int[]{25, 29, 36, 255});
+		migrated |= migrateLegacyThemeColor(data, theme, "Accent",
+			new int[]{207, 207, 214, 255}, new int[]{59, 130, 246, 255});
+		migrated |= migrateLegacyThemeColor(data, theme, "Text",
+			new int[]{255, 255, 255, 255}, new int[]{234, 242, 255, 255});
+		migrated |= migrateLegacyThemeColor(data, theme, "Muted Text",
+			new int[]{140, 140, 153, 255}, new int[]{126, 143, 168, 255});
+		return migrated;
+	}
+
+	/** Migrate one palette channel only when its persisted value is exactly the old compiled default. */
+	private static boolean migrateLegacyThemeColor(Data data, VisualModule theme, String setting,
+		int[] legacyDefault, int[] replacement) {
+		if (!java.util.Arrays.equals(settingValue(data.colors, theme, setting), legacyDefault)) return false;
+		data.colors.put(settingKey(theme, setting), replacement);
+		return true;
 	}
 
 	private static String formatLegacyNumber(float value) {
@@ -352,7 +461,7 @@ public final class ModConfig {
 	}
 
 	/** Writes a pending change immediately - for shutdown, where there is no next tick. */
-	public static void flushNow() {
+	public static boolean flushNow() {
 		Future<?> future;
 		if (dirty) {
 			future = enqueueSave(snapshotData(), mutationVersion);
@@ -361,7 +470,15 @@ public final class ModConfig {
 				future = pendingSave;
 			}
 		}
-		waitFor(future);
+		return waitFor(future);
+	}
+
+	/** Waits for the already queued client-thread snapshot without creating a snapshot off-thread. */
+	public static boolean flushPrepared() {
+		Future<?> future;
+		synchronized (SAVE_LOCK) { future = pendingSave; }
+		boolean saved = waitFor(future);
+		synchronized (SAVE_LOCK) { return saved && !dirty; }
 	}
 
 	/** Queues an explicit snapshot so closing a settings screen never performs disk I/O inline. */
@@ -381,27 +498,94 @@ public final class ModConfig {
 		}
 	}
 
-	private static void waitFor(Future<?> future) {
-		if (future == null) return;
+	private static boolean waitFor(Future<?> future) {
+		if (future == null) return true;
 		try {
-			future.get();
+			Object result = future.get();
+			return !(result instanceof Boolean value) || value;
 		} catch (InterruptedException interrupted) {
 			Thread.currentThread().interrupt();
 			GeilerAddons.LOGGER.warn("Interrupted while saving GeilerAddons config");
+			return false;
 		} catch (ExecutionException error) {
 			GeilerAddons.LOGGER.error("Config writer failed", error.getCause());
+			return false;
 		}
 	}
+
+	/** Applies declared setting defaults, respecting the caller's selected ESP exclusions. */
+	public static void resetModuleDefaultsExcept(Set<String> excludedConfigNames) {
+		Set<String> excluded = excludedConfigNames == null ? Set.of() : Set.copyOf(excludedConfigNames);
+		for (Module module : ModuleManager.modules()) {
+			if (excluded.contains(module.configName())) continue;
+			module.colorSettings().forEach(ColorSetting::reset);
+			module.numberSettings().forEach(NumberSetting::reset);
+			module.booleanSettings().forEach(BooleanSetting::reset);
+			module.choiceSettings().forEach(geiler.addons.client.module.ChoiceSetting::reset);
+			module.textSettings().forEach(TextSetting::reset);
+			module.setKeybind(ModuleKeybind.NONE);
+			module.setEnabled(module.defaultEnabled());
+		}
+		markDirty();
+	}
+
+	/** Applies declared defaults only to the named modules. */
+	public static void resetNamedModuleDefaults(Set<String> configNames) {
+		if (configNames == null || configNames.isEmpty()) return;
+		for (Module module : ModuleManager.modules()) {
+			if (!configNames.contains(module.configName())) continue;
+			module.colorSettings().forEach(ColorSetting::reset);
+			module.numberSettings().forEach(NumberSetting::reset);
+			module.booleanSettings().forEach(BooleanSetting::reset);
+			module.choiceSettings().forEach(geiler.addons.client.module.ChoiceSetting::reset);
+			module.textSettings().forEach(TextSetting::reset);
+			module.setKeybind(ModuleKeybind.NONE);
+			module.setEnabled(module.defaultEnabled());
+		}
+		markDirty();
+	}
+
+	/** Resets every runtime collection before applying a full imported profile. Must run on the client thread. */
+	public static void resetRuntimeToFactoryDefaults() {
+		resetModuleDefaultsExcept(Set.of());
+		MacroRunner.cancel("configuration reset or import");
+		MacrosModule.INSTANCE.restore(List.of());
+		MacrosModule.INSTANCE.restoreFunctions(List.of());
+		MacrosModule.INSTANCE.globalVariables().restore(List.of());
+		MacrosModule.INSTANCE.folders().restore(List.of());
+		MobHighlightModule.INSTANCE.restore(List.of());
+		MobHighlightModule.INSTANCE.folders().restore(List.of());
+		BlockEspModule.INSTANCE.restore(List.of());
+		BlockEspModule.INSTANCE.folders().restore(List.of());
+		InventoryButtonsModule.INSTANCE.restore(List.of());
+		TikiCoords.seedDefaults();
+		TikiFingerprints.replaceAll(Map.of());
+		HudManager.resetPositions();
+		for (TreeType type : TreeType.values()) {
+			TreeTrackerModule.INSTANCE.tracker().stats(type).restore(0, 0, 0, 0);
+		}
+		ClickGuiState.setCategory(Category.values()[0]);
+		ClickGuiState.setOpenModule(null);
+		ClickGuiState.setExpandedColor(null);
+		ClickGuiState.setSettingsScroll(0);
+		ClickGuiState.setCategoryScroll(0);
+		for (Category category : Category.values()) ClickGuiState.setGridScroll(category, 0);
+		ClickGuiState.setFavoriteCategoryIds(List.of());
+		ClickGuiState.setFavoriteModuleIds(List.of());
+	}
+
+	/** Queues a current snapshot after a targeted reset has changed live settings or collections. */
+	public static void saveAfterReset() { markDirty(); save(); }
 
 	private static Data snapshotData() {
 		Data data = new Data();
 		for (Module module : ModuleManager.modules()) {
-			data.enabled.put(module.name(), module.isEnabled());
-			if (module.keybind().isBound()) {
+			data.enabled.put(module.configName(), module.isEnabled());
+			if (module.showsKeybindControl() && module.keybind().isBound()) {
 				KeybindData savedKeybind = new KeybindData();
 				savedKeybind.key = module.keybind().key().getName();
 				savedKeybind.modifiers = module.keybind().modifiers();
-				data.keybinds.put(module.name(), savedKeybind);
+				data.keybinds.put(module.configName(), savedKeybind);
 			}
 			for (ColorSetting setting : module.colorSettings()) {
 				data.colors.put(settingKey(module, setting.name()), new int[]{setting.red(), setting.green(), setting.blue(), setting.alpha()});
@@ -410,9 +594,8 @@ public final class ModConfig {
 				data.numbers.put(settingKey(module, setting.name()), setting.value());
 			}
 			for (BooleanSetting setting : module.booleanSettings()) {
-				// Debug-only and cheat-gated toggles expose an effective value while their gate is
-				// off. Persist the raw user choice so closing either gate never erases what
-				// reopening it should restore.
+				// Debug-only toggles expose an effective value while Debug is off. Persist the raw
+				// choice so closing that diagnostic gate never erases what reopening it should restore.
 				data.toggles.put(settingKey(module, setting.name()), setting.rawValue());
 			}
 			for (ChoiceSetting setting : module.choiceSettings()) {
@@ -485,28 +668,36 @@ public final class ModConfig {
 			data.blockEspEntries.add(saved);
 		}
 		MacrosModule.INSTANCE.syncSettings();
-		data.macros = snapshotMacros();
-		data.macroFunctions = snapshotMacroFunctions();
+		data.macroFiles = snapshotMacros();
+		data.functionFiles = snapshotMacroFunctions();
+		data.macros = null;
+		data.macroFunctions = null;
 		data.macroVariables = MacroVariableConfigCodec.encode(MacrosModule.INSTANCE.globalVariables().savedVariables());
 		data.macroFolders = MacrosModule.INSTANCE.folders().folders();
 		data.inventoryButtons = InventoryButtonConfigCodec.encode(InventoryButtonsModule.INSTANCE.placements());
 		data.uiCategory = ClickGuiState.category().name();
-		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().name();
+		data.uiOpenModule = ClickGuiState.openModule() == null ? null : ClickGuiState.openModule().configName();
 		data.uiExpandedColor = ClickGuiState.expandedColor() == null ? null : ClickGuiState.expandedColor().name();
 		data.uiSettingsScroll = ClickGuiState.settingsScroll();
-		data.uiCollapsedGroups = new ArrayList<>(ClickGuiState.collapsedGroups());
+		data.uiCategoryScroll = ClickGuiState.categoryScroll();
+		data.uiGridScrollByCategory = new HashMap<>();
+		ClickGuiState.gridScrolls().forEach((category, scroll) ->
+			data.uiGridScrollByCategory.put(category.name(), scroll));
+		data.uiFavoriteCategories = ClickGuiState.favoriteCategoryIds().stream().sorted().toList();
+		data.uiFavoriteModules = ClickGuiState.favoriteModuleIds().stream().sorted().toList();
 		// Mirror of the General module row, kept so an older build reading this file still sees the
 		// player's choice instead of silently re-enabling the check.
 		data.checkForUpdates = GeneralModule.INSTANCE.checkForUpdates().value();
-		data.hypixelModApi = hypixelModApi;
+		data.hypixelModApi = GeneralModule.INSTANCE.islandDetectionApi().value();
 		return data;
 	}
 
-	private static void writeSnapshot(Data data, long version) {
+	private static boolean writeSnapshot(Data data, long version) {
 		Path temporary = null;
 		boolean success = false;
 		try {
 			Files.createDirectories(PATH.getParent());
+			writeSeparatedMacroData(data);
 			temporary = Files.createTempFile(PATH.getParent(), "config-", ".tmp");
 			try (Writer writer = Files.newBufferedWriter(temporary)) {
 				GSON.toJson(data, writer);
@@ -536,6 +727,7 @@ public final class ModConfig {
 				else dirty = false;
 			}
 		}
+		return success;
 	}
 
 	private static void loadTikiCoords(Data data) {
@@ -632,9 +824,12 @@ public final class ModConfig {
 			}
 			if (saved.islandRestricted != null) macro.setIslandRestricted(saved.islandRestricted);
 			macro.setIslands(parseIslands(saved.islands));
+			float savedZoom = saved.canvasZoom == null ? 1.0f : saved.canvasZoom;
+			int savedZoomVersion = saved.canvasZoomVersion == null ? 0 : saved.canvasZoomVersion;
+			if (savedZoomVersion < 1) savedZoom *= 100.0f;
+			if (savedZoomVersion < 2) savedZoom *= 100.0f;
 			macro.setCanvasView(saved.canvasPanX == null ? 0 : saved.canvasPanX,
-				saved.canvasPanY == null ? 0 : saved.canvasPanY,
-				saved.canvasZoom == null ? 1 : saved.canvasZoom);
+				saved.canvasPanY == null ? 0 : saved.canvasPanY, savedZoom);
 			// Legacy macro-level defaults are intentionally ignored. Delays now belong to individual
 			// workflow nodes, so an older file cannot silently reintroduce a hidden delay.
 			if (saved.scripts != null && !saved.scripts.isEmpty()) {
@@ -642,6 +837,8 @@ public final class ModConfig {
 			} else {
 				macro.steps().addAll(MacroStepConfigCodec.decode(saved.steps));
 			}
+			// Older configs have no loose-block list; keep their executable stacks exactly as before.
+			macro.restoreDetachedBlocks(MacroStepConfigCodec.decode(saved.detachedBlocks));
 			// Keep an intentionally empty macro visible so the user can finish it in the editor;
 			// pressing its key simply reports that there are no steps yet.
 			restored.add(macro);
@@ -649,10 +846,182 @@ public final class ModConfig {
 		MacrosModule.INSTANCE.restore(restored);
 	}
 
+	/** Loads separated macro files when present; otherwise the inline legacy lists remain the migration source. */
+	private static void loadSeparatedMacroData(Data data) {
+		if (!Files.isRegularFile(MACRO_INDEX_PATH)) return;
+		try {
+			if (Files.size(MACRO_INDEX_PATH) > MAX_MACRO_INDEX_BYTES) throw new IOException("macro index exceeds the size limit");
+			MacroIndex index;
+			try (Reader reader = Files.newBufferedReader(MACRO_INDEX_PATH)) { index = GSON.fromJson(reader, MacroIndex.class); }
+			if (index == null || index.version != 1 || index.macros == null || index.functions == null
+				|| index.macros.size() > 2_000 || index.functions.size() > MacroFunction.MAX_FUNCTIONS) {
+				throw new IOException("macro index is malformed or exceeds the entry limit");
+			}
+			List<MacroData> macros = readMacroRecords(index.macros, MACRO_DIR, MacroData.class);
+			List<MacroFunctionData> functions = readMacroRecords(index.functions, FUNCTION_DIR, MacroFunctionData.class);
+			data.macros = macros;
+			data.macroFunctions = functions;
+		} catch (IOException | RuntimeException error) {
+			GeilerAddons.LOGGER.error("Could not load separated macro/function files from {}", DIR, error);
+			separatedMacroLoadBlocked = true;
+		}
+	}
+
+	private static <T> List<T> readMacroRecords(List<String> files, Path directory, Class<T> type) throws IOException {
+		List<T> result = new ArrayList<>();
+		java.util.HashSet<String> seenFiles = new java.util.HashSet<>();
+		for (String file : files) {
+			if (file == null || !file.matches("[A-Za-z0-9._-]{1,128}\\.json")) throw new IOException("macro index contains an invalid file name");
+			if (!seenFiles.add(file)) throw new IOException("macro index contains a duplicate file reference");
+			Path path = directory.resolve(file).normalize();
+			if (!path.getParent().equals(directory.normalize()) || !Files.isRegularFile(path)) throw new IOException("macro index references a missing or unsafe file");
+			if (Files.size(path) > MAX_MACRO_RECORD_BYTES) {
+				throw new IOException("separated macro file exceeds the size limit");
+			}
+			try (Reader reader = Files.newBufferedReader(path)) {
+				T record = GSON.fromJson(reader, type);
+				if (record == null) throw new IOException("separated macro file has no value");
+				result.add(record);
+			} catch (RuntimeException error) {
+				throw new IOException("could not read separated macro file " + path.getFileName(), error);
+			}
+		}
+		return result;
+	}
+
+	/** Writes each workflow atomically and commits the manifest last, so stale files are ignored. */
+	private static void writeSeparatedMacroData(Data data) throws IOException {
+		if (separatedMacroLoadBlocked || data.macroFiles == null || data.functionFiles == null) return;
+		// Validate counts and every serialized entry before touching the existing files. A rejected
+		// snapshot must never leave a partially updated catalog or an index the next load refuses.
+		if (data.macroFiles.size() > 2_000 || data.functionFiles.size() > MacroFunction.MAX_FUNCTIONS) {
+			throw new IOException("Macro catalog exceeds the supported limit (2,000 macros / "
+				+ MacroFunction.MAX_FUNCTIONS + " functions)");
+		}
+		List<String> macroFiles = new ArrayList<>();
+		for (MacroData macro : data.macroFiles) {
+			String file = safeFilePart(macro.name) + "-" + macro.id + ".json";
+			validateSerializedSize(macro, MAX_MACRO_RECORD_BYTES, "macro " + macro.name);
+			macroFiles.add(file);
+		}
+		List<String> functionFiles = new ArrayList<>();
+		for (MacroFunctionData function : data.functionFiles) {
+			String file = safeFilePart(function.name) + "-" + safeFilePart(function.id) + "-"
+				+ Integer.toUnsignedString(function.id.hashCode(), 36) + ".json";
+			validateSerializedSize(function, MAX_MACRO_RECORD_BYTES, "function " + function.name);
+			functionFiles.add(file);
+		}
+		List<String> previousMacroFiles = readMacroManifestFiles();
+		MacroIndex index = new MacroIndex();
+		index.version = 1;
+		index.macros = macroFiles;
+		index.functions = functionFiles;
+		validateSerializedSize(index, MAX_MACRO_INDEX_BYTES, "macro index");
+
+		boolean migrating = !Files.isRegularFile(MACRO_INDEX_PATH) && Files.isRegularFile(PATH);
+		Files.createDirectories(MACRO_DIR);
+		Files.createDirectories(FUNCTION_DIR);
+		if (migrating) {
+			Path backup = DIR.resolve("config.before-split.json");
+			if (!Files.exists(backup)) Files.copy(PATH, backup);
+		}
+		for (int i = 0; i < data.macroFiles.size(); i++) {
+			writeJsonAtomic(MACRO_DIR.resolve(macroFiles.get(i)), data.macroFiles.get(i));
+		}
+		for (int i = 0; i < data.functionFiles.size(); i++) {
+			writeJsonAtomic(FUNCTION_DIR.resolve(functionFiles.get(i)), data.functionFiles.get(i));
+		}
+		writeJsonAtomic(MACRO_INDEX_PATH, index);
+		deleteNewlyOrphanedMacroFiles(previousMacroFiles, macroFiles);
+	}
+
+	/** Reads only a trustworthy, bounded manifest to identify files the writer previously owned. */
+	private static List<String> readMacroManifestFiles() {
+		if (!Files.isRegularFile(MACRO_INDEX_PATH, LinkOption.NOFOLLOW_LINKS)) return List.of();
+		try {
+			if (Files.size(MACRO_INDEX_PATH) > MAX_MACRO_INDEX_BYTES) return List.of();
+			MacroIndex index;
+			try (Reader reader = Files.newBufferedReader(MACRO_INDEX_PATH)) {
+				index = GSON.fromJson(reader, MacroIndex.class);
+			}
+			if (index == null || index.version != 1 || index.macros == null
+				|| index.macros.size() > 2_000) return List.of();
+			List<String> result = new ArrayList<>();
+			for (String file : index.macros) {
+				if (isWriterOwnedMacroFile(file) && !result.contains(file)) result.add(file);
+			}
+			return List.copyOf(result);
+		} catch (IOException | RuntimeException error) {
+			GeilerAddons.LOGGER.warn("Could not inspect the previous macro manifest; leaving stale macro files untouched", error);
+			return List.of();
+		}
+	}
+
+	/** Deletes only old manifest entries omitted from the successfully committed replacement. */
+	private static void deleteNewlyOrphanedMacroFiles(List<String> previousFiles, List<String> currentFiles) {
+		if (previousFiles == null || previousFiles.isEmpty()
+			|| !Files.isDirectory(MACRO_DIR, LinkOption.NOFOLLOW_LINKS)) return;
+		Path macroDirectory = MACRO_DIR.toAbsolutePath().normalize();
+		for (String file : previousFiles) {
+			if (!isWriterOwnedMacroFile(file) || currentFiles.contains(file)) continue;
+			Path target = macroDirectory.resolve(file).normalize();
+			if (!macroDirectory.equals(target.getParent()) || Files.isSymbolicLink(target)
+				|| !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) continue;
+			try {
+				Files.deleteIfExists(target);
+			} catch (IOException error) {
+				GeilerAddons.LOGGER.warn("Could not delete orphaned macro file {}", target.getFileName(), error);
+			}
+		}
+	}
+
+	private static boolean isWriterOwnedMacroFile(String file) {
+		return file != null && file.matches("[A-Za-z0-9._-]{1,48}-[0-9]+\\.json");
+	}
+
+	private static void validateSerializedSize(Object value, int maximumBytes, String label) throws IOException {
+		int size = GSON.toJson(value).getBytes(StandardCharsets.UTF_8).length;
+		if (size > maximumBytes) {
+			throw new IOException(label + " exceeds the " + maximumBytes + " byte persistence limit");
+		}
+	}
+
+	private static void writeJsonAtomic(Path path, Object value) throws IOException {
+		Path temporary = Files.createTempFile(path.getParent(), "entry-", ".tmp");
+		try {
+			try (Writer writer = Files.newBufferedWriter(temporary)) { GSON.toJson(value, writer); }
+			try {
+				Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+			} catch (AtomicMoveNotSupportedException unsupported) {
+				Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+			}
+		} finally {
+			Files.deleteIfExists(temporary);
+		}
+	}
+
+	private static String safeFilePart(String value) {
+		if (value == null || value.isBlank()) return "unnamed";
+		String safe = value.trim().replaceAll("[^A-Za-z0-9._-]+", "-");
+		while (safe.startsWith(".")) safe = safe.substring(1);
+		if (safe.isBlank()) safe = "unnamed";
+		return safe.length() > 48 ? safe.substring(0, 48) : safe;
+	}
+
+	private static final class MacroIndex {
+		int version;
+		List<String> macros;
+		List<String> functions;
+	}
+
 	private static void loadMacroFunctions(Data data) {
 		List<MacroFunction> restored = new ArrayList<>();
+		java.util.HashSet<String> ids = new java.util.HashSet<>();
 		if (data.macroFunctions != null) for (MacroFunctionData saved : data.macroFunctions) {
-			if (saved == null || restored.size() >= 256) continue;
+			// Duplicate ids are dropped for the same reason macros and Block ESP entries drop them:
+			// MacrosModule.function() answers by id, so a repeated id makes the second definition
+			// unreachable by name and by export while it is still being written back to the file.
+			if (saved == null || restored.size() >= MacroFunction.MAX_FUNCTIONS || !ids.add(saved.id)) continue;
 			MacroFunction function = new MacroFunction(saved.id);
 			function.setName(saved.name);
 			if (saved.parameters != null) for (MacroFunctionParameterData parameter : saved.parameters) {
@@ -742,9 +1111,11 @@ public final class ModConfig {
 			for (Island island : macro.islands()) data.islands.add(island.name());
 			data.steps = MacroStepConfigCodec.encode(macro.steps());
 			data.scripts = MacroScriptConfigCodec.encode(macro.scripts());
+			data.detachedBlocks = MacroStepConfigCodec.encode(macro.detachedBlocks());
 			data.canvasPanX = macro.canvasPanX();
 			data.canvasPanY = macro.canvasPanY();
 			data.canvasZoom = macro.canvasZoom();
+			data.canvasZoomVersion = 2;
 			result.add(data);
 		}
 		return result;
@@ -824,6 +1195,10 @@ public final class ModConfig {
 
 	/** Resolves the saved names back to live objects; anything that no longer exists is dropped. */
 	private static void loadUiState(Data data) {
+		ClickGuiState.setCategoryScroll(data.uiCategoryScroll);
+		ClickGuiState.setGridScrolls(data.uiGridScrollByCategory);
+		ClickGuiState.setFavoriteCategoryIds(data.uiFavoriteCategories);
+		ClickGuiState.setFavoriteModuleIds(data.uiFavoriteModules);
 		if (data.uiCategory != null) {
 			for (Category category : Category.values()) {
 				if (category.name().equals(data.uiCategory)) {
@@ -832,12 +1207,9 @@ public final class ModConfig {
 				}
 			}
 		}
-		if (data.uiCollapsedGroups != null) {
-			ClickGuiState.setCollapsedGroups(data.uiCollapsedGroups);
-		}
 		if (data.uiOpenModule == null) return;
 		for (Module module : ModuleManager.modules()) {
-			if (!module.name().equals(data.uiOpenModule) || !module.hasSettings()) continue;
+			if (!module.configName().equals(data.uiOpenModule) || !module.hasSettings()) continue;
 			ClickGuiState.setOpenModule(module);
 			ClickGuiState.setSettingsScroll(Math.max(0, data.uiSettingsScroll));
 			if (data.uiExpandedColor != null) {
@@ -879,6 +1251,8 @@ public final class ModConfig {
 		if (data.choices == null) data.choices = new HashMap<>();
 		if (data.texts == null) data.texts = new HashMap<>();
 		if (data.keybinds == null) data.keybinds = new HashMap<>();
+		if (data.uiFavoriteCategories == null) data.uiFavoriteCategories = new ArrayList<>();
+		if (data.uiFavoriteModules == null) data.uiFavoriteModules = new ArrayList<>();
 
 		if (legacy) {
 			migrateLegacyFile();
@@ -906,7 +1280,7 @@ public final class ModConfig {
 	}
 
 	private static String settingKey(Module module, String settingName) {
-		return module.name() + "." + settingName;
+		return module.configName() + "." + settingName;
 	}
 
 	/** Reads a renamed setting without making the shorter UI labels discard an existing value. */

@@ -13,33 +13,28 @@ public final class SlotIdBadgeLayoutChecks {
 		List<SlotIdBadgeLayout.SlotPosition> playerInventory = playerInventorySlots();
 		check(playerInventory.size() == 46, "the preview includes all 46 player InventoryMenu slots");
 
-		List<SlotIdBadgeLayout.Badge> live = SlotIdBadgeLayout.layout(playerInventory,
+		List<SlotIdBadgeLayout.Badge> badges = SlotIdBadgeLayout.layout(playerInventory,
 			0, 0, label -> label.length() * 6);
-		List<SlotIdBadgeLayout.Badge> preview = SlotIdBadgeLayout.layout(playerInventory,
-			31, 47, label -> label.length() * 6);
-		check(live.size() == 46 && preview.size() == 46,
-			"live overlay and editor preview use every player menu slot");
-		for (int i = 0; i < live.size(); i++) {
-			SlotIdBadgeLayout.Badge liveBadge = live.get(i);
-			SlotIdBadgeLayout.Badge previewBadge = preview.get(i);
-			check(liveBadge.label().equals(Integer.toString(i)), "menu slot labels retain runtime indices");
-			check(previewBadge.x() == liveBadge.x() + 31 && previewBadge.y() == liveBadge.y() + 47,
-				"preview badges translate the live slot geometry without changing its layout");
-			check(previewBadge.width() == liveBadge.width() && previewBadge.scale() == liveBadge.scale(),
-				"preview and live badges share sizing and text scaling");
+		check(badges.size() == 46, "the layout includes all 46 player menu slots");
+		for (int i = 0; i < badges.size(); i++) {
+			SlotIdBadgeLayout.Badge badge = badges.get(i);
+			check(badge.label().equals(Integer.toString(i)), "menu slot labels retain runtime indices");
+			check(badge.x() + badge.width() <= playerInventory.get(i).x() + 16
+				&& badge.y() == playerInventory.get(i).y() + 1,
+				"each number is anchored inside the slot's top-right corner");
 		}
 
-		checkBadge(live.get(0), 155, 30, 8, "0", "crafting result slot");
-		checkBadge(live.get(5), 9, 10, 8, "5", "first armor slot");
-		checkBadge(live.get(9), 9, 86, 8, "9", "first main-inventory slot");
-		checkBadge(live.get(36), 9, 144, 14, "36", "first hotbar slot");
-		checkBadge(live.get(45), 78, 64, 14, "45", "offhand slot");
-		check(SlotIdBadgeLayout.BADGE_COLOR == 0xB0000000 && SlotIdBadgeLayout.BADGE_HEIGHT == 9,
-			"preview and live rendering share badge background and height");
-		check(SlotIdOverlay.PLAYER_INVENTORY_WIDTH == 176
-			&& SlotIdsModule.INSTANCE.width(null) == 176
-			&& SlotIdsModule.INSTANCE.height(null) == 166,
-			"HUD editor preview uses the standard 176 by 166 inventory footprint");
+		checkBadge(badges.get(0), 161, 29, 8, "0", "crafting result slot");
+		checkBadge(badges.get(5), 15, 9, 8, "5", "first armor slot");
+		checkBadge(badges.get(9), 15, 85, 8, "9", "first main-inventory slot");
+		checkBadge(badges.get(36), 9, 143, 14, "36", "first hotbar slot");
+		checkBadge(badges.get(45), 78, 63, 14, "45", "offhand slot");
+		check(SlotIdBadgeLayout.BADGE_COLOR == 0xA0000000 && SlotIdBadgeLayout.BADGE_HEIGHT == 9
+			&& SlotIdBadgeLayout.LABEL_COLOR == 0xFFFF4D5A,
+			"the top-right badges use their compact dark backing and default-red labels");
+		check(SlotIdsModule.INSTANCE.id().equals("slot_ids") && !SlotIdsModule.INSTANCE.renderOnHud()
+			&& SlotIdsModule.INSTANCE.labelTextColor().argb() == SlotIdBadgeLayout.LABEL_COLOR,
+			"Move Elements uses a non-HUD sample with the configurable label's default color");
 
 		List<SlotIdBadgeLayout.Badge> largeIndex = SlotIdBadgeLayout.layout(
 			List.of(new SlotIdBadgeLayout.SlotPosition(123, 0, 0)), 0, 0, label -> label.length() * 6);

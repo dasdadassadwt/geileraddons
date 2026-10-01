@@ -61,6 +61,25 @@ public final class GardenPlotState {
 		return observeCounts(pestCounts, observedAtMillis, Source.PLOT_MENU);
 	}
 
+	/**
+	 * Re-stamps existing widget knowledge when the widget is still visible and still says the same
+	 * thing.
+	 *
+	 * <p>The tab widget only reaches the client when it changes, so a garden whose pest situation is
+	 * steady would otherwise age out of {@link #snapshot} while the player is looking straight at a
+	 * correct widget. Only evidence already attributed to the widget is touched: a sighting or a menu
+	 * read keeps its own timestamp and can still expire on its own schedule.
+	 */
+	public void refreshWidgetObservation(long observedAtMillis) {
+		for (Map.Entry<Integer, Evidence> entry : new ArrayList<>(evidenceByPlot.entrySet())) {
+			Evidence evidence = entry.getValue();
+			if (evidence.source() != Source.PESTS_WIDGET) continue;
+			if (evidence.observedAtMillis() == observedAtMillis) continue;
+			evidenceByPlot.put(entry.getKey(), new Evidence(evidence.status(), evidence.pestCount(),
+				observedAtMillis, evidence.source()));
+		}
+	}
+
 	public boolean observeCurrentPlotScoreboardCount(int plotId, int pestCount, long observedAtMillis) {
 		if (!validCount(plotId, pestCount)) return false;
 		put(plotId, pestCount == 0 ? Status.CLEAR : Status.INFESTED, pestCount,
@@ -79,12 +98,18 @@ public final class GardenPlotState {
 	public boolean observeGardenPestTotal(int totalPests, long observedAtMillis) {
 		if (totalPests < 0) return false;
 		if (totalPests == 0) {
+			// A zero total does clear every plot, but it must not erase an infestation the client
+			// watched appear. Only whole-Garden knowledge is superseded here: a direct sighting is a
+			// different kind of fact and is never overwritten by a blanket clear.
 			for (GardenPlotGrid.Plot plot : GardenPlotGrid.plots()) {
-				put(plot.id(), Status.CLEAR, 0, observedAtMillis, Source.GARDEN_SCOREBOARD);
+				putWholeGardenClear(plot.id(), observedAtMillis, Source.GARDEN_SCOREBOARD);
 			}
 			return true;
 		}
 
+		// A total above zero proves the Garden is not empty, so any clear that was only ever a
+		// blanket statement - or a count of zero - cannot still be trusted. Evidence at the same
+		// instant counts as older here: the total was read at that moment.
 		for (Map.Entry<Integer, Evidence> entry : new ArrayList<>(evidenceByPlot.entrySet())) {
 			Evidence existing = entry.getValue();
 			if (existing.status() == Status.CLEAR && observedAtMillis >= existing.observedAtMillis()) {
@@ -167,6 +192,21 @@ public final class GardenPlotState {
 		Evidence previous = evidenceByPlot.get(plotId);
 		if (previous != null && observedAtMillis < previous.observedAtMillis()) return;
 		evidenceByPlot.put(plotId, new Evidence(status, pestCount, observedAtMillis, source));
+	}
+
+	/**
+	 * A whole-Garden zero, which is the one observation that clears plots it never named.
+	 *
+	 * <p>A count of zero proves the Garden holds no pests at all, so it supersedes anything older -
+	 * including a plot a sighting had marked infested. What it must not do is override something
+	 * observed later, which is the BUG-005 shape of failure: a plot that is infested right now must
+	 * not read as clean because a stale whole-Garden number said so. A same-instant tie goes to the
+	 * direct observation, since the two were read from the same frame.
+	 */
+	private void putWholeGardenClear(int plotId, long observedAtMillis, Source source) {
+		Evidence previous = evidenceByPlot.get(plotId);
+		if (previous != null && observedAtMillis <= previous.observedAtMillis()) return;
+		evidenceByPlot.put(plotId, new Evidence(Status.CLEAR, 0, observedAtMillis, source));
 	}
 
 	private record Evidence(Status status, Integer pestCount, long observedAtMillis, Source source) { }

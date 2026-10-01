@@ -136,8 +136,12 @@ public final class MacroTransferScreen extends Screen {
 			status = "Select at least one macro first.";
 			return;
 		}
-		Minecraft.getInstance().keyboardHandler.setClipboard(MacrosModule.INSTANCE.exportEncoded(selected));
-		status = "Copied " + selected.size() + " macro(s) to the clipboard.";
+		try {
+			Minecraft.getInstance().keyboardHandler.setClipboard(MacrosModule.INSTANCE.exportEncoded(selected));
+			status = "Copied " + selected.size() + " macro(s) to the clipboard.";
+		} catch (IllegalArgumentException invalid) {
+			status = invalid.getMessage() == null ? "The selected macros exceed the sharing limits." : invalid.getMessage();
+		}
 	}
 
 	private void pasteMacros() {

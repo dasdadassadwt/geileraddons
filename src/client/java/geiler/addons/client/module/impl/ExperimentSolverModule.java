@@ -45,6 +45,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -91,10 +92,6 @@ public final class ExperimentSolverModule extends Module {
 	private final NumberSetting size;
 	private final NumberSetting roundness;
 	private final NumberSetting slotGap;
-	private final BooleanSetting clickSounds;
-	private final TextSetting clickSound;
-	private final NumberSetting clickSoundPitch;
-	private final NumberSetting clickSoundVolume;
 	private final BooleanSetting completeSounds;
 	private final BooleanSetting maxClickAlert;
 	private final TextSetting completeSound;
@@ -117,12 +114,11 @@ public final class ExperimentSolverModule extends Module {
 	}
 
 	private ExperimentSolverModule(Settings settings) {
-		super("Solver", "Solves Experimentation Table games.", Category.ENCHANTING,
+		super("Experimentation Solver", "Solves Experimentation Table games.", Category.ENCHANTING,
 			settings.chronomatron, settings.ultrasequencer, settings.superpairs,
 			settings.chronomatronFutureClicks, settings.ultrasequencerFutureClicks,
 			settings.preventMisclicks, settings.serumsConsumed,
 			settings.size, settings.roundness, settings.slotGap,
-			settings.clickSounds, settings.clickSound, settings.clickSoundPitch, settings.clickSoundVolume,
 			settings.completeSounds, settings.maxClickAlert, settings.completeSound, settings.completeSoundPitch,
 			settings.completeSoundVolume, settings.panelColor, settings.textColor,
 			settings.currentColor, settings.nextColor, settings.nextNextColor, settings.nextNextNextColor,
@@ -137,10 +133,6 @@ public final class ExperimentSolverModule extends Module {
 		this.size = settings.size;
 		this.roundness = settings.roundness;
 		this.slotGap = settings.slotGap;
-		this.clickSounds = settings.clickSounds;
-		this.clickSound = settings.clickSound;
-		this.clickSoundPitch = settings.clickSoundPitch;
-		this.clickSoundVolume = settings.clickSoundVolume;
 		this.completeSounds = settings.completeSounds;
 		this.maxClickAlert = settings.maxClickAlert;
 		this.completeSound = settings.completeSound;
@@ -159,8 +151,7 @@ public final class ExperimentSolverModule extends Module {
 			new SettingGroup("Preview", settings.chronomatronFutureClicks, settings.ultrasequencerFutureClicks),
 			new SettingGroup("Protection", settings.preventMisclicks, settings.serumsConsumed),
 			new SettingGroup("Appearance", settings.size, settings.roundness, settings.slotGap),
-			new SettingGroup("Sounds", settings.clickSounds, settings.clickSound,
-				settings.clickSoundPitch, settings.clickSoundVolume, settings.completeSounds, settings.maxClickAlert,
+			new SettingGroup("Sounds", settings.completeSounds, settings.maxClickAlert,
 				settings.completeSound, settings.completeSoundPitch, settings.completeSoundVolume),
 			new SettingGroup("Colors", settings.panelColor, settings.textColor,
 				settings.currentColor, settings.nextColor, settings.nextNextColor, settings.nextNextNextColor,
@@ -168,36 +159,37 @@ public final class ExperimentSolverModule extends Module {
 		);
 	}
 
+	@Override
+	public String configName() {
+		return "Solver";
+	}
+
 	private static final class Settings {
 		final BooleanSetting chronomatron = new BooleanSetting("Chronomatron", true);
 		final BooleanSetting ultrasequencer = new BooleanSetting("Ultrasequencer", true);
 		final BooleanSetting superpairs = new BooleanSetting("Superpairs", true);
 		final NumberSetting chronomatronFutureClicks = new NumberSetting(
-			"Chronomatron Future Clicks", 0, 3, 1, true);
+			"Chronomatron Future Clicks", 0, 3, 3, true);
 		final NumberSetting ultrasequencerFutureClicks = new NumberSetting(
-			"Ultrasequencer Future Clicks", 0, 3, 2, true);
+			"Ultrasequencer Future Clicks", 0, 3, 3, true);
 		final BooleanSetting preventMisclicks = new BooleanSetting("Prevent Misclicks", true);
 		final NumberSetting serumsConsumed = new NumberSetting("Serums Consumed", 0, 3, 0, true);
 		// Keep the original persistence key while removing dungeon-terminal wording from the UI.
-		final NumberSetting size = new NumberSetting("Term Size", "Size", 1.0f, 3.0f, 2.0f);
-		final NumberSetting roundness = new NumberSetting("Roundness", 0, 15, 5, true);
-		final NumberSetting slotGap = new NumberSetting("Slot Gap", 0, 8, 2, true);
-		final BooleanSetting clickSounds = new BooleanSetting("Click Sounds", true);
-		final TextSetting clickSound = new TextSetting("Click Sound", "entity.item.pickup", 96);
-		final NumberSetting clickSoundPitch = new NumberSetting("Click Sound Pitch", 0.1f, 2.0f, 1.0f);
-		final NumberSetting clickSoundVolume = new NumberSetting("Click Sound Volume", 0.0f, 1.0f, 1.0f);
+		final NumberSetting size = new NumberSetting("Term Size", "Size", 1.0f, 3.0f, 1.4978355f);
+		final NumberSetting roundness = new NumberSetting("Roundness", 0, 15, 0, true);
+		final NumberSetting slotGap = new NumberSetting("Slot Gap", 0, 8, 0, true);
 		final BooleanSetting completeSounds = new BooleanSetting("Complete Sounds", false);
 		final BooleanSetting maxClickAlert = new BooleanSetting("Max Click Alert", true);
 		final TextSetting completeSound = new TextSetting("Complete Sound", "entity.experience_orb.pickup", 96);
 		final NumberSetting completeSoundPitch = new NumberSetting("Complete Sound Pitch", 0.1f, 2.0f, 1.0f);
 		final NumberSetting completeSoundVolume = new NumberSetting("Complete Sound Volume", 0.0f, 1.0f, 1.0f);
-		final ColorSetting panelColor = new ColorSetting("Panel Color", "Background", 26, 26, 26, 255);
+		final ColorSetting panelColor = new ColorSetting("Panel Color", "Background", 27, 27, 34, 240);
 		final ColorSetting textColor = new ColorSetting("Text Color", 240, 240, 244, 255);
-		final ColorSetting currentColor = new ColorSetting("Current Color", "Order 1", 85, 255, 85, 255);
-		final ColorSetting nextColor = new ColorSetting("Next Color", "Order 2", 42, 127, 42, 255);
-		final ColorSetting nextNextColor = new ColorSetting("Next Next Color", "Order 3", 21, 63, 21, 255);
+		final ColorSetting currentColor = new ColorSetting("Current Color", "Order 1", 255, 255, 255, 255);
+		final ColorSetting nextColor = new ColorSetting("Next Color", "Order 2", 125, 125, 125, 255);
+		final ColorSetting nextNextColor = new ColorSetting("Next Next Color", "Order 3", 61, 61, 61, 255);
 		final ColorSetting nextNextNextColor = new ColorSetting(
-			"Next Next Next Color", "Order 4", 10, 31, 10, 255);
+			"Next Next Next Color", "Order 4", 16, 16, 16, 255);
 		final ColorSetting discoveredColor = new ColorSetting("Discovered Color", 108, 99, 255, 255);
 		final ColorSetting unknownColor = new ColorSetting("Unknown Color", 75, 75, 85, 255);
 	}
@@ -274,10 +266,14 @@ public final class ExperimentSolverModule extends Module {
 		long generation = ExperimentController.INSTANCE.sessionGeneration();
 		if (displayPhase() == Phase.MAX_CLICKS && maxAlertedSessionGeneration != generation) {
 			maxAlertedSessionGeneration = generation;
-			if (maxClickAlert.value() || completeSounds.value()) {
+			if (shouldPlayMaxClickMilestoneSound(maxClickAlert.value(), completeSounds.value())) {
 				playSound(completeSound, completeSoundPitch, completeSoundVolume);
 			}
 		}
+	}
+
+	static boolean shouldPlayMaxClickMilestoneSound(boolean maxClickAlert, boolean completeSounds) {
+		return maxClickAlert || completeSounds;
 	}
 
 	/** Resets remembered stacks when the container is closed or replaced. */
@@ -328,7 +324,7 @@ public final class ExperimentSolverModule extends Module {
 		graphics.enableScissor(panelLeft, panelTop, panelRight, panelBottom);
 
 		Font font = Minecraft.getInstance().font;
-		renderStatus(graphics, font, layout);
+		renderStatus(graphics, font, layout, screen);
 		if (layout.slotLayouts.isEmpty() && solverView.type() != ExperimentType.SUPERPAIRS) {
 			Phase phase = displayPhase();
 			String label = phase == Phase.SOLVE ? Phase.WAITING.label : phase.label;
@@ -371,8 +367,9 @@ public final class ExperimentSolverModule extends Module {
 		return true;
 	}
 
-	private void renderStatus(GuiGraphicsExtractor graphics, Font font, Layout layout) {
-		List<String> lines = statusLines();
+	private void renderStatus(GuiGraphicsExtractor graphics, Font font, Layout layout,
+		AbstractContainerScreen<?> screen) {
+		List<String> lines = statusLines(screen);
 		if (lines.isEmpty()) return;
 		int x = layout.panelX + 7;
 		int available = Math.max(1, layout.panelWidth - 14);
@@ -393,7 +390,7 @@ public final class ExperimentSolverModule extends Module {
 			GuiTheme.withOpacity(unknownColor.argb(), 0.45f));
 	}
 
-	private List<String> statusLines() {
+	private List<String> statusLines(AbstractContainerScreen<?> screen) {
 		Session session = session();
 		SolverView solverView = solverView();
 		if (session == null || solverView.type() == null) return List.of();
@@ -424,11 +421,33 @@ public final class ExperimentSolverModule extends Module {
 		String progressText = length > 0 ? progress + "/" + lengthText : "0/?";
 		String remainingText = length > 0 ? Integer.toString(Math.max(0, length - progress)) : "?";
 		String next = solverView.current().map(step -> "#" + (step.index() + 1)).orElse("none");
+		String autoProgress = "";
+		if (solverView.type() == ExperimentType.ULTRASEQUENCER) {
+			var execution = AutoExperimentsModule.INSTANCE
+				.ultrasequencerPresentationProgress(screen, solverView);
+			if (execution.isPresent()) {
+				var snapshot = execution.orElseThrow();
+				int autoCursor = snapshot.cursor();
+				autoProgress = " • Auto cursor: " + autoCursor + "/" + snapshot.sequenceLength();
+				if (snapshot.dispatchPending()) {
+					autoProgress += " (dispatching)";
+					next = "#" + autoCursor;
+					remainingText = Integer.toString(snapshot.sequenceLength() - autoCursor + 1);
+				} else {
+					next = autoCursor < snapshot.sequenceLength() ? "#" + (autoCursor + 1) : "none";
+					remainingText = Integer.toString(snapshot.sequenceLength() - autoCursor);
+					if (snapshot.paused() && autoCursor < snapshot.sequenceLength()) {
+						autoProgress += " (paused)";
+						next = "paused";
+					}
+				}
+			}
+		}
 		String finished = displayPhase() == Phase.MAX_CLICKS ? "complete"
 			: solverView.milestoneReached() ? "target reached" : Math.max(0, solverView.completedRounds()) + " rounds";
 		return List.of(typeName + " • " + phase,
 			"Status: " + instruction,
-			"Progress: " + progressText + " • Next: " + next + " • "
+			"Progress: " + progressText + autoProgress + " • Next: " + next + " • "
 				+ remainingText + " clicks left • Done: " + finished + budget);
 	}
 
@@ -516,7 +535,6 @@ public final class ExperimentSolverModule extends Module {
 				return true;
 			}
 		}
-		playClickSound();
 		return true;
 	}
 
@@ -561,11 +579,6 @@ public final class ExperimentSolverModule extends Module {
 		if (event == null) return;
 		Minecraft.getInstance().getSoundManager().play(
 			SimpleSoundInstance.forUI(event, pitch.value(), volume.value()));
-	}
-
-	private void playClickSound() {
-		if (!clickSounds.value()) return;
-		playSound(clickSound, clickSoundPitch, clickSoundVolume);
 	}
 
 	private int slotColor(SlotVisual visual) {
@@ -646,7 +659,7 @@ public final class ExperimentSolverModule extends Module {
 			&& ExperimentBoardGeometry.forExperiment(type, tier).containsSlot(slot.index);
 	}
 
-	private List<SlotVisual> visibleSlotVisuals() {
+	private List<SlotVisual> visibleSlotVisuals(AbstractContainerScreen<?> screen) {
 		Session session = session();
 		SolverView solverView = solverView();
 		if (session == null) return List.of();
@@ -674,7 +687,10 @@ public final class ExperimentSolverModule extends Module {
 		for (BoardSlot slot : session.slots) slotsById.put(slot.slot.index, slot);
 		Map<Integer, MutableSlotVisual> visible = new LinkedHashMap<>();
 		int visibleSteps = previewSteps(solverView.type());
-		List<SequenceStep> upcoming = solverView.upcoming(visibleSteps);
+		List<SequenceStep> upcoming = solverView.type() == ExperimentType.ULTRASEQUENCER
+			? ultrasequencerPreview(solverView, AutoExperimentsModule.INSTANCE
+				.ultrasequencerPresentationProgress(screen, solverView), visibleSteps)
+			: solverView.upcoming(visibleSteps);
 		for (int offset = 0; offset < upcoming.size(); offset++) {
 			SequenceStep step = upcoming.get(offset);
 			Priority priority = Priority.fromOffset(offset);
@@ -692,6 +708,28 @@ public final class ExperimentSolverModule extends Module {
 			if (visual != null) result.add(visual.immutable());
 		}
 		return List.copyOf(result);
+	}
+
+	/** Uses Auto's cursor only while its guarded snapshot still describes this exact Solver solution. */
+	static List<SequenceStep> ultrasequencerPreview(SolverView solverView,
+		Optional<geiler.addons.client.enchanting.UltrasequencerSequenceExecutor.ExecutionProgress> progress,
+		int visibleSteps) {
+		if (solverView == null || progress == null || progress.isEmpty()
+			|| solverView.type() != ExperimentType.ULTRASEQUENCER) {
+			return solverView == null ? List.of() : solverView.upcoming(visibleSteps);
+		}
+		var execution = progress.orElseThrow();
+		var currentSolution = geiler.addons.client.enchanting.UltrasequencerSequenceExecutor.Solution
+			.from(solverView);
+		if (currentSolution.isEmpty() || !execution.solution().equals(currentSolution.orElseThrow())) {
+			return solverView.upcoming(visibleSteps);
+		}
+		List<SequenceStep> sequence = execution.solution().sequence();
+		int firstIndex = execution.dispatchPending()
+			? Math.max(0, execution.cursor() - 1) : execution.cursor();
+		int endIndex = Math.min(sequence.size(), firstIndex + Math.max(0, visibleSteps));
+		if (firstIndex >= endIndex) return List.of();
+		return List.copyOf(sequence.subList(firstIndex, endIndex));
 	}
 
 	/** Number of sequence buttons drawn for a puzzle, including the current button. */
@@ -735,7 +773,7 @@ public final class ExperimentSolverModule extends Module {
 		int radius = Math.max(0, Math.min(Math.round(roundness.intValue() * scale),
 			Math.min(panelWidth, panelHeight) / 2));
 
-		List<SlotVisual> visuals = visibleSlotVisuals();
+		List<SlotVisual> visuals = visibleSlotVisuals(screen);
 		List<SlotLayout> slotLayouts = new ArrayList<>(visuals.size());
 		for (SlotVisual visual : visuals) {
 			int slotId = visual.boardSlot.slot.index;

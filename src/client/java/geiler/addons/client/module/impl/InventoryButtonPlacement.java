@@ -12,6 +12,7 @@ public final class InventoryButtonPlacement {
 	private Appearance appearance = Appearance.ITEM;
 	private String value = "minecraft:stone";
 	private String hoverTooltip = "";
+	private String textAction;
 
 	public InventoryButtonPlacement(int id) {
 		this.id = Math.max(0, id);
@@ -26,6 +27,7 @@ public final class InventoryButtonPlacement {
 		appearance = source.appearance;
 		value = source.value;
 		hoverTooltip = source.hoverTooltip;
+		textAction = source.textAction;
 	}
 
 	public int id() { return id; }
@@ -36,6 +38,8 @@ public final class InventoryButtonPlacement {
 	public Appearance appearance() { return appearance; }
 	public String value() { return value; }
 	public String hoverTooltip() { return hoverTooltip; }
+	public String textAction() { return textAction; }
+	public boolean hasTextAction() { return textAction != null && !textAction.isBlank(); }
 
 	public void setMacroId(int value) { macroId = Math.max(-1, value); }
 	public void setGrid(int x, int y) {
@@ -52,5 +56,9 @@ public final class InventoryButtonPlacement {
 	public void setHoverTooltip(String value) {
 		String trimmed = value == null ? "" : value.trim();
 		hoverTooltip = trimmed.substring(0, Math.min(256, trimmed.length()));
+	}
+	public void setTextAction(String value) {
+		String trimmed = value == null ? "" : value.trim();
+		textAction = trimmed.isEmpty() ? null : trimmed.substring(0, Math.min(256, trimmed.length()));
 	}
 }

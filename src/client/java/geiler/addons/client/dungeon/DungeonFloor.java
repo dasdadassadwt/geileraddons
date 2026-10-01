@@ -2,8 +2,9 @@ package geiler.addons.client.dungeon;
 
 import java.util.Locale;
 
-/** Normal and Master floors supported by Party Finder. */
+/** Catacombs floors shared across Party Finder and dungeon features. */
 public enum DungeonFloor {
+	ENTRANCE("Entrance", false, 0),
 	F1("F1", false, 1), F2("F2", false, 2), F3("F3", false, 3), F4("F4", false, 4),
 	F5("F5", false, 5), F6("F6", false, 6), F7("F7", false, 7),
 	M1("M1", true, 1), M2("M2", true, 2), M3("M3", true, 3), M4("M4", true, 4),
@@ -34,6 +35,7 @@ public enum DungeonFloor {
 	public static DungeonFloor parse(String value) {
 		if (value == null) return null;
 		String normalized = value.trim().toUpperCase(Locale.ROOT);
+		if (normalized.equals("ENTRANCE") || normalized.equals("ENT") || normalized.equals("F0")) return ENTRANCE;
 		for (DungeonFloor floor : values()) {
 			if (floor.displayName.equals(normalized)) return floor;
 		}

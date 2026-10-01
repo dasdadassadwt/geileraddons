@@ -158,6 +158,13 @@ public final class ExperimentSolverEngine {
 		return new ClickDecision(slotId, true, true, false, true, "click dispatched");
 	}
 
+	/** Number of accepted positions in the current sequence, including the final Ultra click. */
+	public int acceptedSequencePosition() {
+		if (type == ExperimentType.CHRONOMATRON) return chronomatron.currentOrdinal();
+		if (type == ExperimentType.ULTRASEQUENCER) return ultrasequencer.acceptedClicks();
+		return 0;
+	}
+
 	public SolverView reset() {
 		resetInternal();
 		return SolverView.idle();
@@ -236,6 +243,9 @@ public final class ExperimentSolverEngine {
 	public void markUltrasequencerDirty(List<String> paneColors) {
 		if (type != ExperimentType.ULTRASEQUENCER) return;
 		ultrasequencer.markDirty(paneColors);
+		completedRounds = ultrasequencer.completedRounds();
+		authoritativeIndex = ultrasequencer.currentIndex();
+		predictedIndex = authoritativeIndex;
 		phase = ultrasequencer.phase();
 	}
 
@@ -273,7 +283,9 @@ public final class ExperimentSolverEngine {
 		if (type == ExperimentType.CHRONOMATRON) {
 			return chronomatron.matches(index, chronomatronBoard.get(slotId));
 		}
-		return sequence.get(index).containsSlot(slotId);
+		return type == ExperimentType.ULTRASEQUENCER
+			? ultrasequencer.canClick(slotId) && sequence.get(index).containsSlot(slotId)
+			: sequence.get(index).containsSlot(slotId);
 	}
 
 	private boolean advanceSequenceClick(int slotId) {

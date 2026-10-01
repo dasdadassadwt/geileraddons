@@ -6,22 +6,24 @@ package geiler.addons.client.gui;
  * numbers through its input and rendering paths.
  */
 public enum ClickGuiMotion {
-	NONE("None", 0, 0, 0, 0, 0.0f),
-	REDUCED("Reduced", 140, 220, 0, 180, 0.65f),
-	EXPRESSIVE("Expressive", 280, 420, 28, 280, 1.35f);
+	NONE("None", 0, 0, 0, 0, 0, 0.0f),
+	REDUCED("Reduced", 140, 220, 120, 0, 180, 0.65f),
+	EXPRESSIVE("Expressive", 280, 420, 200, 28, 280, 1.35f);
 
 	private final String settingValue;
 	private final int transitionMillis;
 	private final int lifecycleMillis;
+	private final int closeMillis;
 	private final int cardStaggerMillis;
 	private final int hoverMillis;
 	private final float hoverAmplitude;
 
-	ClickGuiMotion(String settingValue, int transitionMillis, int lifecycleMillis, int cardStaggerMillis,
-		int hoverMillis, float hoverAmplitude) {
+	ClickGuiMotion(String settingValue, int transitionMillis, int lifecycleMillis, int closeMillis,
+		int cardStaggerMillis, int hoverMillis, float hoverAmplitude) {
 		this.settingValue = settingValue;
 		this.transitionMillis = transitionMillis;
 		this.lifecycleMillis = lifecycleMillis;
+		this.closeMillis = closeMillis;
 		this.cardStaggerMillis = cardStaggerMillis;
 		this.hoverMillis = hoverMillis;
 		this.hoverAmplitude = hoverAmplitude;
@@ -33,6 +35,10 @@ public enum ClickGuiMotion {
 
 	public int lifecycleMillis() {
 		return lifecycleMillis;
+	}
+
+	public int closeMillis() {
+		return closeMillis;
 	}
 
 	public int cardStaggerMillis() {
@@ -78,10 +84,10 @@ public enum ClickGuiMotion {
 		return 1.0f - (1.0f - progress) * (1.0f - progress);
 	}
 
-	/** Close progress computed against the unchanged lifecycle duration. */
+	/** Close progress uses its own short duration; opening remains on the lifecycle timing. */
 	public float closeProgress(long elapsedMillis) {
 		if (this == NONE) return 1.0f;
-		return closeEase(Math.max(0L, elapsedMillis) / (float) lifecycleMillis);
+		return closeEase(Math.max(0L, elapsedMillis) / (float) closeMillis);
 	}
 
 	/** Monotonic panel scale for closing, kept separate from the expressive opening spring. */

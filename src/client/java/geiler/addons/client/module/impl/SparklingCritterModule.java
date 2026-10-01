@@ -115,7 +115,7 @@ public final class SparklingCritterModule extends Module {
 	private static final class Settings {
 		final ColorSetting color = new ColorSetting("Color", 255, 200, 0, 255);
 		final NumberSetting textSize = new NumberSetting("Text Size", 0.5f, 4.0f, 1.0f);
-		final BooleanSetting tracer = new BooleanSetting("Tracer", false);
+		final BooleanSetting tracer = new BooleanSetting("Tracer", true);
 		/** Ticks between sweeps; the default is one a second. */
 		final NumberSetting rescanTime = new NumberSetting("Rescan Time", 1, 200, 20, true);
 		/** Prints what would be sent instead of sending it, and never sends while it is on. */

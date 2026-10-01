@@ -91,6 +91,29 @@ public final class FolderManagerScreen extends Screen {
 		for (FolderTree.Folder child : tree.childrenOf(folder.id())) appendFolderRows(child, depth + 1, rows);
 	}
 
+	/**
+	 * The entries that belong in a folder, treating an unknown folder as root.
+	 *
+	 * <p>An entry can name a folder that no longer exists - a hand-edited config, or any folder the
+	 * tree refused to restore - and comparing ids directly then put it in no folder at all: absent
+	 * from every list, impossible to select and impossible to move, while the Click GUI still showed
+	 * it at root. Resolving the folder here puts it back where it is already being treated as living,
+	 * without rewriting the saved value.
+	 */
+	private List<Entry> entriesIn(String folderId) {
+		List<Entry> visible = new ArrayList<>();
+		for (Entry entry : entries.get()) {
+			if (Objects.equals(effectiveFolder(entry.folderId()), folderId)) visible.add(entry);
+		}
+		return visible;
+	}
+
+	/** An entry's folder, or null when that folder is not in the tree any more. */
+	private String effectiveFolder(String folderId) {
+		if (folderId == null || folderId.isBlank()) return null;
+		return tree.contains(folderId) ? folderId : null;
+	}
+
 	private void row(GuiGraphicsExtractor graphics, int mouseX, int mouseY, Row row, Rect view,
 		int offset, boolean selected) {
 		int y = view.y + offset;
@@ -106,7 +129,7 @@ public final class FolderManagerScreen extends Screen {
 		Rect pane = layout.entries;
 		String folderName = selectedFolder == null ? "Root" : name(selectedFolder);
 		pane(graphics, pane, "Entries in " + folderName, "Select an entry to move it.");
-		List<Entry> visible = entries.get().stream().filter(entry -> Objects.equals(entry.folderId(), selectedFolder)).toList();
+		List<Entry> visible = entriesIn(selectedFolder);
 		Rect view = new Rect(pane.x + 4, pane.y + 39, pane.w - 8, Math.max(10, pane.h - 44));
 		entryScroll = clamp(entryScroll, 0, Math.max(0, visible.size() * ROW_HEIGHT - view.h));
 		graphics.enableScissor(view.x, view.y, view.x + view.w, view.y + view.h);
@@ -197,7 +220,7 @@ public final class FolderManagerScreen extends Screen {
 		roundedRect(graphics, bounds.x, bounds.y, bounds.w, bounds.h, RADIUS_SMALL,
 			enabled ? (hover ? BUTTON_HOVER : BUTTON_BG) : SLIDER_TRACK);
 		graphics.centeredText(font, label, bounds.x + bounds.w / 2,
-			bounds.y + (bounds.h - 8) / 2, enabled ? TEXT_PRIMARY : TEXT_MUTED);
+			bounds.y + (bounds.h - 8) / 2, enabled ? (hover ? TEXT_ON_ACCENT : TEXT_PRIMARY) : TEXT_MUTED);
 	}
 
 	private Layout layout() {
@@ -337,7 +360,7 @@ public final class FolderManagerScreen extends Screen {
 			return true;
 		}
 		if (layout.entries.contains(x, y)) {
-			List<Entry> visible = entries.get().stream().filter(entry -> Objects.equals(entry.folderId(), selectedFolder)).toList();
+			List<Entry> visible = entriesIn(selectedFolder);
 			Rect view = new Rect(layout.entries.x + 4, layout.entries.y + 39, layout.entries.w - 8,
 				Math.max(10, layout.entries.h - 44));
 			if (view.contains(x, y)) {

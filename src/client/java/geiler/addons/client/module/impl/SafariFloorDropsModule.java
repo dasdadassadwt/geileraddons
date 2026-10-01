@@ -74,8 +74,8 @@ public final class SafariFloorDropsModule extends Module {
 	/** Just a carrier so the constructor can both build the settings and keep references to them. */
 	private static final class Settings {
 		final NumberSetting scanDelay = new NumberSetting("Scan Delay", 1, 200, 20, true);
-		final ColorSetting color = new ColorSetting("Color", 0, 255, 0, 128);
-		final BooleanSetting depthCheck = BooleanSetting.cheat("Depth Check", "Depth Check", true, true);
+		final ColorSetting color = new ColorSetting("Color", 255, 0, 0, 107);
+		final BooleanSetting depthCheck = new BooleanSetting("Depth Check", false);
 	}
 
 	// ---- lifecycle ----------------------------------------------------------------------

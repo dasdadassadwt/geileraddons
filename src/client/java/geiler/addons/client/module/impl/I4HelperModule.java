@@ -1,6 +1,8 @@
 package geiler.addons.client.module.impl;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import geiler.addons.client.dungeon.DungeonContextTracker;
+import geiler.addons.client.dungeon.DungeonFloor;
 import geiler.addons.client.module.Category;
 import geiler.addons.client.module.ColorSetting;
 import geiler.addons.client.module.Module;
@@ -78,6 +80,8 @@ public final class I4HelperModule extends Module {
 
 	private boolean onDevice;
 	private boolean notified;
+	private Object contextLevel;
+	private DungeonFloor contextFloor;
 
 	private I4HelperModule() {
 		this(
@@ -112,31 +116,41 @@ public final class I4HelperModule extends Module {
 
 	@Override
 	protected void onEnable() {
-		onDevice = false;
-		notified = false;
-		Arrays.fill(highlighted, NONE);
-		delayedSounds.clear();
+		clearDeviceState();
+		contextLevel = null;
+		contextFloor = null;
 	}
 
 	@Override
 	protected void onDisable() {
-		onDevice = false;
-		notified = false;
-		Arrays.fill(highlighted, NONE);
-		delayedSounds.clear();
+		clearDeviceState();
+		contextLevel = null;
+		contextFloor = null;
 	}
 
 	public void tick() {
 		if (!isEnabled()) return;
 
-		LocalPlayer player = Minecraft.getInstance().player;
-		boolean nowOnDevice = false;
-		if (player != null) {
-			double x = player.getX();
-			double z = player.getZ();
-			int y = Mth.floor(player.getY());
-			nowOnDevice = x > 62 && x < 65 && y == DEVICE_Y && z > 33 && z < 37;
+		Minecraft client = Minecraft.getInstance();
+		DungeonFloor floor = DungeonContextTracker.currentFloor();
+		if (!supportsDungeonContext(DungeonContextTracker.inDungeon(), floor)
+			|| client.level == null || client.player == null) {
+			clearDeviceState();
+			contextLevel = null;
+			contextFloor = null;
+			return;
 		}
+		if (contextLevel != client.level || contextFloor != floor) {
+			clearDeviceState();
+			contextLevel = client.level;
+			contextFloor = floor;
+		}
+
+		LocalPlayer player = client.player;
+		double x = player.getX();
+		double z = player.getZ();
+		int y = Mth.floor(player.getY());
+		boolean nowOnDevice = x > 62 && x < 65 && y == DEVICE_Y && z > 33 && z < 37;
 
 		if (nowOnDevice != onDevice) {
 			onDevice = nowOnDevice;
@@ -156,6 +170,24 @@ public final class I4HelperModule extends Module {
 		}
 
 		tickDelayedSounds();
+	}
+
+	static boolean supportsDungeonContext(boolean inDungeon, DungeonFloor floor) {
+		return inDungeon && (floor == DungeonFloor.F7 || floor == DungeonFloor.M7);
+	}
+
+	private boolean hasCurrentDeviceContext() {
+		Minecraft client = Minecraft.getInstance();
+		DungeonFloor floor = DungeonContextTracker.currentFloor();
+		return client.level != null && client.player != null && client.level == contextLevel && floor == contextFloor
+			&& supportsDungeonContext(DungeonContextTracker.inDungeon(), floor);
+	}
+
+	private void clearDeviceState() {
+		onDevice = false;
+		notified = false;
+		Arrays.fill(highlighted, NONE);
+		delayedSounds.clear();
 	}
 
 	/**
@@ -181,7 +213,7 @@ public final class I4HelperModule extends Module {
 	}
 
 	public void onBlockChange(BlockPos pos, BlockState state) {
-		if (!isEnabled() || !onDevice) return;
+		if (!isEnabled() || !onDevice || !hasCurrentDeviceContext()) return;
 		int index = indexOf(pos);
 		if (index == -1) return;
 
@@ -195,7 +227,7 @@ public final class I4HelperModule extends Module {
 	}
 
 	public void onChatMessage(String message) {
-		if (!isEnabled() || !onDevice) return;
+		if (!isEnabled() || !onDevice || !hasCurrentDeviceContext()) return;
 		String normalized = ChatText.plain(message == null ? "" : message).trim();
 		var matcher = COMPLETED_DEVICE.matcher(normalized);
 		if (!matcher.matches()) return;
@@ -212,7 +244,7 @@ public final class I4HelperModule extends Module {
 
 	/** @return true if the subtitle should be suppressed */
 	public boolean onSubtitle(String message) {
-		if (!isEnabled() || !onDevice) return false;
+		if (!isEnabled() || !onDevice || !hasCurrentDeviceContext()) return false;
 		String normalized = ChatText.plain(message == null ? "" : message).trim();
 		for (Pattern pattern : SUPPRESSED_SUBTITLES) {
 			if (pattern.matcher(normalized).matches()) return true;
@@ -221,7 +253,7 @@ public final class I4HelperModule extends Module {
 	}
 
 	public void render(LevelRenderContext context) {
-		if (!isEnabled() || !onDevice) return;
+		if (!isEnabled() || !onDevice || !hasCurrentDeviceContext()) return;
 
 		Vec3 camPos = Minecraft.getInstance().gameRenderer.getMainCamera().position();
 		PoseStack poseStack = context.poseStack();

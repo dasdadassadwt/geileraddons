@@ -10,20 +10,8 @@ public final class GardenPlotGeometry {
 	public static List<Segment> perimeter(GardenPlotGrid.Plot plot, double y, double inset) {
 		if (plot == null || !Double.isFinite(y) || !Double.isFinite(inset)) return List.of();
 		double padding = clamp(inset, 0.0, GardenPlotGrid.PLOT_SIZE / 2.0 - 0.01);
-		double minX = plot.minX() + padding;
-		double maxX = plot.maxX() - padding;
-		double minZ = plot.minZ() + padding;
-		double maxZ = plot.maxZ() - padding;
-		Point northWest = new Point(minX, y, minZ);
-		Point northEast = new Point(maxX, y, minZ);
-		Point southEast = new Point(maxX, y, maxZ);
-		Point southWest = new Point(minX, y, maxZ);
-		return List.of(
-			new Segment(northWest, northEast),
-			new Segment(northEast, southEast),
-			new Segment(southEast, southWest),
-			new Segment(southWest, northWest)
-		);
+		return ring(plot.minX() + padding, plot.maxX() - padding,
+			plot.minZ() + padding, plot.maxZ() - padding, y);
 	}
 
 	/**
@@ -51,28 +39,73 @@ public final class GardenPlotGeometry {
 		edges.add(new Segment(new Point(maxX, low, minZ), new Point(maxX, high, minZ)));
 		edges.add(new Segment(new Point(maxX, low, maxZ), new Point(maxX, high, maxZ)));
 		edges.add(new Segment(new Point(minX, low, maxZ), new Point(minX, high, maxZ)));
-		edges.addAll(perimeter(plot, high, padding));
-		edges.addAll(perimeter(plot, low, padding));
+		// The rings are built from the rectangle computed above, not from a second inset: asking
+		// perimeter() to pad again would leave the rings a full padding inside the walls and every
+		// corner of the box open.
+		edges.addAll(ring(minX, maxX, minZ, maxZ, high));
+		edges.addAll(ring(minX, maxX, minZ, maxZ, low));
 		return List.copyOf(edges);
+	}
+
+	/** One horizontal ring of the inset rectangle, at a fixed world height. */
+	private static List<Segment> ring(double minX, double maxX, double minZ, double maxZ, double y) {
+		Point northWest = new Point(minX, y, minZ);
+		Point northEast = new Point(maxX, y, minZ);
+		Point southEast = new Point(maxX, y, maxZ);
+		Point southWest = new Point(minX, y, maxZ);
+		return List.of(
+			new Segment(northWest, northEast),
+			new Segment(northEast, southEast),
+			new Segment(southEast, southWest),
+			new Segment(southWest, northWest)
+		);
 	}
 
 	/** Dashes any list of edges, so a flat perimeter and a box share one dash rule. */
 	public static List<Segment> dashedSegments(List<Segment> edges, double dashLength, double gapLength) {
+		return dashedSegments(edges, dashLength, gapLength, NO_DASH_BUDGET);
+	}
+
+	/**
+	 * Dashes a list of edges without letting the segment count run away.
+	 *
+	 * <p>A flat outline is cheap, but each edge of a box is dashed on its own, and the long rings of
+	 * an unknown plot turned into roughly sixty segments each - about fifteen hundred line draws in a
+	 * frame where every plot is unknown, which is exactly what a fresh session looks like. When an
+	 * edge would exceed the budget its dashes are lengthened to fit, so the outline stays visibly
+	 * dashed instead of being dropped.
+	 *
+	 * @param maxDashesPerEdge most dashes one edge may contribute, or {@link #NO_DASH_BUDGET} for none
+	 */
+	public static List<Segment> dashedSegments(List<Segment> edges, double dashLength, double gapLength,
+		int maxDashesPerEdge) {
 		if (edges == null || !Double.isFinite(dashLength) || !Double.isFinite(gapLength)
 			|| dashLength <= 0.0 || gapLength < 0.0) {
 			return List.of();
 		}
+		int budget = maxDashesPerEdge <= 0 ? Integer.MAX_VALUE : maxDashesPerEdge;
 		List<Segment> dashes = new ArrayList<>();
 		for (Segment edge : edges) {
 			if (edge == null) continue;
 			double length = edge.length();
-			for (double start = 0.0; start < length; start += dashLength + gapLength) {
-				double end = Math.min(length, start + dashLength);
+			if (length <= 0.0) continue;
+			// Counting the dashes rather than walking a running offset keeps the budget exact: a
+			// truncated step can leave the loop short by one and add a final dash past the end.
+			int count = (int) Math.min(budget, Math.ceil(length / (dashLength + gapLength)));
+			if (count < 1) count = 1;
+			double step = length / count;
+			double dash = Math.min(dashLength, step);
+			for (int index = 0; index < count; index++) {
+				double start = index * step;
+				double end = Math.min(length, start + dash);
 				dashes.add(new Segment(edge.pointAt(start / length), edge.pointAt(end / length)));
 			}
 		}
 		return List.copyOf(dashes);
 	}
+
+	/** Passed as {@code maxDashesPerEdge} when an edge may dash however many times it needs. */
+	public static final int NO_DASH_BUDGET = 0;
 
 	/** Shortest box the renderer will draw, in blocks. */
 	private static final double MIN_BOX_HEIGHT = 0.05;

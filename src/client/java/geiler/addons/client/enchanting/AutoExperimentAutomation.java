@@ -1,7 +1,7 @@
 package geiler.addons.client.enchanting;
 
 /**
- * Minecraft-free timing and pause state for Chronomatron and Ultrasequencer automation.
+ * Minecraft-free timing and pause state for Chronomatron automation.
  *
  * <p>Each tick can return at most one click request. The caller must validate the live screen and
  * menu again, dispatch through its guarded vanilla click path, and report the result before this
@@ -213,6 +213,50 @@ public final class AutoExperimentAutomation {
 		return tick(snapshot, nowNanos, firstClickDelayNanos);
 	}
 
+	/**
+	 * Re-anchors a scheduled sequence after the player correctly advances it manually. The stale
+	 * delayed slot is discarded, and the newly observed step receives the normal inter-click delay.
+	 */
+	public Decision synchronizeAfterManualProgress(Snapshot snapshot, long nowNanos, long clickDelayNanos) {
+		reset();
+		if (snapshot == null || !snapshot.enabled()) return waitDecision();
+		if (!snapshot.gameEnabled() || !eligibleContext(snapshot)) {
+			clearContext();
+			return waitDecision();
+		}
+		beginContext(snapshot);
+		if (snapshot.tier() == null || snapshot.tier() == ExperimentTier.UNKNOWN) {
+			return pause("The experiment tier is unknown; automation paused without clicking.");
+		}
+		if (snapshot.milestoneReached() || snapshot.phase() == ExperimentPhase.COMPLETE) {
+			mode = Mode.STOPPED;
+			return decision(Action.STOPPED, "");
+		}
+
+		ExperimentPhase phase = snapshot.phase() == null ? ExperimentPhase.IDLE : snapshot.phase();
+		if (phase == ExperimentPhase.MEMORIZE || phase == ExperimentPhase.WAITING) {
+			mode = Mode.IDLE;
+			stageWatchdogArmed = false;
+			return waitDecision();
+		}
+		if (!ExperimentPhase.isKnownStatus(snapshot.type(), snapshot.status())
+			&& !isCorrectFeedback(snapshot.status())) {
+			return pause("The experiment state is unavailable; automation paused without clicking.");
+		}
+		if (phase == ExperimentPhase.ROUND_COMPLETE || isCompletedSequence(snapshot)) {
+			beginAwaitingStage(snapshot, nowNanos);
+			return waitDecision();
+		}
+		if (!hasExpectedStep(snapshot)) {
+			return pause("The expected experiment sequence is unavailable; automation paused without clicking.");
+		}
+
+		captureDelayedStep(snapshot);
+		dueAtNanos = nowNanos + Math.max(0L, clickDelayNanos);
+		mode = Mode.CLICK_DELAY;
+		return waitDecision();
+	}
+
 	/** Completes the one outstanding click request. A rejected dispatch is never retried. */
 	public Decision clickResult(boolean dispatched, Snapshot afterDispatch, long nowNanos,
 		long clickDelayNanos) {
@@ -265,8 +309,7 @@ public final class AutoExperimentAutomation {
 
 	private boolean eligibleContext(Snapshot snapshot) {
 		return snapshot.contextValid() && snapshot.screenIdentity() != null && snapshot.menuIdentity() != null
-			&& (snapshot.type() == ExperimentType.CHRONOMATRON
-				|| snapshot.type() == ExperimentType.ULTRASEQUENCER);
+			&& snapshot.type() == ExperimentType.CHRONOMATRON;
 	}
 
 	private boolean matchesContext(Snapshot snapshot) {

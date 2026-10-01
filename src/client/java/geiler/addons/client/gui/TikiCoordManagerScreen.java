@@ -187,9 +187,12 @@ public class TikiCoordManagerScreen extends Screen {
 	}
 
 	private void button(GuiGraphicsExtractor graphics, Font font, Rect rect, String label, int mouseX, int mouseY, boolean hoverable, int background, int hoverBackground) {
-		int color = hoverable && rect.contains(mouseX, mouseY) ? hoverBackground : background;
+		boolean hovered = hoverable && rect.contains(mouseX, mouseY);
+		int color = hovered ? hoverBackground : background;
 		roundedRect(graphics, rect.x, rect.y, rect.w, rect.h, 4, color, color);
-		graphics.centeredText(font, label, rect.x + rect.w / 2, rect.y + (rect.h - 8) / 2, TEXT_PRIMARY);
+		// A hovered button is filled with the accent, so its label has to match that surface.
+		graphics.centeredText(font, label, rect.x + rect.w / 2, rect.y + (rect.h - 8) / 2,
+			hovered ? TEXT_ON_ACCENT : TEXT_PRIMARY);
 	}
 
 	private void renderScrollbar(GuiGraphicsExtractor graphics, Rect viewport, int contentHeight) {

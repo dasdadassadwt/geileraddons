@@ -22,10 +22,11 @@ import java.util.List;
 public final class MacroTransfer {
 	private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 	private static final String FORMAT = "geileraddons-macros";
-	/** 5 added chat event stacks and conditional macro calls; both decode from 4 with their defaults. */
-	private static final int VERSION = 5;
+	/** 7 changes macro canvas zoom to a 1%-100% range. */
+	private static final int VERSION = 7;
 	private static final int MAX_PAYLOAD_LENGTH = 512_000;
 	private static final int MAX_MACROS = 64;
+	public static final int MAX_FUNCTIONS = MacroFunction.MAX_FUNCTIONS;
 	private static final int MAX_STEPS = 512;
 	private static final int MAX_DEPTH = MacroTreeRules.MAX_DEPTH;
 	private static final int MAX_TEXT_LENGTH = 4_096;
@@ -51,15 +52,19 @@ public final class MacroTransfer {
 		JsonArray macros = new JsonArray();
 		if (source != null) {
 			for (MacroDefinition macro : source) {
-				if (macro == null || macros.size() >= MAX_MACROS) break;
+				if (macro == null) continue;
+				if (macros.size() >= MAX_MACROS) throw new IllegalArgumentException(
+					"A macro package can contain at most " + MAX_MACROS + " macros.");
 				macros.add(writeMacro(macro));
 			}
 		}
 		root.add("macros", macros);
 		JsonArray functionEntries = new JsonArray();
 		if (functions != null) for (MacroFunction function : functions) {
-			if (functionEntries.size() >= 256) break;
-			if (function != null) functionEntries.add(writeFunction(function));
+			if (function == null) continue;
+			if (functionEntries.size() >= MAX_FUNCTIONS) throw new IllegalArgumentException(
+				"A macro package can contain at most " + MAX_FUNCTIONS + " reusable functions.");
+			functionEntries.add(writeFunction(function));
 		}
 		root.add("functions", functionEntries);
 		JsonArray globalEntries = new JsonArray();
@@ -112,8 +117,10 @@ public final class MacroTransfer {
 			Map<String, String> functionIds = new HashMap<>();
 			JsonArray functionSource = array(root, "functions");
 			if (functionSource != null) {
+				if (functionSource.size() > MAX_FUNCTIONS) {
+					return failure("The macro package has more than " + MAX_FUNCTIONS + " reusable functions.");
+				}
 				for (JsonElement entry : functionSource) {
-					if (importedFunctions.size() >= 256) break;
 					if (entry == null || !entry.isJsonObject()) continue;
 					FunctionImport functionImport = readFunction(entry.getAsJsonObject());
 					if (functionImport == null) continue;
@@ -124,6 +131,7 @@ public final class MacroTransfer {
 			for (MacroDefinition macro : result) for (MacroScript script : macro.scripts()) {
 				remapReferences(script.steps(), macroIds, functionIds, 0);
 			}
+			for (MacroDefinition macro : result) remapReferences(macro.detachedBlocks(), macroIds, functionIds, 0);
 			for (MacroFunction function : importedFunctions) remapReferences(function.steps(), macroIds, functionIds, 0);
 			List<MacroVariableStore.Definition> importedGlobals = readGlobalVariables(
 				version >= 4 ? array(root, "globalVariables") : null);
@@ -170,9 +178,11 @@ public final class MacroTransfer {
 		result.add("islands", islands);
 		result.add("steps", MacroStepConfigCodec.encode(macro.steps()));
 		result.add("scripts", MacroScriptConfigCodec.encode(macro.scripts()));
+		result.add("detachedBlocks", MacroStepConfigCodec.encode(macro.detachedBlocks()));
 		result.addProperty("canvasPanX", macro.canvasPanX());
 		result.addProperty("canvasPanY", macro.canvasPanY());
 		result.addProperty("canvasZoom", macro.canvasZoom());
+		result.addProperty("canvasZoomVersion", 2);
 		return result;
 	}
 
@@ -197,6 +207,7 @@ public final class MacroTransfer {
 	}
 
 	private static JsonObject writeStep(MacroStep step, int depth) {
+		if (step instanceof MacroStep.Unknown unknown) return unknown.serializedData();
 		JsonObject result = new JsonObject();
 		result.addProperty("type", step.type());
 		result.addProperty("delayMin", step.delayMin());
@@ -219,6 +230,32 @@ public final class MacroTransfer {
 		if (step instanceof MacroStep.Wait value) {
 			result.addProperty("minMillis", value.minMillis());
 			result.addProperty("maxMillis", value.maxMillis());
+			result.addProperty("mode", value.mode().name());
+			if (value.mode() == MacroStep.Wait.Mode.CONDITION) {
+				result.add("condition", writeCondition(value.condition(), depth + 1));
+			}
+		}
+		if (step instanceof MacroStep.Comment value) result.addProperty("text", limited(value.text(), MAX_TEXT_LENGTH));
+		if (step instanceof MacroStep.Scroll value) {
+			result.addProperty("direction", value.direction().name());
+			result.addProperty("amount", value.amount());
+		}
+		if (step instanceof MacroStep.InventoryClick value) {
+			result.addProperty("target", value.target().name());
+			result.addProperty("slotId", value.slotId());
+			result.addProperty("name", value.name());
+			result.addProperty("contains", value.contains());
+			result.addProperty("scope", value.scope());
+			result.addProperty("occurrence", value.occurrence());
+			result.addProperty("button", value.button());
+			result.addProperty("shift", value.shift());
+		}
+		if (step instanceof MacroStep.UpdateVariable value) {
+			result.addProperty("operation", value.operation().name());
+			result.addProperty("name", value.name());
+			result.addProperty("amount", value.amount());
+			if (value.globalVariableId() != null) result.addProperty("globalVariableId", value.globalVariableId());
+			result.add("value", writeValue(value.value()));
 		}
 		if (step instanceof MacroStep.Key value) {
 			result.addProperty("key", value.key());
@@ -255,15 +292,33 @@ public final class MacroTransfer {
 			result.add("condition", writeCondition(value.condition(), depth + 1));
 			result.add("untilSteps", writeSteps(value.steps(), depth + 1));
 		}
+		if (step instanceof MacroStep.Switch value) {
+			result.addProperty("name", value.name());
+			if (value.globalVariableId() != null) result.addProperty("globalVariableId", value.globalVariableId());
+			JsonArray cases = new JsonArray();
+			for (MacroStep.SwitchCase branch : value.cases()) {
+				if (cases.size() >= 16) break;
+				JsonObject item = new JsonObject();
+				item.addProperty("value", limited(branch.value(), MAX_TEXT_LENGTH));
+				item.add("steps", writeSteps(branch.steps(), depth + 1));
+				cases.add(item);
+			}
+			result.add("cases", cases);
+			result.add("defaultSteps", writeSteps(value.defaultSteps(), depth + 1));
+		}
 		return result;
 	}
 
 	private static JsonArray writeSteps(List<MacroStep> source, int depth) {
 		JsonArray result = new JsonArray();
-		if (depth > MAX_DEPTH || source == null) return result;
+		if (source == null) return result;
 		for (MacroStep step : source) {
-			if (result.size() >= MAX_STEPS) break;
-			if (step != null) result.add(writeStep(step, depth));
+			if (step == null) continue;
+			if (result.size() >= MAX_STEPS) throw new IllegalStateException("Macro package contains too many steps");
+			if (depth > MAX_DEPTH && !(step instanceof MacroStep.Unknown)) {
+				throw new IllegalStateException("Macro package contains a step beyond the supported nesting depth");
+			}
+			result.add(writeStep(step, depth));
 		}
 		return result;
 	}
@@ -309,6 +364,19 @@ public final class MacroTransfer {
 		} else if (condition instanceof MacroCondition.Not value) {
 			result.addProperty("type", "not");
 			result.add("child", writeCondition(value.child(), depth + 1));
+		} else if (condition instanceof MacroCondition.Variable value) {
+			result.addProperty("type", "variable");
+			result.addProperty("name", value.name());
+			if (value.globalVariableId() != null) result.addProperty("globalVariableId", value.globalVariableId());
+			result.addProperty("operator", value.operator().name());
+			result.add("value", writeValue(value.value()));
+		} else if (condition instanceof MacroCondition.Hypixel value) {
+			result.addProperty("type", "hypixel");
+			result.addProperty("field", value.field().name());
+			result.addProperty("operator", value.operator().name());
+			result.addProperty("expected", value.expected());
+			result.addProperty("argument", value.argument());
+			result.addProperty("plotId", value.plotId());
 		}
 		return result;
 	}
@@ -344,7 +412,9 @@ public final class MacroTransfer {
 			JsonArray steps = array(object, "steps");
 			if (steps != null) {
 				for (JsonElement entry : steps) {
-					if (result.steps().size() >= MAX_STEPS) break;
+					if (result.steps().size() >= MAX_STEPS) {
+						throw new IllegalArgumentException("Macro package contains too many steps");
+					}
 					if (entry.isJsonObject()) {
 						MacroStep step = readStep(entry.getAsJsonObject(), 0);
 						if (step != null) result.steps().add(step);
@@ -352,8 +422,13 @@ public final class MacroTransfer {
 				}
 			}
 		}
+		result.restoreDetachedBlocks(MacroStepConfigCodec.decode(array(object, "detachedBlocks")));
+		float canvasZoom = (float) decimal(object, "canvasZoom", 1);
+		int canvasZoomVersion = integer(object, "canvasZoomVersion", 0);
+		if (canvasZoomVersion < 1) canvasZoom *= 100.0f;
+		if (canvasZoomVersion < 2) canvasZoom *= 100.0f;
 		result.setCanvasView((float) decimal(object, "canvasPanX", 0),
-			(float) decimal(object, "canvasPanY", 0), (float) decimal(object, "canvasZoom", 1));
+			(float) decimal(object, "canvasPanY", 0), canvasZoom);
 		return result;
 	}
 
@@ -387,6 +462,11 @@ public final class MacroTransfer {
 				remapReferences(repeat.steps(), macroIds, functionIds, depth + 1);
 			} else if (step instanceof MacroStep.RepeatUntil repeatUntil) {
 				remapReferences(repeatUntil.steps(), macroIds, functionIds, depth + 1);
+			} else if (step instanceof MacroStep.Switch value) {
+				for (MacroStep.SwitchCase branch : value.cases()) {
+					remapReferences(branch.steps(), macroIds, functionIds, depth + 1);
+				}
+				remapReferences(value.defaultSteps(), macroIds, functionIds, depth + 1);
 			}
 		}
 	}
@@ -396,15 +476,44 @@ public final class MacroTransfer {
 		catch (IllegalArgumentException ignored) { return MacroValue.Type.TEXT; }
 	}
 
+	private static JsonObject writeValue(MacroValue value) {
+		if (value == null) value = MacroValue.literal(MacroValue.Type.TEXT, "");
+		JsonObject result = new JsonObject();
+		result.addProperty("type", value.type().name());
+		result.addProperty("variable", value.variableReference());
+		result.addProperty("scope", value.scope().name());
+		result.addProperty("value", limited(value.value(), MAX_TEXT_LENGTH));
+		return result;
+	}
+
+	private static MacroValue readValue(JsonElement element) {
+		if (element == null || !element.isJsonObject()) return MacroValue.literal(MacroValue.Type.TEXT, "");
+		JsonObject object = element.getAsJsonObject();
+		boolean variable = booleanValue(object, "variable", false);
+		MacroValue.Scope scope;
+		try {
+			scope = MacroValue.Scope.valueOf(string(object, "scope", variable ? "LOCAL" : "NONE"));
+		} catch (IllegalArgumentException ignored) {
+			scope = variable ? MacroValue.Scope.LOCAL : MacroValue.Scope.NONE;
+		}
+		return new MacroValue(valueType(string(object, "type", "TEXT")), variable,
+			limited(string(object, "value", ""), MAX_TEXT_LENGTH), scope);
+	}
+
 	private static MacroStep readStep(JsonObject object, int depth) {
-		if (depth > MAX_DEPTH) return null;
+		if (depth > MAX_DEPTH) return new MacroStep.Unknown(object, true);
 		String type = string(object, "type", "");
 		MacroStep result = switch (type) {
-			case "command" -> new MacroStep.Command(limited(string(object, "command", ""), MAX_TEXT_LENGTH));
+			case "command" -> readCommandAsMessage(object);
 			case "chat" -> new MacroStep.Chat(limited(string(object, "message", ""), MAX_TEXT_LENGTH));
 			case "title" -> readTitle(object);
 			case "sound" -> new MacroStep.Sound(string(object, "soundId", "minecraft:entity.player.levelup"));
-			case "wait" -> new MacroStep.Wait(integer(object, "minMillis", 0), integer(object, "maxMillis", 0));
+			case "wait" -> readWait(object, depth);
+			case "comment" -> new MacroStep.Comment(limited(string(object, "text", "Comment"), MAX_TEXT_LENGTH));
+			case "stop_run" -> new MacroStep.StopRun();
+			case "scroll" -> readScroll(object);
+			case "inventory_click" -> readInventoryClick(object);
+			case "update_variable" -> readUpdateVariable(object);
 			case "key" -> {
 				int legacy = integer(object, "holdMillis", 250);
 				int minimum = integer(object, "holdMinMillis", legacy);
@@ -412,21 +521,118 @@ public final class MacroTransfer {
 				yield new MacroStep.Key(string(object, "key", "key.keyboard.space"),
 					booleanValue(object, "hold", false), minimum, maximum);
 			}
-			case "click_slot" -> new MacroStep.ClickSlot(integer(object, "slotId", 0),
-				integer(object, "button", 0), booleanValue(object, "shift", false));
-			case "click_item" -> new MacroStep.ClickItem(limited(string(object, "name", ""), MAX_TEXT_LENGTH),
-				booleanValue(object, "contains", true), string(object, "scope", "container"),
-				integer(object, "occurrence", 0), integer(object, "button", 0),
-				booleanValue(object, "shift", false));
+			case "click_slot" -> readLegacyClickSlot(object);
+			case "click_item" -> readLegacyClickItem(object);
 			case "close_screen" -> new MacroStep.CloseScreen();
+			case "select_hotbar_slot" -> readHotbarAsInput(object);
+			case "mouse_button" -> readMouseAsInput(object);
+			case "block_player_input" -> new MacroStep.BlockPlayerInput(integer(object, "durationMillis", 1_000));
+			case "start_block_player_input" -> new MacroStep.StartBlockPlayerInput();
+			case "stop_block_player_input" -> new MacroStep.StopBlockPlayerInput();
+			case "set_variable" -> readLegacySetVariable(object);
+			case "change_variable" -> readLegacyChangeVariable(object);
+			case "function_call" -> readFunctionCall(object);
+			case "macro_call" -> readMacroCall(object, depth + 1);
 			case "world_switch" -> new MacroStep.WorldSwitch(selectableIsland(string(object, "island", Island.HUB.name())));
 			case "wait_until" -> new MacroStep.WaitUntil(readCondition(object.get("condition"), depth + 1));
 			case "if" -> readIf(object, depth + 1);
 			case "repeat" -> readRepeat(object, depth + 1);
 			case "repeat_until" -> readRepeatUntil(object, depth + 1);
-			default -> null;
+			case "switch" -> readSwitch(object, depth + 1);
+			default -> new MacroStep.Unknown(object);
 		};
-		if (result != null) result.setDelay(integer(object, "delayMin", 0), integer(object, "delayMax", 0));
+		if (result != null) {
+			result.setDelay(integer(object, "delayMin", 0), integer(object, "delayMax", 0));
+			if (result instanceof MacroStep.Base base) {
+				base.setEditorPosition(decimal(object, "editorX", 0), decimal(object, "editorY", 0));
+			}
+		}
+		return result;
+	}
+
+	private static MacroStep.Chat readCommandAsMessage(JsonObject object) {
+		String command = string(object, "command", "").strip();
+		if (!command.isEmpty() && !command.startsWith("/")) command = "/" + command;
+		return new MacroStep.Chat(command);
+	}
+
+	private static MacroStep.Key readHotbarAsInput(JsonObject object) {
+		MacroStep.Key key = new MacroStep.Key("", false, 250);
+		key.setInputMode(MacroStep.Key.InputMode.HOTBAR);
+		key.setHotbarSlot(integer(object, "slot", 1));
+		return key;
+	}
+
+	private static MacroStep.Key readMouseAsInput(JsonObject object) {
+		MacroStep.MouseButton.Button button;
+		try { button = MacroStep.MouseButton.Button.valueOf(string(object, "button", "LEFT")); }
+		catch (IllegalArgumentException ignored) { button = MacroStep.MouseButton.Button.LEFT; }
+		int millis = integer(object, "holdMillis", 250);
+		MacroStep.Key key = new MacroStep.Key("", booleanValue(object, "hold", false), millis);
+		key.setInputMode(MacroStep.Key.InputMode.MOUSE);
+		key.setMouseButton(button);
+		return key;
+	}
+
+	private static MacroStep.InventoryClick readLegacyClickSlot(JsonObject object) {
+		MacroStep.InventoryClick result = new MacroStep.InventoryClick();
+		result.setTarget(MacroStep.InventoryClick.Target.SLOT);
+		result.setSlotId(integer(object, "slotId", 0));
+		result.setButton(integer(object, "button", 0));
+		result.setShift(booleanValue(object, "shift", false));
+		return result;
+	}
+
+	private static MacroStep.InventoryClick readLegacyClickItem(JsonObject object) {
+		MacroStep.InventoryClick result = new MacroStep.InventoryClick();
+		result.setTarget(MacroStep.InventoryClick.Target.ITEM);
+		result.setName(string(object, "name", ""));
+		result.setContains(booleanValue(object, "contains", true));
+		result.setScope(string(object, "scope", "container"));
+		result.setOccurrence(integer(object, "occurrence", 0));
+		result.setButton(integer(object, "button", 0));
+		result.setShift(booleanValue(object, "shift", false));
+		return result;
+	}
+
+	private static MacroStep.UpdateVariable readLegacySetVariable(JsonObject object) {
+		MacroValue value = readValue(object.get("value"));
+		if (!object.has("value") || !object.get("value").isJsonObject()) {
+			value = MacroValue.literal(valueType(string(object, "valueType", "TEXT")), "");
+		} else {
+			MacroValue.Type legacyType = valueType(string(object, "valueType", value.type().name()));
+			value = new MacroValue(legacyType, value.variableReference(), value.value(), value.scope());
+		}
+		MacroStep.UpdateVariable result = new MacroStep.UpdateVariable();
+		result.setOperation(MacroStep.UpdateVariable.Operation.SET);
+		result.setName(string(object, "name", "value"));
+		result.setGlobalVariableId(string(object, "globalVariableId", null));
+		result.setValue(value);
+		return result;
+	}
+
+	private static MacroStep.UpdateVariable readLegacyChangeVariable(JsonObject object) {
+		MacroStep.UpdateVariable result = new MacroStep.UpdateVariable();
+		result.setOperation(MacroStep.UpdateVariable.Operation.ADD);
+		result.setName(string(object, "name", "value"));
+		result.setGlobalVariableId(string(object, "globalVariableId", null));
+		result.setAmount(decimal(object, "amount", 1));
+		return result;
+	}
+
+	private static MacroStep.FunctionCall readFunctionCall(JsonObject object) {
+		MacroStep.FunctionCall result = new MacroStep.FunctionCall(string(object, "functionId", ""));
+		JsonArray arguments = array(object, "arguments");
+		if (arguments != null) for (JsonElement value : arguments) {
+			if (result.arguments().size() >= 32) break;
+			result.arguments().add(readValue(value));
+		}
+		return result;
+	}
+
+	private static MacroStep.MacroCall readMacroCall(JsonObject object, int depth) {
+		MacroStep.MacroCall result = new MacroStep.MacroCall(integer(object, "macroId", 0));
+		if (object.has("condition")) result.setCondition(readCondition(object.get("condition"), depth));
 		return result;
 	}
 
@@ -458,18 +664,81 @@ public final class MacroTransfer {
 		return result;
 	}
 
-	private static MacroStep.RepeatUntil readRepeatUntil(JsonObject object, int depth) {
-		MacroStep.RepeatUntil result = new MacroStep.RepeatUntil(readCondition(object.get("condition"), depth));
+	private static MacroStep.Repeat readRepeatUntil(JsonObject object, int depth) {
+		MacroStep.Repeat result = new MacroStep.Repeat(false, 1);
+		result.setMode(MacroStep.Repeat.Mode.UNTIL);
+		result.setCondition(readCondition(object.get("condition"), depth));
 		JsonArray steps = array(object, "untilSteps");
 		if (steps == null) steps = array(object, "steps");
 		addSteps(result.steps(), steps, depth);
 		return result;
 	}
 
+	private static MacroStep.Wait readWait(JsonObject object, int depth) {
+		MacroStep.Wait result = new MacroStep.Wait(integer(object, "minMillis", 0), integer(object, "maxMillis", 0));
+		if ("CONDITION".equalsIgnoreCase(string(object, "mode", "DURATION"))) {
+			result.setMode(MacroStep.Wait.Mode.CONDITION);
+			result.setCondition(readCondition(object.get("condition"), depth + 1));
+		}
+		return result;
+	}
+
+	private static MacroStep.Switch readSwitch(JsonObject object, int depth) {
+		MacroStep.Switch result = new MacroStep.Switch();
+		result.setName(string(object, "name", "value"));
+		result.setGlobalVariableId(string(object, "globalVariableId", null));
+		result.cases().clear();
+		JsonArray cases = array(object, "cases");
+		if (cases != null) for (JsonElement entry : cases) {
+			if (result.cases().size() >= 16) break;
+			if (entry == null || !entry.isJsonObject()) continue;
+			JsonObject item = entry.getAsJsonObject();
+			MacroStep.SwitchCase branch = new MacroStep.SwitchCase(
+				limited(string(item, "value", ""), MAX_TEXT_LENGTH));
+			addSteps(branch.steps(), array(item, "steps"), depth);
+			result.cases().add(branch);
+		}
+		if (result.cases().isEmpty()) result.addCase();
+		addSteps(result.defaultSteps(), array(object, "defaultSteps"), depth);
+		return result;
+	}
+
+	private static MacroStep.Scroll readScroll(JsonObject object) {
+		MacroStep.Scroll.Direction direction;
+		try { direction = MacroStep.Scroll.Direction.valueOf(string(object, "direction", "DOWN")); }
+		catch (IllegalArgumentException ignored) { direction = MacroStep.Scroll.Direction.DOWN; }
+		return new MacroStep.Scroll(direction, integer(object, "amount", 1));
+	}
+
+	private static MacroStep.InventoryClick readInventoryClick(JsonObject object) {
+		MacroStep.InventoryClick result = new MacroStep.InventoryClick();
+		try { result.setTarget(MacroStep.InventoryClick.Target.valueOf(string(object, "target", "SLOT"))); }
+		catch (IllegalArgumentException ignored) { result.setTarget(MacroStep.InventoryClick.Target.SLOT); }
+		result.setSlotId(integer(object, "slotId", 0));
+		result.setName(string(object, "name", ""));
+		result.setContains(booleanValue(object, "contains", false));
+		result.setScope(string(object, "scope", "container"));
+		result.setOccurrence(integer(object, "occurrence", 0));
+		result.setButton(integer(object, "button", 0));
+		result.setShift(booleanValue(object, "shift", false));
+		return result;
+	}
+
+	private static MacroStep.UpdateVariable readUpdateVariable(JsonObject object) {
+		MacroStep.UpdateVariable result = new MacroStep.UpdateVariable();
+		try { result.setOperation(MacroStep.UpdateVariable.Operation.valueOf(string(object, "operation", "SET"))); }
+		catch (IllegalArgumentException ignored) { result.setOperation(MacroStep.UpdateVariable.Operation.SET); }
+		result.setName(string(object, "name", "value"));
+		result.setGlobalVariableId(string(object, "globalVariableId", null));
+		result.setAmount(decimal(object, "amount", 1));
+		result.setValue(readValue(object.get("value")));
+		return result;
+	}
+
 	private static void addSteps(List<MacroStep> target, JsonArray source, int depth) {
-		if (source == null || depth > MAX_DEPTH) return;
+		if (source == null) return;
 		for (JsonElement entry : source) {
-			if (target.size() >= MAX_STEPS) break;
+			if (target.size() >= MAX_STEPS) throw new IllegalArgumentException("Macro package contains too many nested steps");
 			if (entry.isJsonObject()) {
 				MacroStep step = readStep(entry.getAsJsonObject(), depth);
 				if (step != null) target.add(step);
@@ -494,6 +763,10 @@ public final class MacroTransfer {
 			case "all" -> new MacroCondition.All(readConditions(array(object, "children"), depth + 1));
 			case "any" -> new MacroCondition.Any(readConditions(array(object, "children"), depth + 1));
 			case "not" -> new MacroCondition.Not(readCondition(object.get("child"), depth + 1));
+			case "variable" -> new MacroCondition.Variable(string(object, "name", "value"),
+				variableOperator(string(object, "operator", "EQUALS")), readValue(object.get("value")),
+				string(object, "globalVariableId", null));
+			case "hypixel" -> readHypixelCondition(object);
 			default -> new MacroCondition.Always(true);
 		};
 	}
@@ -505,6 +778,22 @@ public final class MacroTransfer {
 			if (parsed != null) return parsed;
 		}
 		return MacroCondition.ItemScope.fromLegacy(booleanValue(object, "includePlayerInventory", missingLegacyDefault));
+	}
+
+	private static MacroCondition.Hypixel readHypixelCondition(JsonObject object) {
+		MacroCondition.Hypixel.Field field;
+		MacroCondition.Hypixel.Operator operator;
+		try { field = MacroCondition.Hypixel.Field.valueOf(string(object, "field", "ISLAND")); }
+		catch (IllegalArgumentException ignored) { field = MacroCondition.Hypixel.Field.ISLAND; }
+		try { operator = MacroCondition.Hypixel.Operator.valueOf(string(object, "operator", "EQUALS")); }
+		catch (IllegalArgumentException ignored) { operator = MacroCondition.Hypixel.Operator.EQUALS; }
+		return new MacroCondition.Hypixel(field, operator, limited(string(object, "expected", ""), 128),
+			limited(string(object, "argument", ""), 32), integer(object, "plotId", -1));
+	}
+
+	private static MacroCondition.Variable.Operator variableOperator(String raw) {
+		try { return MacroCondition.Variable.Operator.valueOf(raw == null ? "EQUALS" : raw.toUpperCase(java.util.Locale.ROOT)); }
+		catch (IllegalArgumentException ignored) { return MacroCondition.Variable.Operator.EQUALS; }
 	}
 
 	private static List<MacroCondition> readConditions(JsonArray source, int depth) {

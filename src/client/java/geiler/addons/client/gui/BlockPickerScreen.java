@@ -73,10 +73,11 @@ public final class BlockPickerScreen extends Screen {
 			panel.x + 10, panel.y + 21, TEXT_MUTED);
 		List<Option> visible = visibleOptions();
 		Rect view = viewRect();
-		int maxScroll = Math.max(0, visible.size() - Math.max(1, view.h / ROW_HEIGHT));
+		int visibleRows = Math.max(1, view.h / ROW_HEIGHT);
+		int maxScroll = maxScroll(visible.size(), view.h);
 		scroll = Math.max(0, Math.min(scroll, maxScroll));
 		graphics.enableScissor(view.x, view.y, view.x + view.w, view.y + view.h);
-		for (int i = scroll; i < Math.min(visible.size(), scroll + Math.max(1, view.h / ROW_HEIGHT)); i++) {
+		for (int i = scroll; i < Math.min(visible.size(), scroll + visibleRows); i++) {
 			Option option = visible.get(i);
 			int y = view.y + (i - scroll) * ROW_HEIGHT;
 			boolean hover = mouseX >= view.x && mouseX < view.x + view.w && mouseY >= y && mouseY < y + ROW_HEIGHT;
@@ -127,8 +128,20 @@ public final class BlockPickerScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-		scroll = Math.max(0, Math.min(Math.max(0, visibleOptions().size() - 1), scroll - (int) Math.signum(scrollY) * 3));
+		scroll = Math.max(0, Math.min(maxScroll(visibleOptions().size(), viewRect().h),
+			scroll - (int) Math.signum(scrollY) * 3));
 		return true;
+	}
+
+	/**
+	 * The furthest the list may scroll: the whole list minus the rows that fit on screen.
+	 *
+	 * <p>Shared with the render path because two different bounds is how the wheel came to scroll past
+	 * the end and snap back on the next frame: the wheel clamped against the row count, the render
+	 * against the visible row count, and the stricter of the two won a frame late.
+	 */
+	static int maxScroll(int optionCount, int viewportHeight) {
+		return Math.max(0, optionCount - Math.max(1, viewportHeight / ROW_HEIGHT));
 	}
 
 	@Override

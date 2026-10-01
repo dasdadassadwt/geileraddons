@@ -121,41 +121,65 @@ public final class PestChecks {
 			return Optional.empty();
 		});
 		assertEquals(3, detections[0], "removed entities are evicted from the detection cache");
+
+		// Two modules scan the same armour stands in the same tick - the pest highlighter and the plot
+		// border's fallback - so production uses one shared cache and classifies each head once.
+		UUID sharedEntity = UUID.randomUUID();
+		PestDetectionCache shared = PestDetectionCache.SHARED;
+		shared.retainAll(Set.of());
+		int[] sharedDetections = {0};
+		for (int consumer = 0; consumer < 2; consumer++) {
+			shared.get(sharedEntity, playerHead, () -> {
+				sharedDetections[0]++;
+				return Optional.of(PestKind.FLY);
+			});
+		}
+		assertEquals(1, sharedDetections[0], "a head shared by two consumers is classified once");
+		shared.retainAll(Set.of());
 	}
 
 	private static void checkSettings() {
 		PestHighlighterModule module = PestHighlighterModule.INSTANCE;
 		assertSame(Category.FARMING, module.category(), "Pest Highlighter is in Farming");
-		assertTrue(booleanSetting(module, "Box").value(), "box is enabled by default");
-		assertFalse(booleanSetting(module, "Circle").value(), "circle is optional by default");
-		assertFalse(booleanSetting(module, "Tracer").value(), "tracer is optional by default");
-		assertTrue(booleanSetting(module, "Show Name").value(), "name is enabled by default");
+		assertFalse(booleanSetting(module, "Box").value(), "box is off by default");
+		assertTrue(booleanSetting(module, "Circle").value(), "ring mode is enabled by default");
+		assertTrue(booleanSetting(module, "Tracer").value(), "tracer is enabled by default");
+		assertFalse(booleanSetting(module, "Show Name").value(), "name is off by default");
 		BooleanSetting depthCheck = booleanSetting(module, "Depth Check");
-		assertFalse(depthCheck.rawValue(), "depth check is stored off by default");
-		assertTrue(depthCheck.value(),
-			"a closed Cheats gate forces the depth check safe, so a default install cannot see through terrain");
-		assertEquals(1, numberSetting(module, "Scan Interval").intValue(), "scan interval default");
+		assertTrue(depthCheck.rawValue(), "depth check is stored on by default");
+		assertTrue(depthCheck.value(), "depth check is enabled by default");
+		assertEquals(20, numberSetting(module, "Scan Interval").intValue(), "scan interval default");
 		assertEquals("B62F00FF", colorSetting(module, "Outline Color").hex(), "outline default color");
 		assertEquals("B62F003C", colorSetting(module, "Fill Color").hex(), "fill default color");
 		assertClose(2.0, numberSetting(module, "Outline Width").value(), "outline width default");
-		assertClose(0.6, numberSetting(module, "Circle Radius").value(), "circle radius default");
-		assertClose(0.8, numberSetting(module, "Circle Speed").value(), "circle speed default");
-		assertEquals(3, numberSetting(module, "Ring Count").intValue(), "ring count default");
+		assertClose(5.0, numberSetting(module, "Circle Width").value(), "circle width default");
+		assertEquals("00A7FFFF", colorSetting(module, "Circle Color").hex(), "circle default color");
+		assertClose(0.99761915, numberSetting(module, "Circle Radius").value(), "circle radius default");
+		assertClose(0.20129871, numberSetting(module, "Circle Speed").value(), "circle speed default");
+		assertEquals(1, numberSetting(module, "Ring Count").intValue(), "ring count default");
+		assertEquals("00C9FFFF", colorSetting(module, "Tracer Color").hex(), "tracer default color");
+		assertClose(2.0, numberSetting(module, "Tracer Width").value(), "tracer width default");
 
 		BooleanSetting box = booleanSetting(module, "Box");
 		BooleanSetting circle = booleanSetting(module, "Circle");
 		BooleanSetting tracer = booleanSetting(module, "Tracer");
 		try {
+			box.setValue(true);
+			assertTrue(box.value(), "box switch can be enabled independently");
+			assertTrue(circle.value(), "enabling the box leaves ring mode enabled");
+			assertTrue(tracer.value(), "enabling the box leaves the tracer enabled");
+			circle.setValue(false);
+			assertTrue(box.value(), "disabling ring mode leaves the box enabled");
+			assertFalse(circle.value(), "ring mode switch can be disabled independently");
+			assertTrue(tracer.value(), "disabling ring mode leaves the tracer enabled");
+			tracer.setValue(false);
+			assertTrue(box.value(), "disabling the tracer leaves the box enabled");
+			assertFalse(circle.value(), "disabling the tracer leaves ring mode disabled");
+			assertFalse(tracer.value(), "tracer switch can be disabled independently");
+		} finally {
 			box.setValue(false);
 			circle.setValue(true);
 			tracer.setValue(true);
-			assertFalse(box.value(), "box switch is independent");
-			assertTrue(circle.value(), "circle switch is independent");
-			assertTrue(tracer.value(), "tracer switch is independent");
-		} finally {
-			box.setValue(true);
-			circle.setValue(false);
-			tracer.setValue(false);
 		}
 	}
 

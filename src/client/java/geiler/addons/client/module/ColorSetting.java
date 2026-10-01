@@ -7,6 +7,11 @@ public final class ColorSetting implements Setting {
 
 	private final String name;
 	private final String displayName;
+	private final boolean alphaEditable;
+	private final int defaultRed;
+	private final int defaultGreen;
+	private final int defaultBlue;
+	private final int defaultAlpha;
 	private int red;
 	private int green;
 	private int blue;
@@ -27,9 +32,24 @@ public final class ColorSetting implements Setting {
 		this(name, name, red, green, blue, alpha);
 	}
 
+	/** Creates an opaque RGB colour whose alpha cannot be edited or persisted. */
+	public ColorSetting(String name, int red, int green, int blue) {
+		this(name, name, red, green, blue, 255, false);
+	}
+
 	public ColorSetting(String name, String displayName, int red, int green, int blue, int alpha) {
+		this(name, displayName, red, green, blue, alpha, true);
+	}
+
+	private ColorSetting(String name, String displayName, int red, int green, int blue, int alpha,
+		boolean alphaEditable) {
 		this.name = name;
 		this.displayName = displayName;
+		this.alphaEditable = alphaEditable;
+		this.defaultRed = clamp(red);
+		this.defaultGreen = clamp(green);
+		this.defaultBlue = clamp(blue);
+		this.defaultAlpha = alphaEditable ? clamp(alpha) : 255;
 		set(red, green, blue, alpha);
 	}
 
@@ -59,6 +79,10 @@ public final class ColorSetting implements Setting {
 		return alpha;
 	}
 
+	public boolean alphaEditable() {
+		return alphaEditable;
+	}
+
 	public int channel(Channel channel) {
 		if (channel == null) return 0;
 		return switch (channel) {
@@ -71,6 +95,7 @@ public final class ColorSetting implements Setting {
 
 	public void setChannel(Channel channel, int value) {
 		if (channel == null) return;
+		if (channel == Channel.ALPHA && !alphaEditable) return;
 		value = clamp(value);
 		switch (channel) {
 			case RED -> red = value;
@@ -87,9 +112,12 @@ public final class ColorSetting implements Setting {
 		this.red = clamp(red);
 		this.green = clamp(green);
 		this.blue = clamp(blue);
-		this.alpha = clamp(alpha);
+		this.alpha = alphaEditable ? clamp(alpha) : 255;
 		syncHsv();
 	}
+
+	/** Restores the RGBA value declared by the setting's constructor. */
+	public void reset() { set(defaultRed, defaultGreen, defaultBlue, defaultAlpha); }
 
 	// ---- picker ---------------------------------------------------------------------------
 
@@ -142,7 +170,8 @@ public final class ColorSetting implements Setting {
 
 	/** RRGGBBAA, the form the picker's text field reads and writes. */
 	public String hex() {
-		return String.format("%02X%02X%02X%02X", red, green, blue, alpha);
+		return alphaEditable ? String.format("%02X%02X%02X%02X", red, green, blue, alpha)
+			: String.format("%02X%02X%02X", red, green, blue);
 	}
 
 	/** @return false if the text isn't 6 or 8 hex digits, leaving the colour untouched */
@@ -152,12 +181,13 @@ public final class ColorSetting implements Setting {
 		if (digits.startsWith("#")) {
 			digits = digits.substring(1);
 		}
-		if (digits.length() != 6 && digits.length() != 8) return false;
+		if (digits.length() != 6 && (alphaEditable ? digits.length() != 8 : true)) return false;
 		try {
 			int r = Integer.parseInt(digits.substring(0, 2), 16);
 			int g = Integer.parseInt(digits.substring(2, 4), 16);
 			int b = Integer.parseInt(digits.substring(4, 6), 16);
-			int a = digits.length() == 8 ? Integer.parseInt(digits.substring(6, 8), 16) : alpha;
+			int a = alphaEditable && digits.length() == 8
+				? Integer.parseInt(digits.substring(6, 8), 16) : alpha;
 			set(r, g, b, a);
 			return true;
 		} catch (NumberFormatException e) {

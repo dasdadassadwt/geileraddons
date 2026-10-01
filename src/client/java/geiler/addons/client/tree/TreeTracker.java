@@ -72,6 +72,12 @@ public final class TreeTracker {
 		lastGifted = null;
 	}
 
+	/** Clears both current-session and stored counters for a deliberate factory reset. */
+	public void clearAll() {
+		for (TreeStats value : stats.values()) value.restore(0, 0, 0, 0);
+		lastGifted = null;
+	}
+
 	public boolean hasAnyData() {
 		for (TreeStats value : stats.values()) {
 			if (value.hasData()) return true;

@@ -1,7 +1,5 @@
 package geiler.addons.client.render;
 
-import geiler.addons.client.gui.GuiTheme;
-import geiler.addons.client.module.impl.VisualModule;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -24,7 +22,6 @@ public final class ProjectedLabelRenderer {
 
 	/** Called once before the mod's projected label elements are drawn each HUD frame. */
 	public static void beginFrame() {
-		VisualModule.INSTANCE.refreshTheme();
 		Minecraft minecraft = Minecraft.getInstance();
 		screenWidth = minecraft.getWindow().getGuiScaledWidth();
 		screenHeight = minecraft.getWindow().getGuiScaledHeight();
@@ -32,7 +29,7 @@ public final class ProjectedLabelRenderer {
 		OCCUPIED.clear();
 	}
 
-	/** Draws a centered, theme-backed label; {@code signalColor} remains a semantic color cue. */
+	/** Draws a centered, unboxed world label; the supplied color remains its semantic cue. */
 	public static boolean draw(GuiGraphicsExtractor graphics, Camera camera, Font font, Vec3 world,
 		String text, int signalColor, float requestedScale) {
 		if (text == null || text.isBlank() || camera == null || font == null || world == null) return false;
@@ -41,36 +38,55 @@ public final class ProjectedLabelRenderer {
 		if (!WorldToScreen.projectInto(camera, world, projected)) return false;
 
 		float scale = Float.isFinite(requestedScale) ? Math.max(0.5f, Math.min(3.0f, requestedScale)) : 1.0f;
-		int maxWidth = Math.max(1, screenWidth - 16);
-		int maxTextWidth = Math.max(1, (int) (maxWidth / scale) - 10);
-		String shown = fit(font, text, maxTextWidth);
-		int width = Math.min(maxWidth, (int) Math.ceil(font.width(shown) * scale) + 10);
-		int height = Math.max(14, (int) Math.ceil(font.lineHeight * scale) + 4);
+		int maxWidth = Math.max(1, screenWidth - 8);
+		String shown = fit(font, text, Math.max(1, (int) (maxWidth / scale)));
+		int width = Math.min(maxWidth, (int) Math.ceil(font.width(shown) * scale));
+		int height = Math.max(1, (int) Math.ceil(font.lineHeight * scale));
 		if (width >= screenWidth || height >= screenHeight) return false;
 		if (projected[0] < -width || projected[0] > screenWidth + width
 			|| projected[1] < -height || projected[1] > screenHeight + height) return false;
 
-		int left = clamp(Math.round(projected[0] - width / 2.0f), 2, screenWidth - width - 2);
-		int top = Math.round(projected[1] - height - 3);
+		int left = clamp(Math.round(projected[0] - width / 2.0f), 2, Math.max(2, screenWidth - width - 2));
+		int top = Math.round(projected[1] - height - 2);
 		for (int offset : VERTICAL_OFFSETS) {
-			int candidateTop = clamp(top + offset * (height + 2), 2, screenHeight - height - 2);
+			int candidateTop = clamp(top + offset * (height + 2), 2, Math.max(2, screenHeight - height - 2));
 			if (!isFree(left, candidateTop, width, height)) continue;
-			drawLabel(graphics, font, shown, left, candidateTop, width, height, scale, signalColor);
+			drawText(graphics, font, shown, left, candidateTop, scale, signalColor);
 			occupy(left, candidateTop, width, height);
 			return true;
 		}
 		return false;
 	}
 
-	private static void drawLabel(GuiGraphicsExtractor graphics, Font font, String text,
-		int x, int y, int width, int height, float scale, int signalColor) {
-		GuiTheme.roundedRectBordered(graphics, x, y, width, height, 4,
-			GuiTheme.PANEL_TOP, GuiTheme.PANEL_BOTTOM, GuiTheme.BORDER);
-		graphics.fill(x + 2, y + 3, x + 4, y + height - 3, 0xFF000000 | (signalColor & 0x00FFFFFF));
+	/** Draws unboxed text centered exactly on a projected world position. */
+	public static boolean drawFloatingText(GuiGraphicsExtractor graphics, Camera camera, Font font,
+		Vec3 world, String text, int color, float requestedScale) {
+		if (text == null || text.isBlank() || camera == null || font == null || world == null) return false;
+		Minecraft minecraft = Minecraft.getInstance();
+		int width = minecraft.getWindow().getGuiScaledWidth();
+		int height = minecraft.getWindow().getGuiScaledHeight();
+		if (width <= 0 || height <= 0) return false;
+		float[] projected = PROJECTION.get();
+		if (!WorldToScreen.projectInto(camera, world, projected)) return false;
+		float scale = Float.isFinite(requestedScale) ? Math.max(0.55f, Math.min(2.0f, requestedScale)) : 1.0f;
+		float textWidth = font.width(text) * scale;
+		float textHeight = font.lineHeight * scale;
+		if (projected[0] + textWidth / 2 < 0 || projected[0] - textWidth / 2 > width
+			|| projected[1] + textHeight / 2 < 0 || projected[1] - textHeight / 2 > height) return false;
 		graphics.pose().pushMatrix();
-		graphics.pose().translate(x + 7, y + Math.max(1, (height - font.lineHeight * scale) / 2.0f));
+		graphics.pose().translate(projected[0] - textWidth / 2, projected[1] - textHeight / 2);
 		graphics.pose().scale(scale, scale);
-		graphics.text(font, text, 0, 0, GuiTheme.TEXT_PRIMARY);
+		graphics.text(font, text, 0, 0, color);
+		graphics.pose().popMatrix();
+		return true;
+	}
+
+	private static void drawText(GuiGraphicsExtractor graphics, Font font, String text,
+		int x, int y, float scale, int color) {
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(x, y);
+		graphics.pose().scale(scale, scale);
+		graphics.text(font, text, 0, 0, color);
 		graphics.pose().popMatrix();
 	}
 

@@ -3,10 +3,14 @@ package geiler.addons.client.mixin;
 import geiler.addons.client.module.impl.I4HelperModule;
 import geiler.addons.client.module.impl.SafariFloorDropsModule;
 import geiler.addons.client.module.impl.TikiHelperModule;
+import geiler.addons.client.module.impl.DungeonMobEspModule;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
@@ -23,6 +27,20 @@ import java.util.function.BiConsumer;
 
 @Mixin(ClientPacketListener.class)
 public abstract class ClientPacketListenerMixin {
+	@Inject(method = "handlePlayerInfoUpdate", at = @At("TAIL"))
+	private void geileraddons$trackShadowAssassinProfiles(ClientboundPlayerInfoUpdatePacket packet, CallbackInfo ci) {
+		DungeonMobEspModule.INSTANCE.onPlayerInfoUpdate(packet);
+	}
+
+	@Inject(method = "handleAddEntity", at = @At("TAIL"))
+	private void geileraddons$trackShadowAssassinSpawn(ClientboundAddEntityPacket packet, CallbackInfo ci) {
+		DungeonMobEspModule.INSTANCE.onEntitySpawn(packet);
+	}
+
+	@Inject(method = "handleRemoveEntities", at = @At("TAIL"))
+	private void geileraddons$clearShadowAssassinDespawn(ClientboundRemoveEntitiesPacket packet, CallbackInfo ci) {
+		DungeonMobEspModule.INSTANCE.onEntitiesRemoved(packet);
+	}
 
 	@Inject(method = "handleBlockUpdate", at = @At("TAIL"))
 	private void geileraddons$onBlockUpdate(ClientboundBlockUpdatePacket packet, CallbackInfo ci) {

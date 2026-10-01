@@ -41,6 +41,18 @@ public final class HypixelModApi {
 		return located;
 	}
 
+	/**
+	 * Whether the player is on the Garden right now.
+	 *
+	 * <p>Every Garden-gated module asks this rather than comparing {@link #currentIsland()} itself, so
+	 * the one place that knows the island has one answer to give. It is deliberately the only source:
+	 * see the scoreboard note in {@code REFERENCES.md} for why guessing the island from the sidebar or
+	 * the terrain was tried and removed.
+	 */
+	public static boolean onGarden() {
+		return currentIsland() == Island.GARDEN;
+	}
+
 	/** Why the player is not on {@code wanted}, or null if they are. */
 	public static String reasonNotOn(Island wanted) {
 		if (!ModConfig.hypixelModApi()) {

@@ -30,6 +30,7 @@ public final class InventoryButtonConfigCodec {
 			item.addProperty("appearance", placement.appearance().name());
 			item.addProperty("value", placement.value());
 			item.addProperty("hoverTooltip", placement.hoverTooltip());
+			if (placement.hasTextAction()) item.addProperty("textAction", placement.textAction());
 			result.add(item);
 		}
 		return result;
@@ -63,6 +64,7 @@ public final class InventoryButtonConfigCodec {
 			}
 			placement.setAppearance(appearance, value);
 			placement.setHoverTooltip(string(saved, "hoverTooltip", ""));
+			placement.setTextAction(string(saved, "textAction", ""));
 			result.add(placement);
 		}
 		return List.copyOf(result);

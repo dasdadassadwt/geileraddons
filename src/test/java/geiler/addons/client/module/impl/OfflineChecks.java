@@ -1,14 +1,24 @@
 package geiler.addons.client.module.impl;
 
 import geiler.addons.client.dungeon.DungeonStatsChecks;
+import geiler.addons.client.dungeon.DungeonFeatureChecks;
+import geiler.addons.client.dungeon.DungeonContextDoorChecks;
+import geiler.addons.client.dungeon.DungeonRoomFootprintChecks;
 import geiler.addons.client.dungeon.DungeonStatsCommand;
+import geiler.addons.client.dungeon.DungeonStatsService;
 import geiler.addons.client.collections.FolderTreeChecks;
+import geiler.addons.client.config.ConfigProfileChecks;
+import geiler.addons.client.config.ThemeIconColorMigrationChecks;
 import geiler.addons.client.gui.ClickGuiMotionChecks;
+import geiler.addons.client.gui.ClickGuiScrollChecks;
+import geiler.addons.client.gui.BoundedUndoHistoryChecks;
 import geiler.addons.client.gui.SlotIdBadgeLayoutChecks;
+import geiler.addons.client.gui.ThemeContrastChecks;
 import geiler.addons.client.entity.ClientEntitySnapshotChecks;
 import geiler.addons.client.entity.NameplatesChecks;
 import geiler.addons.client.farming.GardenPlotChecks;
 import geiler.addons.client.render.BlockOutlineChecks;
+import geiler.addons.client.render.GardenPlotCullingChecks;
 import geiler.addons.client.update.ReleaseNotesChecks;
 import geiler.addons.client.enchanting.ExperimentCell;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
@@ -23,7 +33,9 @@ import geiler.addons.client.enchanting.ExperimentSnapshot;
 import geiler.addons.client.enchanting.ExperimentSolverEngine;
 import geiler.addons.client.enchanting.ExperimentTier;
 import geiler.addons.client.enchanting.ExperimentType;
+import geiler.addons.client.enchanting.SolverView;
 import geiler.addons.client.enchanting.SuperpairsBoard;
+import geiler.addons.client.enchanting.UltrasequencerSequenceExecutor;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.farming.PestChecks;
 import geiler.addons.client.module.BooleanSetting;
@@ -33,6 +45,7 @@ import geiler.addons.client.module.DebugState;
 import geiler.addons.client.module.Module;
 import geiler.addons.client.module.ModuleKeybind;
 import geiler.addons.client.module.ModuleKeybindManager;
+import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.NumberSetting;
 import geiler.addons.client.module.SettingGroup;
 import geiler.addons.client.module.TextSetting;
@@ -40,12 +53,18 @@ import geiler.addons.client.macro.MacroChecks;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.client.input.KeyEvent;
+import net.minecraft.world.entity.decoration.ArmorStand;
+import net.minecraft.world.level.Level;
 import com.mojang.blaze3d.platform.InputConstants;
 
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /** Small no-server checks for the state boundaries that are easy to regress. */
 public final class OfflineChecks {
+	private static final String FEL_HEAD_TEXTURE_FOR_CHECKS = "ewogICJ0aW1lc3RhbXAiIDogMTcyMDAyNTQ4Njg2MywKICAicHJvZmlsZUlkIiA6ICIzZDIxZTYyMTk2NzQ0Y2QwYjM3NjNkNTU3MWNlNGJlZSIsCiAgInByb2ZpbGVOYW1lIiA6ICJTcl83MUJsYWNrYmlyZCIsCiAgInNpZ25hdHVyZVJlcXVpcmVkIiA6IHRydWUsCiAgInRleHR1cmVzIiA6IHsKICAgICJTS0lOIiA6IHsKICAgICAgInVybCIgOiAiaHR0cDovL3RleHR1cmVzLm1pbmVjcmFmdC5uZXQvdGV4dHVyZS9jMjg2ZGFjYjBmMjE0NGQ3YTQxODdiZTM2YmJhYmU4YTk4ODI4ZjdjNzlkZmY1Y2UwMTM2OGI2MzAwMTU1NjYzIiwKICAgICAgIm1ldGFkYXRhIiA6IHsKICAgICAgICAibW9kZWwiIDogInNsaW0iCiAgICAgIH0KICAgIH0KICB9Cn0=";
+
 	private OfflineChecks() {
 	}
 
@@ -54,6 +73,12 @@ public final class OfflineChecks {
 		checkDungeonStatsCommand();
 		checkMacroKeyCapturePolicy();
 		DungeonStatsChecks.run();
+		DungeonFeatureChecks.run();
+		DungeonContextDoorChecks.run();
+		DungeonRoomFootprintChecks.run();
+		DungeonFeatureContextChecks.run();
+		DungeonMobEspAcceptanceChecks.run();
+		ShadowAssassinAcceptanceChecks.run();
 		PestChecks.run();
 		GardenPlotChecks.run();
 		ClientEntitySnapshotChecks.run();
@@ -68,6 +93,10 @@ public final class OfflineChecks {
 		checkEveryStatsToggleCombination();
 		checkDungeonStatsHovers();
 		checkGlobalDebugGate();
+		checkModuleManagerMembership();
+		checkPersistedSettings();
+		checkThemeIconColorSetting();
+		ThemeIconColorMigrationChecks.run();
 		CheatGateChecks.run();
 		ReleaseNotesChecks.run();
 		checkModuleKeybinds();
@@ -75,15 +104,30 @@ public final class OfflineChecks {
 		checkChoiceDirection();
 		checkChronomatronModel();
 		checkExperimentSolverEngine();
+		SequenceSolverChecks.run();
+		checkDungeonMobEspOutlineWidthMigration();
+		checkFelTrackingRules();
+		checkFelSkullTextureClassification();
+		checkDungeonMobLabelGrammar();
+		checkShadowAssassinPacketOrder();
+		checkFelSkullMarkerGeometry();
+		checkDungeonMobEncounterHistory();
+		checkDungeonMobTargetMemory();
+		checkDungeonMobEspGroupControls();
 		checkAutoExperiments();
 		checkExperimentStateEdges();
 		MacroChecks.run();
 		FolderTreeChecks.run();
 		BlockEspChecks.run();
 		BlockOutlineChecks.run();
+		GardenPlotCullingChecks.run();
 		InventoryButtonChecks.run();
 		SlotIdBadgeLayoutChecks.run();
+		BoundedUndoHistoryChecks.run();
 		ClickGuiMotionChecks.run();
+		ThemeContrastChecks.run();
+		ClickGuiScrollChecks.run();
+		ConfigProfileChecks.run();
 	}
 
 	private static void checkModuleKeybinds() {
@@ -96,6 +140,334 @@ public final class OfflineChecks {
 		assertFalse(new ModuleKeybind(InputConstants.getKey(new KeyEvent(InputConstants.KEY_ESCAPE, 0, 0)), 0).isBound(),
 			"Escape is reserved for clearing a bind");
 		assertTrue(ModuleKeybind.NONE.displayName().equals("None"), "unbound modules display None");
+		checkDungeonMobEspKeybindMigration();
+	}
+
+	private static void checkDungeonMobEspKeybindMigration() {
+		ModuleKeybind starred = ModuleKeybind.from(new KeyEvent(InputConstants.KEY_G, 0, 0));
+		ModuleKeybind miniboss = ModuleKeybind.from(new KeyEvent(InputConstants.KEY_H, 0, 0));
+		DungeonMobEspKeybindMigration.Resolution currentWins = DungeonMobEspKeybindMigration.resolve(
+			true, starred, miniboss, ModuleKeybind.NONE);
+		assertTrue(currentWins.keybind().equals(starred) && !currentWins.migrated() && !currentWins.conflict(),
+			"an existing combined Dungeon Mob ESP bind wins over legacy values");
+		DungeonMobEspKeybindMigration.Resolution explicitNoneWins = DungeonMobEspKeybindMigration.resolve(
+			true, ModuleKeybind.NONE, starred, miniboss);
+		assertTrue(explicitNoneWins.keybind().equals(ModuleKeybind.NONE) && !explicitNoneWins.migrated(),
+			"an explicitly saved unbound combined module is not repopulated from legacy binds");
+		DungeonMobEspKeybindMigration.Resolution oneLegacyBind = DungeonMobEspKeybindMigration.resolve(
+			false, null, starred, ModuleKeybind.NONE);
+		assertTrue(oneLegacyBind.keybind().equals(starred) && oneLegacyBind.migrated()
+			&& !oneLegacyBind.conflict(), "one non-none legacy bind migrates to the combined module");
+		DungeonMobEspKeybindMigration.Resolution equalLegacyBinds = DungeonMobEspKeybindMigration.resolve(
+			false, null, starred, starred);
+		assertTrue(equalLegacyBinds.keybind().equals(starred) && equalLegacyBinds.migrated()
+			&& !equalLegacyBinds.conflict(), "equal legacy binds migrate once without ambiguity");
+		DungeonMobEspKeybindMigration.Resolution conflictingLegacyBinds = DungeonMobEspKeybindMigration.resolve(
+			false, null, starred, miniboss);
+		assertTrue(conflictingLegacyBinds.keybind().equals(ModuleKeybind.NONE)
+			&& conflictingLegacyBinds.migrated() && conflictingLegacyBinds.conflict(),
+			"conflicting legacy binds resolve to no bind and mark the migration as ambiguous");
+		DungeonMobEspKeybindMigration.Resolution noLegacyBinds = DungeonMobEspKeybindMigration.resolve(
+			false, null, ModuleKeybind.NONE, ModuleKeybind.NONE);
+		assertTrue(noLegacyBinds.keybind().equals(ModuleKeybind.NONE) && !noLegacyBinds.migrated(),
+			"no legacy bind leaves the combined module unbound");
+	}
+
+	private static void checkDungeonMobEspOutlineWidthMigration() {
+		DungeonMobEspModule module = DungeonMobEspModule.INSTANCE;
+		NumberSetting starred = module.numberSettings().stream()
+			.filter(setting -> setting.name().equals("Starred Outline Width"))
+			.findFirst().orElseThrow();
+		NumberSetting miniboss = module.numberSettings().stream()
+			.filter(setting -> setting.name().equals("Miniboss Outline Width"))
+			.findFirst().orElseThrow();
+		NumberSetting starredRing = module.numberSettings().stream()
+			.filter(setting -> setting.name().equals("Starred Ring Line Width"))
+			.findFirst().orElseThrow();
+
+		starred.setValue(2.0f);
+		miniboss.setValue(2.0f);
+		module.restoreLegacySettings(Map.of(
+			"Dungeon Mob ESP.Starred Line Width", 12.5f,
+			"Dungeon Mob ESP.Miniboss Line Width", 18.5f), Map.of(), Map.of(), Map.of());
+		assertEquals(12.5f, starred.value(), "the starred outline width restores its legacy setting key");
+		assertEquals(18.5f, miniboss.value(), "the miniboss outline width restores its legacy setting key");
+		assertEquals(25.0f, starred.max(), "the non-ring outline width supports the requested maximum");
+		assertEquals(25.0f, miniboss.max(), "both non-ring outlines share the expanded range");
+		assertEquals(5.0f, starredRing.max(), "the independent ring line-width range is unchanged");
+
+		starred.setValue(7.0f);
+		module.restoreLegacySettings(Map.of(
+			"Dungeon Mob ESP.Starred Outline Width", 7.0f,
+			"Dungeon Mob ESP.Starred Line Width", 18.0f), Map.of(), Map.of(), Map.of());
+		assertEquals(7.0f, starred.value(), "a saved new outline-width key wins over the compatibility alias");
+		starred.setValue(2.0f);
+		miniboss.setValue(2.0f);
+	}
+
+	private static void checkFelTrackingRules() {
+		assertTrue(DungeonMobEspSupport.isFelName("Fel"),
+			"the singular nameplate on the spawned Enderman is recognized as a Fel");
+		assertTrue(DungeonMobEspSupport.isFelName("✯ Fel 100,000❤"),
+			"a starred Fel nameplate is classified before generic starred scanning");
+		assertTrue(DungeonMobEspSupport.isFelName("Fels"),
+			"the plural Fel label remains supported for older nameplate variants");
+		assertFalse(DungeonMobEspSupport.isFelName("Enderman"),
+			"ordinary Endermen do not become Fel targets from entity type alone");
+		assertTrue(DungeonMobEspSupport.shouldHighlightFel(true, true),
+			"a starred Fel is highlighted as soon as its body is detected");
+		assertFalse(DungeonMobEspSupport.shouldHighlightFel(true, false),
+			"an unstarred Fel is never added to starred highlights");
+		assertFalse(DungeonMobEspSupport.shouldHighlightFel(false, true),
+			"disabling Fel highlighting removes starred Fels from Fel highlights");
+		assertTrue(DungeonMobEspSupport.shouldClassifyFelsForStarFilter(true, false),
+			"Starred ESP keeps classifying Fel bodies so disabling the Fel group cannot re-label starred Fels");
+		assertFalse(DungeonMobEspSupport.isStarredGroupTarget(true, false),
+			"a recognized Fel body is excluded from the generic Starred group even when the Fel group is off");
+		assertTrue(DungeonMobEspSupport.isShadowAssassin("✯ Shadow Assassin 100,000❤"),
+			"a starred Shadow Assassin nameplate normalizes to the miniboss target");
+		assertTrue(DungeonMobEspSupport.isShadowAssassinProfileName("Shadow Assassin"),
+			"the exact NPC profile name independently identifies a hidden Shadow Assassin body");
+		assertFalse(DungeonMobEspSupport.isShadowAssassinProfileName("ShadowAssassin"),
+			"profile fallback does not misclassify a merely similar player username");
+		assertFalse(DungeonMobEspSupport.isShadowAssassinProfileName("shadow assassin"),
+			"profile fallback preserves the source's exact case-sensitive NPC name");
+		assertTrue(DungeonMobEspSupport.isNamedShadowAssassinArmorStandAssociation(
+			"✯ Shadow Assassin 100,000❤", 20, 19, true, false, 9.0),
+			"the exact normalized armor-stand label resolves to its nearby preceding living body");
+		assertFalse(DungeonMobEspSupport.isNamedShadowAssassinArmorStandAssociation(
+			"Lost Adventurer", 20, 19, true, false, 1.0),
+			"another miniboss label cannot claim the Shadow Assassin relationship");
+		assertFalse(DungeonMobEspSupport.isNamedShadowAssassinArmorStandAssociation(
+			"Shadow Assassin", 20, 18, true, false, 1.0),
+			"a living entity that is not directly before the label is rejected");
+		assertFalse(DungeonMobEspSupport.isNamedShadowAssassinArmorStandAssociation(
+			"Shadow Assassin", 20, 19, false, false, 1.0),
+			"non-living entity candidates are rejected");
+		assertFalse(DungeonMobEspSupport.isNamedShadowAssassinArmorStandAssociation(
+			"Shadow Assassin", 20, 19, true, true, 1.0),
+			"an armor stand cannot be associated as the mob body");
+		assertFalse(DungeonMobEspSupport.isNamedShadowAssassinArmorStandAssociation(
+			"Shadow Assassin", 20, 19, true, false, 9.01),
+			"a distant candidate at the expected ID is rejected");
+		var shadowBounds = DungeonMobEspSupport.fullShadowAssassinBounds(3, 70, -4);
+		assertTrue(Math.abs(shadowBounds.getXsize() - 0.8) < 0.0001,
+			"the Shadow Assassin box spans the full 0.8-block body width");
+		assertTrue(Math.abs(shadowBounds.getYsize() - 2.0) < 0.0001,
+			"the Shadow Assassin box spans the full two-block body height");
+		ArmorStand interpolatedBody = new ArmorStand((Level) null, 0, 70, 0);
+		interpolatedBody.setPos(4, 72, -2);
+		var interpolatedPosition = interpolatedBody.getPosition(0.5f);
+		var interpolatedBounds = DungeonMobEspSupport.fullShadowAssassinBounds(interpolatedBody, 0.5f);
+		assertTrue(Math.abs(interpolatedPosition.x - (interpolatedBounds.minX + interpolatedBounds.maxX) / 2.0) < 0.0001,
+			"the Shadow Assassin render box follows the body's partial-tick X position");
+		assertTrue(Math.abs(interpolatedPosition.y - interpolatedBounds.minY) < 0.0001,
+			"the Shadow Assassin render box starts at the body's partial-tick Y position");
+		assertTrue(Math.abs(interpolatedPosition.z - (interpolatedBounds.minZ + interpolatedBounds.maxZ) / 2.0) < 0.0001,
+			"the Shadow Assassin render box follows the body's partial-tick Z position");
+		assertTrue(DungeonMobEspSupport.isNamedMiniboss("Shadow Assassin"),
+			"Shadow Assassin remains in the normalized miniboss roster");
+		assertFalse(DungeonMobEspSupport.isShadowAssassin("Lost Adventurer"),
+			"other minibosses do not receive the full Shadow Assassin body bounds");
+		assertTrue(DungeonMobEspSupport.shouldRetainRoomFootprint(true, true),
+			"temporary map-snapshot loss retains occupancy while the player remains inside the detected room");
+		assertFalse(DungeonMobEspSupport.shouldRetainRoomFootprint(true, false),
+			"walking outside the retained footprint confirms room exit and clears targets");
+		assertFalse(DungeonMobEspSupport.shouldRetainRoomFootprint(false, true),
+			"a world change never carries the previous room footprint forward");
+	}
+
+	private static void checkFelSkullTextureClassification() {
+		assertTrue(DungeonMobEspSupport.isFelSkullMarker(true, true, FEL_HEAD_TEXTURE_FOR_CHECKS),
+			"a marker with a head carrying the exact Skyblocker HeadTextures.FEL value is classified");
+		assertFalse(DungeonMobEspSupport.isFelSkullMarker(true, true, FEL_HEAD_TEXTURE_FOR_CHECKS + "x"),
+			"a partial Fel texture value does not match");
+		assertFalse(DungeonMobEspSupport.isFelSkullMarker(true, true, null),
+			"a missing texture is unavailable rather than a Fel skull");
+		assertFalse(DungeonMobEspSupport.isFelSkullMarker(false, true, FEL_HEAD_TEXTURE_FOR_CHECKS),
+			"an ordinary armor stand is not a Fel marker even with the matching head texture");
+		assertFalse(DungeonMobEspSupport.isFelSkullMarker(true, false, FEL_HEAD_TEXTURE_FOR_CHECKS),
+			"a marker without a head item is not a Fel skull");
+	}
+
+	private static void checkDungeonMobLabelGrammar() {
+		assertTrue("fels".equals(DungeonMobEspSupport.normalizedMobName("✯ [Lv80] Fels 25k❤")),
+			"a star before a supported dungeon level token does not hide a stationary Fel name");
+		assertTrue("fels".equals(DungeonMobEspSupport.normalizedMobName("Fels 16k/25k❤")),
+			"a current/max health token is stripped as one final token from a Fel nameplate");
+		assertTrue("fels".equals(DungeonMobEspSupport.normalizedMobName("\uE073 Healthy Fels 2.6M❤")),
+			"a Hypixel private-use attribute glyph is removed before the Healthy prefix is parsed");
+		assertTrue(DungeonMobEspSupport.isNamedMiniboss("[Lv80] ✯ Flaming Lost Adventurer 16k/25k❤"),
+			"the upstream dungeon level, star, attribute, and current/max-health form matches the exact miniboss roster");
+		assertTrue(DungeonMobEspSupport.isNamedMiniboss("✯ [Lv 80] Frozen Adventurer 25k❤"),
+			"a rendered level token with an internal separator does not prevent a supported miniboss match");
+		assertFalse(DungeonMobEspSupport.isNamedMiniboss("Ancient Lost Adventurer 16k/25k❤"),
+			"unknown text is not accepted by fuzzy miniboss substring matching");
+	}
+
+	private static void checkShadowAssassinPacketOrder() {
+		java.util.UUID profile = java.util.UUID.randomUUID();
+		ShadowAssassinEntityTracker tracker = new ShadowAssassinEntityTracker();
+		tracker.onPlayerInfo(profile, "Shadow Assassin");
+		tracker.onPlayerSpawn(profile, 71, true);
+		assertTrue(tracker.isTrackedEntity(71),
+			"player-info received before the player spawn is correlated to the Shadow Assassin body");
+		tracker.onPlayerSpawn(profile, 71, true);
+		assertEquals(1, tracker.trackedCount(), "a duplicate spawn packet does not duplicate the tracked body");
+		tracker.onPlayerSpawn(profile, 711, true);
+		assertTrue(tracker.isTrackedEntity(711) && !tracker.isTrackedEntity(71)
+			&& tracker.trackedCount() == 1,
+			"a replacement spawn for the same profile removes its stale entity ID");
+		tracker.clear();
+		tracker.onPlayerSpawn(profile, 72, true);
+		assertFalse(tracker.isTrackedEntity(72),
+			"a player spawn waits for its matching profile instead of guessing by proximity");
+		tracker.onPlayerInfo(profile, "Shadow Assassin");
+		assertTrue(tracker.isTrackedEntity(72),
+			"a later player-info packet resolves an earlier pending player spawn");
+		tracker.onPlayerSpawn(profile, 721, true);
+		assertTrue(tracker.isTrackedEntity(721) && !tracker.isTrackedEntity(72)
+			&& tracker.trackedCount() == 1,
+			"spawn-after-info replacement also leaves only the newest body ID");
+		tracker.onEntityRemoved(72);
+		assertTrue(tracker.isTrackedEntity(721), "a stale removal cannot clear the replacement body ID");
+		tracker.onEntityRemoved(721);
+		assertFalse(tracker.isTrackedEntity(721), "the entity-removal packet clears the correlated body ID");
+		tracker.onPlayerSpawn(profile, 73, true);
+		tracker.onPlayerInfo(profile, "ShadowAssassin");
+		assertFalse(tracker.isTrackedEntity(73), "a similar profile name is not accepted as the exact NPC identity");
+		tracker.onPlayerInfo(profile, "Shadow Assassin");
+		tracker.onPlayerSpawn(profile, 74, true);
+		tracker.clear();
+		assertEquals(0, tracker.trackedCount(), "disconnect and world reset clear every tracked NPC body");
+	}
+
+	private static void checkFelSkullMarkerGeometry() {
+		var bounds = FelSkullMarkerGeometry.bounds(4.0, 70.0, -3.0);
+		assertTrue(Math.abs((bounds.maxX() - bounds.minX()) - 0.6) < 0.0001,
+			"Fel waypoint uses the upstream 0.6-block X width");
+		assertTrue(Math.abs((bounds.maxY() - bounds.minY()) - 0.6) < 0.0001,
+			"Fel waypoint uses the upstream 0.6-block Y height");
+		assertTrue(Math.abs((bounds.maxZ() - bounds.minZ()) - 0.6) < 0.0001,
+			"Fel waypoint uses the upstream 0.6-block Z width");
+		assertTrue(Math.abs(bounds.centerX() - 4.0) < 0.0001,
+			"Fel waypoint remains horizontally centered on the base entity");
+		assertTrue(Math.abs(bounds.centerY() - 71.27) < 0.0001,
+			"Fel waypoint uses the skull anchor one block above the base entity");
+		assertTrue(Math.abs(bounds.centerZ() - -3.0) < 0.0001,
+			"Fel waypoint remains centered in the base entity's block");
+	}
+
+	private static void checkDungeonMobTargetMemory() {
+		DungeonMobTargetMemory memory = new DungeonMobTargetMemory();
+		var bounds = new DungeonMobTargetMemory.Bounds(1, 2, 3, 2, 4, 5);
+		var first = new DungeonMobTargetMemory.Target(java.util.UUID.randomUUID(), 7,
+			DungeonMobTargetMemory.Group.MINIBOSS, "minecraft:player", "Shadow Assassin", bounds, "F7:room-a", 100);
+		assertTrue(memory.update(List.of(first), "F7:room-a", 100,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null).isEmpty(),
+			"currently matched dungeon entities render live rather than as ghosts");
+		assertTrue(memory.update(List.of(), "F7:room-a", 101,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null).isEmpty(),
+			"an unloaded entity is removed immediately after name detection drops");
+		assertEquals(0, memory.size(), "an unloaded entity does not leave a hidden ghost entry");
+		memory.update(List.of(first), "F7:room-a", 102,
+			ignored -> DungeonMobTargetMemory.Presence.LOADED_ALIVE, ignored -> first);
+		assertTrue(memory.update(List.of(), "F7:room-a", 103,
+			ignored -> DungeonMobTargetMemory.Presence.LOADED_GONE, ignored -> null).isEmpty(),
+			"a loaded anchor with no living matching entity clears the remembered target");
+		assertEquals(0, memory.size(), "confirmed loaded absence does not leave a hidden ghost entry");
+		var clearedRoomTarget = new DungeonMobTargetMemory.Target(java.util.UUID.randomUUID(), 11,
+			DungeonMobTargetMemory.Group.MINIBOSS, "minecraft:mob", "Mini Boss", bounds, "F7:room-a", 150);
+		memory.update(List.of(clearedRoomTarget), "F7:room-a", 150,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null);
+		memory.clear();
+		assertEquals(0, memory.size(), "a confirmed room clear removes all remembered dungeon targets");
+
+		var second = new DungeonMobTargetMemory.Target(first.uuid(), first.entityId(), first.group(), first.type(),
+			first.label(), first.bounds(), first.roomKey(), 200);
+		memory.update(List.of(second), "F7:room-a", 200,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null);
+		var moved = new DungeonMobTargetMemory.Target(second.uuid(), second.entityId(), second.group(), second.type(),
+			second.label(), new DungeonMobTargetMemory.Bounds(11, 12, 13, 12, 14, 15), second.roomKey(), 201);
+		assertEquals(List.of(moved), memory.update(List.of(), "F7:room-a", 201,
+			ignored -> DungeonMobTargetMemory.Presence.LOADED_ALIVE, ignored -> moved),
+			"a still-loaded living entity stays visible and its remembered bounds follow its current position");
+		var third = new DungeonMobTargetMemory.Target(first.uuid(), first.entityId(), first.group(), first.type(),
+			first.label(), first.bounds(), first.roomKey(), 300);
+		memory.update(List.of(third), "F7:room-a", 300,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null);
+		assertTrue(memory.update(List.of(), "F7:room-b", 301,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null).isEmpty(),
+			"room transitions clear cached positions instead of carrying mobs across rooms");
+		var fourth = new DungeonMobTargetMemory.Target(first.uuid(), first.entityId(), first.group(), first.type(),
+			first.label(), first.bounds(), first.roomKey(), 400);
+		memory.update(List.of(fourth), "F7:room-a", 400,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null);
+		assertTrue(memory.update(List.of(), "F7:room-a", 401,
+			ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null).isEmpty(),
+			"unloaded targets are removed immediately rather than waiting for a timeout");
+		for (DungeonMobTargetMemory.Group group : List.of(DungeonMobTargetMemory.Group.STARRED,
+			DungeonMobTargetMemory.Group.FEL_SKULL, DungeonMobTargetMemory.Group.FEL_MOVING)) {
+			memory.clear();
+			var grouped = new DungeonMobTargetMemory.Target(java.util.UUID.randomUUID(), 9, group,
+				"minecraft:mob", group.name(), bounds, "F7:room-a", 500);
+			memory.update(List.of(grouped), "F7:room-a", 500,
+				ignored -> DungeonMobTargetMemory.Presence.UNLOADED, ignored -> null);
+			var refreshedGroup = new DungeonMobTargetMemory.Target(grouped.uuid(), grouped.entityId(), group,
+				grouped.type(), grouped.label(), grouped.bounds(), grouped.roomKey(), 501);
+			assertEquals(List.of(refreshedGroup), memory.update(List.of(), "F7:room-a", 501,
+				ignored -> DungeonMobTargetMemory.Presence.LOADED_ALIVE, ignored -> refreshedGroup),
+				"loaded-alive refresh supports independent " + group + " targets");
+		}
+	}
+
+	private static void checkDungeonMobEncounterHistory() {
+		DungeonMobEncounterHistory history = new DungeonMobEncounterHistory();
+		history.observe("F7:room-a", 1.1, 70.0, 2.2);
+		history.observe("F7:room-a", 1.8, 70.2, 2.9);
+		history.observe("F7:room-b", 50.1, 70.0, 50.2);
+		assertEquals(1, history.positions("F7:room-a").size(),
+			"repeated sightings in the same block cell deduplicate when revisiting a room");
+		assertTrue(DungeonMobEspSupport.nearAnyStarredPosition(5, 70, 2,
+			history.positions("F7:room-a"), 4),
+			"the original room's encounter evidence is available after an intervening room visit");
+		assertFalse(DungeonMobEspSupport.nearAnyStarredPosition(5, 70, 2,
+			history.positions("F7:room-b"), 4),
+			"starred encounter evidence is isolated to the room where it was observed");
+		history.clearRoom("F7:room-a");
+		assertTrue(history.positions("F7:room-a").isEmpty()
+			&& history.positions("F7:room-b").size() == 1,
+			"clearing one room removes only that room's starred history");
+		for (int index = 0; index <= DungeonMobEncounterHistory.MAX_POSITIONS_PER_ROOM; index++) {
+			history.observe("F7:bounded", index + 0.1, 70, 0.1);
+		}
+		assertEquals(DungeonMobEncounterHistory.MAX_POSITIONS_PER_ROOM,
+			history.positions("F7:bounded").size(), "each physical room's encounter history is bounded");
+		for (int index = 0; index <= DungeonMobEncounterHistory.MAX_ROOMS; index++) {
+			history.observe("room-" + index, index, 70, 0);
+		}
+		assertEquals(DungeonMobEncounterHistory.MAX_ROOMS, history.roomCount(),
+			"the run-level room history has a bounded number of room keys");
+	}
+
+	private static void checkDungeonMobEspGroupControls() {
+		DungeonMobEspModule module = DungeonMobEspModule.INSTANCE;
+		for (String name : List.of("Starred Group Enabled", "Minibosses Enabled", "Fels Enabled",
+			"Starred Only Current Room", "Miniboss Only Current Room", "Fels Only Current Room",
+			"Highlight Hidden Fel Skulls")) {
+			assertTrue(module.booleanSettings().stream().anyMatch(setting -> setting.name().equals(name)),
+				"Dungeon Mob ESP exposes an independent group/current-room control: " + name);
+		}
+		assertTrue(module.choiceSettings().stream().anyMatch(setting -> setting.name().equals("Fel Style")),
+			"stationary Fels expose their own ESP style selector");
+		for (String name : List.of("Fel Outline Color", "Fel Fill Color", "Fel Tracer Color")) {
+			assertTrue(module.colorSettings().stream().anyMatch(setting -> setting.name().equals(name)),
+				"stationary Fels expose independent color control: " + name);
+		}
+		for (String heading : List.of("Starred Mobs", "Minibosses", "Fels")) {
+			assertTrue(module.groups().stream().anyMatch(group -> heading.equals(group.name()) && group.toggle() != null),
+				"Dungeon Mob ESP presents the group enable setting directly on its header: " + heading);
+		}
 	}
 
 	private static void checkExperimentStateEdges() {
@@ -128,8 +500,6 @@ public final class OfflineChecks {
 		assertEquals(0, endModel.chainLengthCount(), "lingering highlight is not a replay pulse");
 		endModel.observe(ChronomatronEvent.board(17, "red", false));
 		assertEquals(0, endModel.currentRevealSlot(), "real clear releases the reveal latch");
-
-		SequenceSolverChecks.run();
 
 		ExperimentSolverEngine pairEngine = new ExperimentSolverEngine();
 		String pairTitle = "Superpairs (High)";
@@ -230,6 +600,33 @@ public final class OfflineChecks {
 		assertSame(Island.SAFARI, Island.fromMode("SAFARI"), "case-insensitive island mode");
 		assertSame(Island.OTHER, Island.fromMode(null), "missing mode");
 		assertSame(Island.OTHER, Island.fromMode("unknown_mode"), "unknown mode");
+		checkGardenHeightCapture();
+	}
+
+	/**
+	 * The automatic border floor is taken from a player standing on something, inside the Garden's
+	 * build bounds, and only until it has been taken. Without these guards, enabling the module
+	 * mid-fall, mid-jump or on the barn roof latched that height for the life of the profile.
+	 */
+	private static void checkGardenHeightCapture() {
+		assertTrue(GardenPlotBordersModule.canCaptureHeight(true, 70.0, false),
+			"a standing player's height is a usable border floor");
+		assertTrue(GardenPlotBordersModule.canCaptureHeight(true, 0.0, false),
+			"the Garden's lowest build height is usable");
+		assertTrue(GardenPlotBordersModule.canCaptureHeight(true, 255.9, false),
+			"the highest usable height is just under the build limit");
+		assertFalse(GardenPlotBordersModule.canCaptureHeight(false, 70.0, false),
+			"a height taken mid-air or mid-fall is never latched");
+		assertFalse(GardenPlotBordersModule.canCaptureHeight(true, 256.0, false),
+			"a height at the build limit is not a plot floor");
+		assertFalse(GardenPlotBordersModule.canCaptureHeight(true, -1.0, false),
+			"a height below the world is not a plot floor");
+		assertFalse(GardenPlotBordersModule.canCaptureHeight(true, Double.NaN, false),
+			"a non-finite height is rejected");
+		assertFalse(GardenPlotBordersModule.canCaptureHeight(true, Double.POSITIVE_INFINITY, false),
+			"an infinite height is rejected");
+		assertFalse(GardenPlotBordersModule.canCaptureHeight(true, 70.0, true),
+			"a floor is captured only once per session");
 	}
 
 	private static void checkDungeonStatsCommand() {
@@ -239,10 +636,20 @@ public final class OfflineChecks {
 		DungeonStatsCommand.ParseResult unquoted = DungeonStatsCommand.parse("/ga dstats Notch");
 		assertTrue(unquoted.valid(), "dstats accepts an unquoted player name");
 		assertEquals("Notch", unquoted.name(), "dstats strips the command slash");
-		assertTrue(DungeonStatsCommand.parse("ga dstats").recognized(), "dstats recognizes a missing name for usage feedback");
+		DungeonStatsCommand.ParseResult local = DungeonStatsCommand.parse("ga dstats");
+		assertTrue(local.recognized(), "dstats recognizes an omitted player name");
+		assertTrue(local.usesLocalPlayer(), "an omitted dstats name selects the local profile");
+		assertTrue(DungeonStatsCommand.parse("/ga dstats").usesLocalPlayer(),
+			"the slash form also selects the local profile");
 		assertFalse(DungeonStatsCommand.parse("ga other").recognized(), "unrelated ga commands remain unhandled");
 		assertFalse(DungeonStatsCommand.parse("ga dstats Notch extra").valid(), "dstats rejects multiple names");
 		assertFalse(DungeonStatsCommand.parse("ga dstats \"bad name\"").valid(), "dstats rejects invalid player-name characters");
+		assertEquals(List.of("ALAN", "alexa", "alice"), DungeonStatsCommand.suggestions(
+			List.of("alice", "Zed", "ALAN", "alexa", "bad name"), "aL"),
+			"dstats suggestions prefix-match case-insensitively and sort all listed profile names");
+		assertEquals(List.of("ALAN", "alexa", "alice", "Zed"), DungeonStatsCommand.suggestions(
+			List.of("Zed", "alice", "ALAN", "alexa"), ""),
+			"an empty dstats prefix lists the full sorted name set");
 	}
 
 	private static void checkMacroKeyCapturePolicy() {
@@ -281,6 +688,14 @@ public final class OfflineChecks {
 		assertFalse(AutoKickRules.personalBestPasses(0, 60), "missing PB fails a configured check");
 		ExperimentMilestone chrono = ExperimentMilestone.forExperiment(
 			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, 0).orElseThrow();
+		assertEquals(9, ExperimentTier.HIGH.chronomatronThreshold(),
+			"High through Transcendent Chronomatron alert threshold");
+		assertEquals(7, ExperimentTier.HIGH.ultrasequencerThreshold(),
+			"High through Transcendent Ultrasequencer alert threshold");
+		assertEquals(12, ExperimentTier.METAPHYSICAL.chronomatronThreshold(),
+			"Metaphysical Chronomatron alert threshold");
+		assertEquals(9, ExperimentTier.METAPHYSICAL.ultrasequencerThreshold(),
+			"Metaphysical Ultrasequencer alert threshold");
 		assertFalse(chrono.reached(chrono.displayedSequenceLength() - 1, 0),
 			"Chronomatron does not reach max clicks before the final sequence is known");
 		assertFalse(chrono.reached(chrono.displayedSequenceLength(), 8),
@@ -320,12 +735,40 @@ public final class OfflineChecks {
 		ColorSetting nextNext = colorSetting(module, "Next Next Color");
 		ColorSetting nextNextNext = colorSetting(module, "Next Next Next Color");
 		try {
-			assertEquals(1, chronomatron.intValue(), "Chronomatron preview default");
-			assertEquals(2, ultrasequencer.intValue(), "Ultrasequencer preview default");
-			assertEquals(2, module.previewSteps(ExperimentType.CHRONOMATRON),
-				"Chronomatron preview includes exactly one future click by default");
-			assertEquals(3, module.previewSteps(ExperimentType.ULTRASEQUENCER),
-				"Ultrasequencer preview includes exactly two future clicks by default");
+			assertEquals(3, chronomatron.intValue(), "Chronomatron future-click default");
+			assertEquals(3, ultrasequencer.intValue(), "Ultrasequencer future-click default");
+			assertEquals(4, module.previewSteps(ExperimentType.CHRONOMATRON),
+				"Chronomatron preview includes current plus three future clicks by default");
+			assertEquals(4, module.previewSteps(ExperimentType.ULTRASEQUENCER),
+				"Ultrasequencer preview includes current plus three future clicks by default");
+			assertEquals(1.4978355f, numberSetting(module, "Term Size").value(),
+				"solver overlay size uses the approved default");
+			assertEquals(0, numberSetting(module, "Roundness").intValue(), "solver roundness defaults to zero");
+			assertEquals(0, numberSetting(module, "Serums Consumed").intValue(),
+				"serums consumed defaults to zero");
+			assertEquals(0, numberSetting(module, "Slot Gap").intValue(), "solver slot gap defaults to zero");
+			assertEquals(0xF01B1B22, colorSetting(module, "Panel Color").argb(),
+				"solver panel uses the approved background color");
+			assertEquals(0xFFFFFFFF, colorSetting(module, "Current Color").argb(),
+				"solver Order 1 uses the approved color");
+			assertEquals(0xFF7D7D7D, next.argb(), "solver Order 2 uses the approved color");
+			assertEquals(0xFF3D3D3D, nextNext.argb(), "solver Order 3 uses the approved color");
+			assertEquals(0xFF101010, nextNextNext.argb(), "solver Order 4 uses the approved color");
+			assertTrue(booleanSetting(module, "Max Click Alert").value(),
+				"Max Click Alert is enabled by default");
+			assertFalse(booleanSetting(module, "Complete Sounds").value(),
+				"Complete Sounds is disabled by default");
+			assertFalse(module.booleanSettings().stream().anyMatch(setting -> setting.name().contains("Click Sound"))
+				|| module.numberSettings().stream().anyMatch(setting -> setting.name().contains("Click Sound"))
+				|| module.textSettings().stream().anyMatch(setting -> setting.name().contains("Click Sound"))
+				|| module.colorSettings().stream().anyMatch(setting -> setting.name().contains("Click Sound")),
+				"the removed click-sound feature leaves no click-sound setting");
+			assertTrue(ExperimentSolverModule.shouldPlayMaxClickMilestoneSound(true, false),
+				"Max Click Alert alone enables the selected sound at the maximum-click milestone");
+			assertTrue(ExperimentSolverModule.shouldPlayMaxClickMilestoneSound(false, true),
+				"Complete Sounds also enables the maximum-click milestone sound");
+			assertFalse(ExperimentSolverModule.shouldPlayMaxClickMilestoneSound(false, false),
+				"the maximum-click milestone is silent when both sound options are off");
 
 			chronomatron.setValue(-1);
 			assertEquals(0, chronomatron.intValue(), "Chronomatron preview clamps its lower bound");
@@ -375,6 +818,20 @@ public final class OfflineChecks {
 		throw new AssertionError(module.name() + " is missing color setting " + name);
 	}
 
+	private static NumberSetting numberSetting(Module module, String name) {
+		for (NumberSetting setting : module.numberSettings()) {
+			if (setting.name().equals(name)) return setting;
+		}
+		throw new AssertionError(module.name() + " is missing number setting " + name);
+	}
+
+	private static BooleanSetting booleanSetting(Module module, String name) {
+		for (BooleanSetting setting : module.booleanSettings()) {
+			if (setting.name().equals(name)) return setting;
+		}
+		throw new AssertionError(module.name() + " is missing boolean setting " + name);
+	}
+
 	private static void checkEveryStatsToggleCombination() {
 		String[] markers = {"Cata 42", "Mage 45", "CA 46.25", "MP 720", "SA 11.14", "PB 6:42",
 			"Term ✓", "Hype ✓", "GDrag ✓", "Bank 125,000,000"};
@@ -382,7 +839,7 @@ public final class OfflineChecks {
 			boolean[] enabled = new boolean[markers.length];
 			for (int bit = 0; bit < enabled.length; bit++) enabled[bit] = (mask & (1 << bit)) != 0;
 			PartyFinderStatsModule.DisplayOptions options = new PartyFinderStatsModule.DisplayOptions(true,
-				enabled[0], enabled[1], enabled[2], enabled[3], enabled[4], enabled[5], enabled[6],
+				enabled[0], true, enabled[1], enabled[2], enabled[3], enabled[4], enabled[5], enabled[6],
 				enabled[7], enabled[8], enabled[9]);
 			List<Component> lines = PartyFinderStatsModule.CardFormatter.format(null,
 				PartyFinderStatsModule.StatsView.preview(), options, 160, List.of());
@@ -396,7 +853,7 @@ public final class OfflineChecks {
 			if (output.contains("│  │")) throw new AssertionError("empty stat separator in: " + output);
 		}
 		PartyFinderStatsModule.DisplayOptions statusOptions = new PartyFinderStatsModule.DisplayOptions(true,
-			true, true, true, true, true, true, true, true, true, true);
+			true, true, true, true, true, true, true, true, true, true, true);
 		String manualStatus = PartyFinderStatsModule.CardFormatter.format(null,
 			PartyFinderStatsModule.StatsView.preview(), statusOptions, 160, List.of(), true, true)
 			.getFirst().getString();
@@ -430,7 +887,7 @@ public final class OfflineChecks {
 		PartyFinderStatsModule.StatsView preview = PartyFinderStatsModule.StatsView.preview();
 		for (boolean compact : new boolean[] {true, false}) {
 			PartyFinderStatsModule.DisplayOptions options = new PartyFinderStatsModule.DisplayOptions(compact,
-				true, true, true, true, true, true, true, true, true, true);
+				true, true, true, true, true, true, true, true, true, true, true);
 			List<Component> partyFinder = PartyFinderStatsModule.CardFormatter.format(null, preview,
 				options, 160, List.of());
 			String partyHovers = statsHoverText(partyFinder);
@@ -450,7 +907,27 @@ public final class OfflineChecks {
 				(compact ? "compact" : "full") + " /ga dstats card exposes the queued floor in its PB hover");
 		}
 		PartyFinderStatsModule.DisplayOptions cataOnly = new PartyFinderStatsModule.DisplayOptions(true,
-			true, false, false, false, false, false, false, false, false, false);
+			true, true, false, false, false, false, false, false, false, false, false);
+		assertEquals("50", DungeonStatsService.formatCatacombsLevel(569_809_640L, true),
+			"exact level-50 XP stays capped until overflow starts");
+		assertEquals("50.00", DungeonStatsService.formatCatacombsLevel(569_809_641L, true),
+			"overflow starts with two decimals");
+		assertEquals("51.00", DungeonStatsService.formatCatacombsLevel(769_809_640L, true),
+			"each 200 million overflow XP adds one level");
+		assertEquals("50", DungeonStatsService.formatCatacombsLevel(769_809_640L, false),
+			"disabling overflow Cata retains the level-50 cap");
+		String overflowCata = PartyFinderStatsModule.CardFormatter.format(null,
+			preview.withCatacombsExperience(769_809_640L), cataOnly, 160, List.of(), true, false)
+			.getFirst().getString();
+		assertTrue(overflowCata.contains("Cata 51.00"),
+			"manual /ga dstats output uses the overflow Cata formatter");
+		PartyFinderStatsModule.DisplayOptions cappedCata = new PartyFinderStatsModule.DisplayOptions(true,
+			true, false, false, false, false, false, false, false, false, false, false);
+		String cappedCataOutput = PartyFinderStatsModule.CardFormatter.format(null,
+			preview.withCatacombsExperience(769_809_640L), cappedCata, 160, List.of())
+			.getFirst().getString();
+		assertTrue(cappedCataOutput.contains("Cata 50"),
+			"disabling overflow Cata keeps displayed stats capped at 50");
 		String overflowHover = statsHoverText(PartyFinderStatsModule.CardFormatter.format(null,
 			preview.withCatacombsExperience(569_821_985L), cataOnly, 160, List.of()));
 		assertTrue(overflowHover.contains("Overflow XP: 12,345"),
@@ -461,7 +938,7 @@ public final class OfflineChecks {
 			"-", "", "", "", false, 0, false, false, false, false, false, false,
 			List.of(), List.of());
 		PartyFinderStatsModule.DisplayOptions allFields = new PartyFinderStatsModule.DisplayOptions(true,
-			true, true, true, true, true, true, true, true, true, true);
+			true, true, true, true, true, true, true, true, true, true, true);
 		String unavailableHovers = statsHoverText(PartyFinderStatsModule.CardFormatter.format(null,
 			unavailable, allFields, 160, List.of()));
 		assertTrue(unavailableHovers.contains("Catacombs XP data unavailable"),
@@ -500,13 +977,13 @@ public final class OfflineChecks {
 	}
 
 	private static void checkGlobalDebugGate() {
-		assertFalse(DebugModule.INSTANCE.isEnabled(), "Dev Debug module defaults off");
+		assertFalse(DebugModule.INSTANCE.defaultEnabled(), "Dev Debug module defaults off");
+		assertFalse(DebugModule.INSTANCE.isEnabled(), "Dev Debug starts runtime-disabled before config load");
 		assertEquals("DEV", DebugModule.INSTANCE.category().name(), "Dev Debug module category");
-		assertFalse(SlotIdsModule.INSTANCE.isEnabled(), "Slot IDs module defaults off");
+		assertTrue(SlotIdsModule.INSTANCE.defaultEnabled(), "Slot IDs is enabled by default for a fresh config");
+		assertFalse(SlotIdsModule.INSTANCE.isEnabled(), "Slot IDs starts runtime-disabled before config load");
 		assertEquals("DEV", SlotIdsModule.INSTANCE.category().name(), "Slot IDs module category");
-		assertEquals("slot_ids", SlotIdsModule.INSTANCE.id(), "Slot IDs has a stable HUD position key");
-		assertFalse(SlotIdsModule.INSTANCE.renderOnHud(),
-			"Slot IDs has a movable editor preview but keeps live badges attached to inventory slots");
+		assertEquals("slot_ids", SlotIdsModule.INSTANCE.id(), "Slot IDs keeps its stable module id");
 		DebugState.setEnabled(false);
 		BooleanSetting debug = BooleanSetting.debug("Debug", true);
 		assertFalse(debug.value(), "debug setting is effectively off behind the global gate");
@@ -911,14 +1388,15 @@ public final class OfflineChecks {
 
 	private static void checkAutoExperiments() {
 		AutoExperimentsModule module = AutoExperimentsModule.INSTANCE;
-		assertFalse(module.isEnabled(), "Auto Experiments defaults off");
+		assertTrue(module.defaultEnabled(), "Auto Experiments is enabled by default for a fresh config");
+		assertFalse(module.isEnabled(), "Auto Experiments starts runtime-disabled before config load");
 		assertTrue(module.chronomatron().value(), "Chronomatron automation defaults on per game");
 		assertTrue(module.ultrasequencer().value(), "Ultrasequencer automation defaults on per game");
-		assertEquals(360, module.firstClickDelay().intValue(), "first-click delay follows the saved AutoTerms profile");
-		assertEquals(AutoExperimentDelayRange.DEFAULT_MINIMUM_MILLIS,
-			module.minimumClickDelay().intValue(), "fresh minimum click delay uses the selected range default");
-		assertEquals(AutoExperimentDelayRange.DEFAULT_MAXIMUM_MILLIS,
-			module.maximumClickDelay().intValue(), "fresh maximum click delay uses the selected range default");
+		assertFalse(booleanSetting(module, "Debug Automation").value(),
+			"Auto Experiments debug defaults off");
+		assertEquals(500, module.firstClickDelay().intValue(), "fresh first-click delay matches the approved default");
+		assertEquals(250, module.minimumClickDelay().intValue(), "fresh minimum click delay matches the approved default");
+		assertEquals(350, module.maximumClickDelay().intValue(), "fresh maximum click delay matches the approved default");
 		assertFalse(module.supports(ExperimentType.SUPERPAIRS), "Auto Experiments excludes Superpairs");
 
 		AutoExperimentDelayRange standardRange = new AutoExperimentDelayRange(190, 260);
@@ -947,9 +1425,9 @@ public final class OfflineChecks {
 		assertEquals(new AutoExperimentDelayRange(220, 240),
 			AutoExperimentDelayRange.restore(190f, 220f, 240f, 190, 260),
 			"saved new endpoints take precedence over the old single delay");
-		assertEquals(new AutoExperimentDelayRange(200, 300),
-			AutoExperimentDelayRange.restore(null, null, null, 200, 300),
-			"a fresh config retains the module's default endpoints");
+		assertEquals(new AutoExperimentDelayRange(250, 350),
+			AutoExperimentDelayRange.restore(null, null, null, 250, 350),
+			"a fresh config retains the approved module default endpoints");
 		assertSame(ExperimentType.CHRONOMATRON,
 			AutoExperimentsModule.hintedSequenceType("Chronomatron (Unrecognized Tier)"),
 			"malformed Chronomatron tier titles can be paused without becoming click-eligible");
@@ -971,11 +1449,40 @@ public final class OfflineChecks {
 		String ultraTitle = "Ultrasequencer (High)";
 		List<ExperimentCell> ultraCells = List.of(ExperimentCell.number(30, 1),
 			ExperimentCell.number(31, 2));
-		clickEngine.observe(new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
-			ultraCells, "black", 1));
-		var clickView = clickEngine.observe(new ExperimentSnapshot(ultraTitle, "Timer: 1.0s",
-			ultraCells, "white", 2));
+		ExperimentSnapshot clickSnapshot = new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
+			ultraCells, "black", 1);
+		ExperimentSnapshot solveSnapshot = new ExperimentSnapshot(ultraTitle, "Timer: 1.0s",
+			ultraCells, "white", 2);
+		clickEngine.observe(clickSnapshot);
+		var clickView = clickEngine.observe(solveSnapshot);
 		assertSame(ExperimentPhase.SOLVE, clickView.phase(), "Ultrasequencer test fixture enters solve phase");
+		long ultraNowNanos = 5_000_000_000L;
+		UltrasequencerSequenceExecutor ultraAuto = new UltrasequencerSequenceExecutor();
+		Object ultraScreen = new Object();
+		Object ultraMenu = new Object();
+		var armedUltraStep = ultraAuto.tick(ultraScreen, ultraMenu, 1, true, clickView,
+			ultraNowNanos, 0L);
+		assertSame(UltrasequencerSequenceExecutor.Action.CLICK, armedUltraStep.action(),
+			"the solver's complete Ultrasequencer solution arms its first slot");
+		ultraAuto.dispatchFinished(true, ultraNowNanos, 0L);
+		SolverView milestoneView = new SolverView(clickView.type(), clickView.tier(), clickView.phase(),
+			clickView.currentSequenceLength(), clickView.completedRounds(), clickView.sequence(),
+			clickView.authoritativeIndex(), clickView.predictedIndex(), clickView.visualIndex(),
+			clickView.current(), clickView.next(), clickView.nextNext(), clickView.superpairs(),
+			clickView.milestone(), true);
+		assertSame(UltrasequencerSequenceExecutor.Action.CLOSE_MENU,
+			ultraAuto.tick(ultraScreen, ultraMenu, 1, true, milestoneView,
+				ultraNowNanos + 1, 0L).action(),
+			"a milestone reached after an Auto-dispatched step requests one menu close");
+		assertSame(UltrasequencerSequenceExecutor.Action.STOPPED,
+			ultraAuto.tick(ultraScreen, ultraMenu, 1, true, milestoneView,
+				ultraNowNanos + 2, 0L).action(), "Ultrasequencer milestone closure is one-shot");
+		UltrasequencerSequenceExecutor manualUltraMilestone = new UltrasequencerSequenceExecutor();
+		assertSame(UltrasequencerSequenceExecutor.Action.STOPPED,
+			manualUltraMilestone.tick(ultraScreen, ultraMenu, 2, true, milestoneView,
+				ultraNowNanos, 0L).action(),
+			"a milestone reached without an Auto click stops without closing the menu");
+
 		ExperimentClickGate clickGate = new ExperimentClickGate();
 		int[] vanillaClicks = {0};
 		assertFalse(clickGate.dispatchSequenceClick(clickEngine, 30, false,
@@ -1002,10 +1509,51 @@ public final class OfflineChecks {
 		assertEquals(List.of(17), repeatedSlotEngine.view().sequence().get(1).slotIds(),
 			"second repeated Chronomatron step maps to the same shared slot");
 
+		ExperimentSolverEngine emptyPaneEngine = repeatedChronomatronEngine();
+		assertTrue(emptyPaneEngine.onClick(17).expected(), "first repeated pane click is sequence-valid");
+		assertTrue(emptyPaneEngine.confirmClick(0, 17).visualStateChanged(),
+			"the first repeated pane click advances to the second sequence position");
+		emptyPaneEngine.observe(new ExperimentSnapshot("Chronomatron (High)", "Correct!",
+			List.of(new ExperimentCell(17, null, -1, true, false, true)), null, 9, false), null);
+		assertEquals(List.of(), emptyPaneEngine.view().sequence().get(1).slotIds(),
+			"a blank pane snapshot does not claim that a repeated color is currently clickable");
+		assertFalse(emptyPaneEngine.onClick(17).expected(),
+			"the solver refuses a repeated click while the live slot has no recognized value");
+		assertFalse(emptyPaneEngine.confirmClick(1, 17).visualStateChanged(),
+			"an unrecognized pane cannot advance the repeated sequence position");
+		assertEquals(1, emptyPaneEngine.view().visualIndex(),
+			"a transient empty pane leaves the Chronomatron cursor at the current step");
+
 		long millis = 1_000_000L;
 		long start = 5_000_000_000L;
 		Object screen = new Object();
 		Object menu = new Object();
+		AutoExperimentAutomation.Snapshot manualFirstStep = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Timer: 4.0s", 0, 2, 17, 0, false);
+		AutoExperimentAutomation.Snapshot manuallyAdvancedStep = autoSnapshot(screen, menu,
+			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+			"Correct!", 1, 2, 18, 0, false);
+		AutoExperimentAutomation staleManualStep = new AutoExperimentAutomation();
+		staleManualStep.tick(manualFirstStep, start, 360 * millis);
+		assertSame(AutoExperimentAutomation.Action.PAUSED,
+			staleManualStep.tick(manuallyAdvancedStep, start + 100 * millis, 360 * millis).action(),
+			"an unsynchronized manual advance would trip the old delayed-index watchdog");
+		AutoExperimentAutomation synchronizedManualStep = new AutoExperimentAutomation();
+		synchronizedManualStep.tick(manualFirstStep, start, 360 * millis);
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			synchronizedManualStep.synchronizeAfterManualProgress(manuallyAdvancedStep,
+				start + 100 * millis, 190 * millis).action(),
+			"a correct confirmed manual Chronomatron step re-anchors the pending delay");
+		assertSame(AutoExperimentAutomation.Action.WAIT,
+			synchronizedManualStep.tick(manuallyAdvancedStep, start + 289 * millis, 360 * millis).action(),
+			"manual progress synchronization retains the normal inter-click delay");
+		var synchronizedClick = synchronizedManualStep.tick(manuallyAdvancedStep,
+			start + 290 * millis, 360 * millis);
+		assertSame(AutoExperimentAutomation.Action.CLICK, synchronizedClick.action(),
+			"the newly current Chronomatron step becomes due after its re-anchored delay");
+		assertEquals(1, synchronizedClick.sequenceIndex(), "manual resynchronization queues the next sequence index");
+		assertEquals(18, synchronizedClick.slotId(), "manual resynchronization targets the next expected slot");
 		AutoExperimentAutomation automation = new AutoExperimentAutomation();
 		AutoExperimentAutomation.Snapshot firstStep = autoSnapshot(screen, menu,
 			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
@@ -1087,18 +1635,11 @@ public final class OfflineChecks {
 		repeatedSlotAutomation.clickResult(true, repeatedRoundComplete,
 			start + 550 * millis, 190 * millis);
 
-		AutoExperimentAutomation finalUltraClick = new AutoExperimentAutomation();
-		AutoExperimentAutomation.Snapshot lastUltraStep = autoSnapshot(new Object(), new Object(),
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
-			"Timer: 0.0s", 1, 2, 31, 0, false);
-		finalUltraClick.tick(lastUltraStep, start, 0L, 190 * millis);
-		var lastUltraRequest = finalUltraClick.tick(lastUltraStep, start, 0L, 190 * millis);
-		assertSame(AutoExperimentAutomation.Action.CLICK, lastUltraRequest.action(),
-			"Ultrasequencer reaches its final remembered slot");
-		finalUltraClick.clickResult(true, lastUltraStep, start, 190 * millis);
 		assertSame(AutoExperimentAutomation.Action.WAIT,
-			finalUltraClick.tick(lastUltraStep, start + 190 * millis, 0L, 190 * millis).action(),
-			"the final Ultrasequencer slot is not resent while its pane transition is pending");
+			new AutoExperimentAutomation().tick(autoSnapshot(new Object(), new Object(),
+				ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
+				"Timer: 0.0s", 0, 2, 31, 0, false), start, 0L).action(),
+			"the Chronomatron scheduler cannot execute an Ultrasequencer snapshot");
 		AutoExperimentAutomation.Snapshot completedRound = autoSnapshot(screen, menu,
 			ExperimentType.CHRONOMATRON, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
 			"Round Complete", 2, 2, -1, 8, false);
@@ -1115,72 +1656,6 @@ public final class OfflineChecks {
 		assertSame(AutoExperimentAutomation.Action.WAIT,
 			automation.tick(completedRound, start + 3_600 * millis, 360 * millis, 190 * millis).action(),
 			"a watchdog pause reports only once and stays paused");
-
-		AutoExperimentAutomation transition = new AutoExperimentAutomation();
-		long transitionStart = 20_000_000_000L;
-		Object transitionScreen = new Object();
-		Object transitionMenu = new Object();
-		AutoExperimentAutomation.Snapshot oneStep = autoSnapshot(transitionScreen, transitionMenu,
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
-			"Timer: 2.0s", 0, 1, 30, 0, false);
-		transition.tick(oneStep, transitionStart, 360 * millis, 190 * millis);
-		var oneClick = transition.tick(oneStep, transitionStart + 360 * millis,
-			360 * millis, 190 * millis);
-		assertSame(AutoExperimentAutomation.Action.CLICK, oneClick.action(),
-			"Ultrasequencer uses the same first-click timing");
-		AutoExperimentAutomation.Snapshot memorize = autoSnapshot(transitionScreen, transitionMenu,
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.MEMORIZE,
-			"Remember the pattern!", 1, 1, -1, 0, false);
-		transition.clickResult(true, memorize, transitionStart + 360 * millis, 190 * millis);
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			transition.tick(memorize, transitionStart + 10_000 * millis, 360 * millis, 190 * millis).action(),
-			"normal memorize phases do not trip the stage watchdog");
-		AutoExperimentAutomation.Snapshot nextUltraStage = autoSnapshot(transitionScreen, transitionMenu,
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
-			"Timer: 2.0s", 0, 2, 31, 1, false);
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			transition.tick(nextUltraStage, transitionStart + 20_000 * millis,
-				360 * millis, 190 * millis).action(),
-			"each new solve phase receives a fresh first-click delay");
-		assertSame(AutoExperimentAutomation.Action.CLICK,
-			transition.tick(nextUltraStage, transitionStart + 20_360 * millis,
-				360 * millis, 190 * millis).action(),
-			"a valid next Ultrasequencer stage is replayed after that delay");
-
-		AutoExperimentAutomation transitionedWhileModelWaits = new AutoExperimentAutomation();
-		var roundCompleteStatus = autoSnapshot(new Object(), new Object(),
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
-			"Round Complete", 1, 1, -1, 0, false);
-		transitionedWhileModelWaits.tick(roundCompleteStatus, transitionStart, 0L, 0L);
-		var timerStatusWithOldModel = autoSnapshot(roundCompleteStatus.screenIdentity(),
-			roundCompleteStatus.menuIdentity(), ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH,
-			ExperimentPhase.ROUND_COMPLETE, "Timer: 1.0s", 1, 1, -1, 0, false);
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			transitionedWhileModelWaits.tick(timerStatusWithOldModel, transitionStart + 2_500 * millis,
-				0L, 0L).action(),
-			"a known timer proves the stage is moving even while the menu model lags");
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			transitionedWhileModelWaits.tick(timerStatusWithOldModel,
-				transitionStart + 2_999 * millis, 0L, 0L).action(),
-			"a solve timer without the next sequence gets the full watchdog window");
-		assertSame(AutoExperimentAutomation.Action.PAUSED,
-			transitionedWhileModelWaits.tick(timerStatusWithOldModel,
-				transitionStart + 3_000 * millis, 0L, 0L).action(),
-			"the watchdog pauses when the next solve sequence never becomes available");
-		AutoExperimentAutomation normalWaitTransition = new AutoExperimentAutomation();
-		normalWaitTransition.tick(roundCompleteStatus, transitionStart, 0L, 0L);
-		AutoExperimentAutomation.Snapshot memorizeWhileModelWaits = autoSnapshot(
-			roundCompleteStatus.screenIdentity(), roundCompleteStatus.menuIdentity(),
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.ROUND_COMPLETE,
-			"Remember the pattern!", 1, 1, -1, 0, false);
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			normalWaitTransition.tick(memorizeWhileModelWaits, transitionStart + 2_500 * millis,
-				0L, 0L).action(),
-			"a known memorize status cancels the stage watchdog while the model catches up");
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			normalWaitTransition.tick(memorizeWhileModelWaits,
-				transitionStart + 10_000 * millis, 0L, 0L).action(),
-			"normal memorize/wait phases can take longer than the watchdog window");
 
 		AutoExperimentAutomation manualTakeover = new AutoExperimentAutomation();
 		manualTakeover.tick(firstStep, start, 360 * millis, 190 * millis);
@@ -1292,23 +1767,6 @@ public final class OfflineChecks {
 		assertSame(AutoExperimentAutomation.Action.STOPPED,
 			milestoneClose.tick(reachedAfterAcceptedClick, start + 1 * millis, 0L).action(),
 			"milestone menu closure is emitted once even if the screen has not left yet");
-		AutoExperimentAutomation beginnerCompletion = new AutoExperimentAutomation();
-		AutoExperimentAutomation.Snapshot noBonusThreshold = autoSnapshot(new Object(), new Object(),
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.BEGINNER, ExperimentPhase.SOLVE,
-			"Timer: 1.0s", 0, 1, 30, 0, false);
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			beginnerCompletion.tick(noBonusThreshold, start, 0L, 0L).action(),
-			"a recognized tier without a bonus-click milestone remains solvable");
-		assertSame(AutoExperimentAutomation.Action.CLICK,
-			beginnerCompletion.tick(noBonusThreshold, start, 0L, 0L).action(),
-			"a no-milestone tier continues while a valid step remains");
-		AutoExperimentAutomation.Snapshot beginnerComplete = autoSnapshot(
-			noBonusThreshold.screenIdentity(), noBonusThreshold.menuIdentity(),
-			ExperimentType.ULTRASEQUENCER, ExperimentTier.BEGINNER, ExperimentPhase.COMPLETE,
-			"Experiment complete", 1, 1, -1, 0, false);
-		assertSame(AutoExperimentAutomation.Action.STOPPED,
-			beginnerCompletion.tick(beginnerComplete, start + 1_000 * millis, 0L, 0L).action(),
-			"a tier without a milestone stops on completion without requesting menu closure");
 		AutoExperimentAutomation.Snapshot superpairs = autoSnapshot(new Object(), new Object(),
 			ExperimentType.SUPERPAIRS, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
 			"Next button", 0, 1, 10, -1, false);
@@ -1316,67 +1774,35 @@ public final class OfflineChecks {
 			milestoneStop.tick(superpairs, start + 1_000 * millis, 0L, 0L).action(),
 			"Auto Experiments ignores Superpairs completely");
 
-		// Regression: the board repaints its pane colours inside one round. Treating that as the round
-		// boundary used to freeze the shared cursor at the first click while the Solver still rendered
-		// the remaining solution, so Auto dispatched nothing further.
+		// The Solver retains its complete solution and phase when the board repaints its pane colours.
 		ExperimentSolverEngine paneChurn = new ExperimentSolverEngine();
-		AutoExperimentAutomation paneChurnAuto = new AutoExperimentAutomation();
-		ExperimentClickGate paneChurnGate = new ExperimentClickGate();
-		Object ultraScreen = new Object();
-		Object ultraMenu = new Object();
-		long firstDelay = 1_000 * millis;
 		List<ExperimentCell> rememberCells = List.of(ExperimentCell.number(30, 1),
-			ExperimentCell.number(31, 2));
+			ExperimentCell.number(31, 2), ExperimentCell.number(32, 3));
 		paneChurn.markUltrasequencerDirty(List.of("gray"));
 		paneChurn.observe(new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
 			rememberCells, "gray", 200));
 		paneChurn.observe(new ExperimentSnapshot(ultraTitle, "Timer: 10.0s", rememberCells, "gray", 201));
 		assertSame(ExperimentPhase.SOLVE, paneChurn.view().phase(),
 			"the Ultrasequencer fixture enters its solve");
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			paneChurnAuto.tick(autoSnapshot(ultraScreen, ultraMenu, ExperimentType.ULTRASEQUENCER,
-				ExperimentTier.HIGH, ExperimentPhase.SOLVE, "Timer: 10.0s", 0, 2, 30, 0, false),
-				start, firstDelay).action(),
-			"the fixture arms its first-click delay");
-		AutoExperimentAutomation.Decision paneFirst = paneChurnAuto.tick(
-			autoSnapshot(ultraScreen, ultraMenu, ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH,
-				ExperimentPhase.SOLVE, "Timer: 10.0s", 0, 2, 30, 0, false),
-			start + firstDelay, firstDelay);
-		assertSame(AutoExperimentAutomation.Action.CLICK, paneFirst.action(),
-			"the first remembered slot is queued after its delay");
-		int[] paneClicks = {0};
-		assertTrue(paneChurnGate.dispatchSequenceClick(paneChurn, paneFirst.sequenceIndex(),
-			paneFirst.slotId(), true, ignored -> paneClicks[0]++),
-			"the first remembered slot dispatches through the shared gate");
-		assertSame(AutoExperimentAutomation.Action.WAIT,
-			paneChurnAuto.clickResult(true, autoSnapshot(ultraScreen, ultraMenu,
-				ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH, ExperimentPhase.SOLVE,
-				"Timer: 9.9s", 1, 2, 31, 0, false), start + firstDelay, 1_000 * millis).action(),
-			"the accepted click arms the between-click delay");
+		assertEquals(3, paneChurn.view().sequence().size(),
+			"the Solver exposes the complete remembered sequence as one ordered solution");
+		assertEquals(0, paneChurn.view().visualIndex(),
+			"Auto execution does not need to mutate the Solver cursor");
 		paneChurn.markUltrasequencerDirty(List.of("white"));
 		paneChurn.markUltrasequencerDirty(List.of("gray"));
 		assertSame(ExperimentPhase.SOLVE, paneChurn.view().phase(),
 			"a pane repaint during the solve cannot close the round");
-		assertEquals(1, paneChurn.view().visualIndex(),
-			"a pane repaint cannot freeze or rewind the shared cursor");
-		AutoExperimentAutomation.Decision paneSecond = paneChurnAuto.tick(
-			autoSnapshot(ultraScreen, ultraMenu, ExperimentType.ULTRASEQUENCER, ExperimentTier.HIGH,
-				ExperimentPhase.SOLVE, "Timer: 9.0s", 1, 2, 31, 0, false),
-			start + 3 * firstDelay, firstDelay);
-		assertSame(AutoExperimentAutomation.Action.CLICK, paneSecond.action(),
-			"the second remembered slot is queued after the pane churn");
-		assertEquals(1, paneSecond.sequenceIndex(), "the second request carries the advanced index");
-		assertTrue(paneChurnGate.dispatchSequenceClick(paneChurn, paneSecond.sequenceIndex(),
-			paneSecond.slotId(), true, ignored -> paneClicks[0]++),
-			"the second remembered slot also dispatches through the shared gate");
-		assertEquals(2, paneClicks[0], "both remembered slots reached vanilla exactly once");
+		assertEquals(0, paneChurn.view().visualIndex(),
+			"a pane repaint does not mutate the Solver's read-only execution source");
+		assertEquals(3, paneChurn.view().sequence().size(),
+			"the ordered solution remains complete after the pane repaint");
 		paneChurn.observe(new ExperimentSnapshot(ultraTitle, "Remember the pattern!",
 			List.of(ExperimentCell.number(30, 1), ExperimentCell.number(31, 2),
 				ExperimentCell.number(32, 3)), "gray", 202));
 		assertEquals(3, paneChurn.view().sequence().size(),
 			"the next memory notice replaces the finished round");
-		assertEquals(1, paneChurn.view().completedRounds(),
-			"the finished round is counted exactly once");
+		assertEquals(0, paneChurn.view().completedRounds(),
+			"Auto's separate cursor does not fabricate Solver-confirmed round progress");
 
 		// Regression: the phase transition used to depend on the exact status spelling. If Hypixel
 		// trims, reformats or slightly rewords either notice, the model stayed in WAIT forever while
@@ -1449,6 +1875,106 @@ public final class OfflineChecks {
 		engine.observe(new ExperimentSnapshot(title, status,
 			List.of(ExperimentCell.token(17, "red", highlighted)), null, revision,
 			event.kind() == ChronomatronEvent.Kind.STATUS), event);
+	}
+
+	/**
+	 * Settings that must stay in the persisted lists, and one that must stay out of them.
+	 *
+	 * <p>A setting is persisted only because it was passed to the module's own constructor, so a row
+	 * that is created, grouped and rendered but never passed looks like it works and silently reverts
+	 * after a restart. That is exactly what happened to the macro/inventory colour toggle.
+	 */
+	private static void checkPersistedSettings() {
+		assertTrue(VisualModule.INSTANCE.booleanSettings().stream()
+				.anyMatch(setting -> setting.name().equals("Theme Macro + Inventory Colors")),
+			"the macro and inventory colour toggle is registered as a real setting");
+		assertTrue(GeneralModule.INSTANCE.booleanSettings().stream()
+				.anyMatch(setting -> setting.name().equals("Island Detection API")),
+			"island detection is a panel row rather than a config-file-only value");
+		assertTrue(VisualModule.INSTANCE.booleanSettings().stream()
+				.noneMatch(setting -> setting.name().equals("Theme Macro Colors")),
+			"the renamed toggle no longer offers its old key for writing");
+		// The border floor is session state, not a choice, and must never be written to the config.
+		assertTrue(GardenPlotBordersModule.INSTANCE.booleanSettings().stream()
+				.noneMatch(setting -> setting.name().equals("Height Captured")),
+			"the garden height latch is not persisted as a user setting");
+	}
+
+	private static void checkModuleManagerMembership() {
+		Module general = GeneralModule.INSTANCE;
+		if (!ModuleManager.contains(general.category(), general)) ModuleManager.register(general);
+		for (Module module : ModuleManager.modules()) {
+			assertTrue(ModuleManager.contains(module.category(), module)
+				== ModuleManager.modules(module.category()).contains(module),
+				"the allocation-free registry lookup matches category-list membership for " + module.name());
+		}
+		assertFalse(ModuleManager.contains(null, general),
+			"a module is not found under a different category");
+		assertFalse(ModuleManager.contains(general.category(), null),
+			"a null module is never registered");
+		Module unregistered = new Module("Offline Unregistered Fixture", "", general.category()) { };
+		assertFalse(ModuleManager.contains(unregistered.category(), unregistered),
+			"category membership still rejects an unregistered module");
+	}
+
+	/** The icon tint belongs to Theme, follows its presets, and remains a normal editable color. */
+	private static void checkThemeIconColorSetting() {
+		VisualModule theme = VisualModule.INSTANCE;
+		ColorSetting iconColor = theme.iconColorSetting();
+		ColorSetting text = theme.colorSettings().stream()
+			.filter(setting -> setting.name().equals("Text"))
+			.findFirst().orElseThrow();
+		assertTrue(iconColor.argb() == text.argb(),
+			"the fresh-install icon color starts at the Theme Text color");
+		assertTrue("Theme.Icon color".equals(theme.configName() + "." + iconColor.name()),
+			"Theme icon color keeps its persisted config key");
+		assertTrue(theme.colorSettings().contains(iconColor),
+			"Theme icon color is registered as a persisted setting");
+		SettingGroup colours = theme.groups().stream()
+			.filter(group -> "Colours".equals(group.name()))
+			.findFirst().orElseThrow();
+		assertTrue(colours.settings().contains(iconColor),
+			"Theme icon color is visible in the Colours group");
+		assertTrue(theme.groups().stream().noneMatch(group -> "Icons".equals(group.name())),
+			"Theme no longer has a separate Icons group");
+		assertTrue(GeneralModule.INSTANCE.colorSettings().stream()
+			.noneMatch(setting -> setting.name().equals("Icon color")),
+			"General no longer registers the moved icon color setting");
+
+		int[][] originalColors = new int[theme.colorSettings().size()][4];
+		for (int i = 0; i < theme.colorSettings().size(); i++) {
+			ColorSetting setting = theme.colorSettings().get(i);
+			originalColors[i] = new int[]{setting.red(), setting.green(), setting.blue(), setting.alpha()};
+		}
+		try {
+			Map<String, VisualModule.Preset> presets = Map.of(
+				"Tracker", VisualModule.Preset.TRACKER,
+				"Amethyst", VisualModule.Preset.AMETHYST,
+				"Midnight", VisualModule.Preset.MIDNIGHT,
+				"Forest", VisualModule.Preset.FOREST,
+				"Aurora", VisualModule.Preset.AURORA,
+				"Ember", VisualModule.Preset.EMBER,
+				"Orchid", VisualModule.Preset.ORCHID,
+				"Ice Glass", VisualModule.Preset.ICE_GLASS,
+				"Rose Glass", VisualModule.Preset.ROSE_GLASS);
+			assertTrue(theme.actions().size() == 9
+				&& theme.actions().stream().allMatch(action -> presets.containsKey(action.name())),
+				"all nine built-in theme presets are registered");
+			for (var preset : presets.entrySet()) {
+				VisualModule.applyPreset(preset.getValue());
+				assertTrue(iconColor.argb() == text.argb(),
+					"each built-in preset initializes Icon color from its Text color: " + preset.getKey());
+			}
+			iconColor.set(12, 34, 56, 255);
+			assertTrue(iconColor.red() == 12 && iconColor.green() == 34 && iconColor.blue() == 56,
+				"the RGB icon color remains user-editable after selecting a preset");
+		} finally {
+			for (int i = 0; i < theme.colorSettings().size(); i++) {
+				int[] rgba = originalColors[i];
+				theme.colorSettings().get(i).set(rgba[0], rgba[1], rgba[2], rgba[3]);
+			}
+			theme.refreshTheme();
+		}
 	}
 
 	private static void assertDebugSetting(Module module, String name) {

@@ -9,10 +9,9 @@ import java.util.Map;
 /**
  * Tick-driven number memory and mutation-driven round boundaries, following Skyblocker.
  *
- * <p>A pane colour change only closes a round once that round's clicks are complete; while the
- * solve still owes clicks it is the board's own button animation. The next "Remember the pattern!"
- * is the authoritative round reset either way, and it is also the recovery path when a solve is
- * interrupted before this model observes the boundary.</p>
+ * <p>Pane churn during an unfinished solve is the board's button animation, so only the final
+ * accepted click lets a pane edge end that round. An edge before the timer can be reopened once
+ * for an unplayed remembered round; a completed replay never accepts a stale timer.</p>
  */
 public final class UltrasequencerModel {
 	public enum State { REMEMBER, WAIT, SHOW, END }
@@ -21,13 +20,11 @@ public final class UltrasequencerModel {
 	private int nextSlot = -1;
 	private String lastPaneColor;
 	private int completedRounds;
-	/**
-	 * Accepted clicks of the round in progress. {@link #nextSlot} deliberately keeps pointing at the
-	 * last button after the final click, so it cannot tell "still owed clicks" apart from "waiting for
-	 * the pane edge"; this counter can.
-	 */
+	/** Accepted clicks in the current replay; pane animations only end it after the final click. */
 	private int clicksThisRound;
-	/** Whether the current round has already been added to {@link #completedRounds}. */
+	/** The pane changed while a remembered round was waiting for its solve timer. */
+	private boolean reopenUnplayedRoundOnTimer;
+	/** Whether this round has already contributed to {@link #completedRounds}. */
 	private boolean countedThisRound;
 
 	/** Called once after a screen tick, never for each slot update or render frame. */
@@ -39,23 +36,27 @@ public final class UltrasequencerModel {
 		String instruction = status == null ? "" : status;
 		switch (state) {
 			case REMEMBER -> {
-				if (!isRememberNotice(instruction)) return;
-				capture(cells);
+				if (isRememberNotice(instruction)) capture(cells);
 			}
 			case WAIT -> {
-				if (isTimerNotice(instruction)) state = State.SHOW;
+				if (isTimerNotice(instruction) && !remembered.isEmpty()) state = State.SHOW;
 			}
 			case END -> {
-				if (isTimerNotice(instruction)) return;
+				if (isTimerNotice(instruction)) {
+					if (canReopenUnplayedRound()) {
+						state = State.SHOW;
+						reopenUnplayedRoundOnTimer = false;
+					}
+					return;
+				}
 				if (isRememberNotice(instruction)) {
 					beginNextRound();
 					capture(cells);
 				} else reset();
 			}
 			case SHOW -> {
-				// The server can start the next round before this model ever observed the pane
-				// boundary. A fresh memory notice is the one authoritative round reset, and it also
-				// prevents a finished round from ever being replayed.
+				// A new memory notice can arrive without a pane callback. It is authoritative and
+				// starts a fresh capture even if this model missed the previous round edge.
 				if (isRememberNotice(instruction)) {
 					beginNextRound();
 					capture(cells);
@@ -64,95 +65,52 @@ public final class UltrasequencerModel {
 		}
 	}
 
-	/**
-	 * Whether the status item announces the next round's numbers. The literal wording is checked
-	 * first and the shared tolerant matcher second, so trailing punctuation, formatting or wording
-	 * changes cannot leave the model waiting for a timer that never comes.
-	 */
 	private static boolean isRememberNotice(String instruction) {
 		return instruction.equals("Remember the pattern!") || ExperimentPhase.isRememberStatus(instruction);
 	}
 
-	/** Whether the status item opened the solve. The literal prefix stays the fast path. */
 	private static boolean isTimerNotice(String instruction) {
 		return instruction.startsWith("Timer: ") || ExperimentPhase.isTimerStatus(instruction);
 	}
 
 	private void capture(List<ExperimentCell> cells) {
-		clicksThisRound = 0;
+		clearRound();
 		boolean captured = false;
 		for (ExperimentCell cell : cells) {
-			if (cell.removed() || !cell.hasValue() || !cell.value().matches("\\d+")) continue;
+			if (cell == null || cell.removed() || !cell.hasValue() || !cell.value().matches("\\d+")) continue;
 			remembered.put(cell.slotId(), cell);
 			if (cell.value().equals("1")) nextSlot = cell.slotId();
 			captured = true;
 		}
-		// A status tick that carries no numbers yet must not close the capture window, or the round's
-		// real board would arrive while the model is already waiting for its timer.
+		// A status update can precede the board slots. Keep waiting for a later tick to capture them.
 		state = captured ? State.WAIT : State.REMEMBER;
 	}
 
-	/**
-	 * Inspect panes in slot order on actual menu mutations, including during memory.
-	 *
-	 * <p>The round counter moves here, exactly once per round, because this is the only boundary
-	 * signal that never depends on a later status arriving.</p>
-	 */
+	/** Inspect panes in slot order on actual menu mutations, including during memory. */
 	public void markDirty(List<String> paneColors) {
 		for (String color : paneColors) {
 			if (color == null || color.equals("black")) continue;
 			if (!color.equals(lastPaneColor)) {
 				boolean completed = roundFinished();
-				lastPaneColor = color;
 				if (completed && !countedThisRound) {
 					countedThisRound = true;
 					completedRounds++;
 				}
-				// The round's first colour is not a boundary, and a colour change while the solve
-				// still owes clicks is the board's own button animation. Ending the round on either
-				// would drop the remaining clicks while the solver keeps rendering them.
-				if (!midSolve()) state = State.END;
+				lastPaneColor = color;
+				// A color transition inside the solve is the normal pressed/released animation.
+				// Only close an unfinished model state before solve, or after every replay click.
+				if (!midSolve() && state != State.END) {
+					reopenUnplayedRoundOnTimer = !completed && state == State.WAIT
+						&& !remembered.isEmpty() && clicksThisRound == 0;
+					state = State.END;
+				}
 				return;
 			}
 		}
 	}
 
-	/** True while the solve still owes clicks, so a pane repaint must not close its round. */
-	private boolean midSolve() {
-		return state == State.SHOW && nextSlot >= 0 && !remembered.isEmpty()
-			&& clicksThisRound < remembered.size();
-	}
-
-	/** Forgets the round in progress so the next capture starts from an empty board. */
-	private void clearRound() {
-		remembered.clear();
-		nextSlot = -1;
-		clicksThisRound = 0;
-		countedThisRound = false;
-	}
-
-	/** True once the round's whole sequence has been clicked and only the pane edge is left. */
-	private boolean roundFinished() {
-		return state == State.SHOW && !remembered.isEmpty() && clicksThisRound >= remembered.size();
-	}
-
-	/**
-	 * Starts the next round. A round is normally counted at its pane boundary; this is the fallback
-	 * for a boundary the model never got to see, such as a menu that ends without a colour update.
-	 */
-	private void beginNextRound() {
-		if (state == State.SHOW && roundFinished() && !countedThisRound) {
-			countedThisRound = true;
-			completedRounds++;
-		}
-		clearRound();
-		state = State.REMEMBER;
-	}
-
 	public boolean click(int slotId) {
-		// The counter also hard-stops a stale board that the game already replaced: without it a
-		// missed pane boundary would keep replaying the previous round forever.
-		if (state != State.SHOW || slotId != nextSlot || roundFinished()) return false;
+		if (!canClick(slotId)) return false;
 		ExperimentCell current = remembered.get(nextSlot);
 		if (current == null) return false;
 		int wantedCount = current.numericValue() + 1;
@@ -165,6 +123,44 @@ public final class UltrasequencerModel {
 		clicksThisRound++;
 		// The final button remains selected until the pane color changes, as in Skyblocker.
 		return true;
+	}
+
+	/** True only while this exact sequence position is still eligible for a new click. */
+	public boolean canClick(int slotId) {
+		ExperimentCell current = remembered.get(nextSlot);
+		return state == State.SHOW && slotId == nextSlot && current != null
+			&& clicksThisRound < remembered.size() && !roundFinished();
+	}
+
+	/** True when a live pane edge happened before any click in the remembered solve. */
+	private boolean canReopenUnplayedRound() {
+		return state == State.END && reopenUnplayedRoundOnTimer && !remembered.isEmpty()
+			&& clicksThisRound == 0;
+	}
+
+	private boolean midSolve() {
+		return state == State.SHOW && !remembered.isEmpty() && clicksThisRound < remembered.size();
+	}
+
+	private boolean roundFinished() {
+		return state == State.SHOW && !remembered.isEmpty() && clicksThisRound >= remembered.size();
+	}
+
+	private void clearRound() {
+		remembered.clear();
+		nextSlot = -1;
+		clicksThisRound = 0;
+		countedThisRound = false;
+		reopenUnplayedRoundOnTimer = false;
+	}
+
+	private void beginNextRound() {
+		if (roundFinished() && !countedThisRound) {
+			countedThisRound = true;
+			completedRounds++;
+		}
+		clearRound();
+		state = State.REMEMBER;
 	}
 	public List<SequenceStep> sequence() {
 		List<SequenceStep> result = new ArrayList<>();
@@ -179,6 +175,7 @@ public final class UltrasequencerModel {
 	}
 	public State state() { return state; }
 	public int completedRounds() { return completedRounds; }
+	public int acceptedClicks() { return clicksThisRound; }
 	public int currentIndex() {
 		List<SequenceStep> steps = sequence();
 		for (int i = 0; i < steps.size(); i++) if (steps.get(i).slotIds().contains(nextSlot)) return i;

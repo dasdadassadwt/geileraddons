@@ -6,7 +6,6 @@ import geiler.addons.client.hud.MacroTitleOverlay;
 import geiler.addons.client.location.HypixelModApi;
 import geiler.addons.client.location.Island;
 import geiler.addons.client.module.Category;
-import geiler.addons.client.module.CheatsState;
 import geiler.addons.client.module.ModuleKeybind;
 import geiler.addons.client.module.ModuleManager;
 import geiler.addons.client.module.impl.MacrosModule;
@@ -87,11 +86,30 @@ public final class MacroRunner {
 	private static final int MAX_ACTIVE_RUNS = 64;
 	private static final int MAX_CALL_DEPTH = 16;
 
+	private enum ConditionResult {
+		TRUE, FALSE, UNKNOWN;
+		private static ConditionResult of(boolean value) { return value ? TRUE : FALSE; }
+		private ConditionResult not() { return this == TRUE ? FALSE : this == FALSE ? TRUE : UNKNOWN; }
+	}
+
 	private MacroRunner() {
 	}
 
 	public static boolean isRunning() {
 		return !activeRuns.isEmpty();
+	}
+
+	/** Runs a Dungeon Guide link through the target macro's On Call stack when idle. */
+	public static boolean triggerGuideMacro(int macroId) {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (!activeRuns.isEmpty() || minecraft == null || minecraft.level == null || minecraft.player == null
+			|| !MacrosModule.INSTANCE.isActive()) return false;
+		MacroDefinition macro = MacrosModule.INSTANCE.macro(macroId);
+		if (macro == null || !macro.enabled() || !macro.allowsIsland(HypixelModApi.currentIsland())) return false;
+		for (MacroScript script : macro.scripts()) {
+			if (script.trigger() == MacroScript.Trigger.ON_CALL) return start(macro, script);
+		}
+		return false;
 	}
 
 	/** Supplies held macro keys to vanilla input polling while a workflow owns the hold. */
@@ -112,13 +130,53 @@ public final class MacroRunner {
 		for (Run run : activeRuns) if (run.isExecutingScript(scriptId)) return true;
 		return false;
 	}
-	public enum RunState { IDLE, RUNNING, WAITING, FINISHED }
+	public enum RunState { IDLE, RUNNING, WAITING, PAUSED, FINISHED }
 	public static RunState scriptState(String scriptId) {
 		if (scriptId == null) return RunState.IDLE;
-		for (Run run : activeRuns) if (run.isExecutingScript(scriptId)) return run.isWaiting() ? RunState.WAITING : RunState.RUNNING;
+		for (Run run : activeRuns) if (run.isExecutingScript(scriptId)) {
+			if (run.isPaused()) return RunState.PAUSED;
+			return run.isWaiting() ? RunState.WAITING : RunState.RUNNING;
+		}
 		Long finished = finishedScripts.get(scriptId);
 		return finished != null && System.nanoTime() - finished < 1_500_000_000L ? RunState.FINISHED : RunState.IDLE;
 	}
+	public static String pausedReason(String scriptId) {
+		if (scriptId == null) return "";
+		for (Run run : activeRuns) if (run.isExecutingScript(scriptId) && run.isPaused()) return run.pausedReason();
+		return "";
+	}
+	public static boolean canResumePausedScript(String scriptId) {
+		if (scriptId == null) return false;
+		for (Run run : activeRuns) {
+			if (run.isExecutingScript(scriptId) && run.isPaused()) return run.canResumeAfterUnknownResolution();
+		}
+		return false;
+	}
+	/** Resumes only after the exact unsupported node that paused the run has been removed or replaced. */
+	public static boolean resumePausedScript(String scriptId) {
+		if (scriptId == null) return false;
+		for (Run run : activeRuns) {
+			if (run.isExecutingScript(scriptId) && run.isPaused()) return run.resumeAfterUnknownResolution();
+		}
+		return false;
+	}
+	public static boolean cancelPausedScript(String scriptId, String reason) {
+		if (scriptId == null) return false;
+		for (Run run : List.copyOf(activeRuns)) {
+			if (run.isExecutingScript(scriptId) && run.isPaused()) {
+				finishRun(run, reason == null ? "paused run cancelled" : reason, false);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	static boolean wasPausedUnknownStepResolved(List<MacroStep> activeSteps, MacroStep.Unknown pausedStep) {
+		if (pausedStep == null || activeSteps == null) return false;
+		for (MacroStep candidate : activeSteps) if (candidate == pausedStep) return false;
+		return true;
+	}
+
 	public static MacroStep activeStep(String scriptId) {
 		if (scriptId == null) return null;
 		for (Run run : activeRuns) if (run.isExecutingScript(scriptId)) return run.activeStepFor(scriptId);
@@ -148,12 +206,39 @@ public final class MacroRunner {
 		}
 		if (matches.isEmpty()) return false;
 		for (geiler.addons.client.module.Module module : ModuleManager.modules()) {
-			if (module.keybind().matches(event)) {
+			if (module.showsKeybindControl() && module.keybind().matches(event)) {
 				message(minecraft, "Macro hotkey conflicts with module '" + module.name() + "'; nothing started.");
 				return true;
 			}
 		}
 
+		for (MacroScriptOwner owner : matches) start(owner.macro, owner.script);
+		return true;
+	}
+
+	/** Mouse hotkeys share the keyboard trigger rules and can use every GLFW mouse button. */
+	public static boolean handleMouseButtonEvent(Minecraft minecraft, int action, MouseButtonInfo event) {
+		if (action != InputConstants.PRESS || event == null || minecraft == null || minecraft.level == null
+			|| minecraft.player == null || !MacrosModule.INSTANCE.isActive()) return false;
+		if (isTextOrEditorScreen(minecraft.screen)) return false;
+		List<MacroScriptOwner> matches = new ArrayList<>();
+		for (MacroDefinition macro : MacrosModule.INSTANCE.macros()) {
+			if (!macro.enabled() || !contextAllowed(macro.triggerContext(), minecraft.screen)
+				|| !macro.allowsIsland(HypixelModApi.currentIsland())) continue;
+			for (MacroScript script : macro.scripts()) {
+				boolean hotkeyed = script.trigger() == MacroScript.Trigger.KEY_PRESS
+					|| script.trigger() == MacroScript.Trigger.CHAT;
+				if (hotkeyed && script.keybind().matchesMouse(event.button(), event.modifiers())
+					&& !isScriptRunning(script.id())) matches.add(new MacroScriptOwner(macro, script));
+			}
+		}
+		if (matches.isEmpty()) return false;
+		for (geiler.addons.client.module.Module module : ModuleManager.modules()) {
+			if (module.showsKeybindControl() && module.keybind().matchesMouse(event.button(), event.modifiers())) {
+				message(minecraft, "Macro hotkey conflicts with module '" + module.name() + "'; nothing started.");
+				return true;
+			}
+		}
 		for (MacroScriptOwner owner : matches) start(owner.macro, owner.script);
 		return true;
 	}
@@ -173,13 +258,6 @@ public final class MacroRunner {
 			if (MacroFlowRules.contextEnded(MacrosModule.INSTANCE.isActive(), minecraft.level != null,
 				minecraft.player != null, run.waitingForWorldSwitch())) {
 				finishRun(run, "context ended", false);
-				continue;
-			}
-			if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(run.macro)) {
-				// Switching the gate off has to stop what it would have prevented from starting,
-				// but only those runs: a single-action workflow is still allowed to finish.
-				message(minecraft, "Macro '" + run.macro.name() + "' stopped: Cheats were switched off.");
-				finishRun(run, "cheats disabled", false);
 				continue;
 			}
 			Island currentIsland = HypixelModApi.currentIsland();
@@ -240,11 +318,6 @@ public final class MacroRunner {
 				}
 				if (isScriptRunning(script.id())) {
 					blockChatTrigger(macro, script, "that stack is already running", now, minecraft);
-					continue;
-				}
-				if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(macro)) {
-					blockChatTrigger(macro, script, "Cheats are off and this workflow is "
-						+ MacroCheatRules.reason(macro.scripts()), now, minecraft);
 					continue;
 				}
 				long lastStart = chatTriggerStarts.getOrDefault(script.id(), 0L);
@@ -336,15 +409,6 @@ public final class MacroRunner {
 		if (macro == null || script == null) return false;
 		if (script.steps().isEmpty()) {
 			message(Minecraft.getInstance(), "Macro '" + macro.name() + "' has no blocks in this event stack.");
-			return false;
-		}
-		if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(macro)) {
-			// Deliberately before the run-cap check: this refusal is about what the macro is, not
-			// about how busy the runner is, and the message has to say which one it is.
-			String reason = MacroCheatRules.reason(macro.scripts());
-			message(Minecraft.getInstance(), "Macro '" + macro.name() + "' needs Cheats because "
-				+ reason + ". Turn it on under Miscellaneous → General → Cheats.");
-			log(macro, "BLOCKED by the Cheats gate: " + reason);
 			return false;
 		}
 		if (!MacroRuntimeRules.canStart(isScriptRunning(script.id()), activeRuns.size(), MAX_ACTIVE_RUNS)) {
@@ -671,39 +735,39 @@ public final class MacroRunner {
 		return MacroFlowRules.itemNameMatchesAny(actual, needle, contains);
 	}
 
-	private static boolean condition(MacroCondition condition, Minecraft minecraft, long minimumChatSequence) {
+	private static ConditionResult condition(MacroCondition condition, Minecraft minecraft, long minimumChatSequence) {
 		return condition(condition, minecraft, minimumChatSequence, Map.of());
 	}
 
-	private static boolean condition(MacroCondition condition, Minecraft minecraft, long minimumChatSequence,
+	private static ConditionResult condition(MacroCondition condition, Minecraft minecraft, long minimumChatSequence,
 		Map<String, Object> variables) {
-		if (condition == null) return true;
-		if (condition instanceof MacroCondition.Always always) return always.expected();
+		if (condition == null) return ConditionResult.TRUE;
+		if (condition instanceof MacroCondition.Always always) return ConditionResult.of(always.expected());
 		if (condition instanceof MacroCondition.World world) {
-			return (minecraft.level != null && minecraft.player != null) == world.mustBeInWorld();
+			return ConditionResult.of((minecraft.level != null && minecraft.player != null) == world.mustBeInWorld());
 		}
 		if (condition instanceof MacroCondition.Screen screen) {
 			boolean open = minecraft.screen != null;
-			if (open != screen.mustBeOpen()) return false;
-			if (!open || screen.title() == null || screen.title().isBlank()) return true;
+			if (open != screen.mustBeOpen()) return ConditionResult.FALSE;
+			if (!open || screen.title() == null || screen.title().isBlank()) return ConditionResult.TRUE;
 			String title = ChatText.stripForMatch(minecraft.screen.getTitle().getString()).toLowerCase(Locale.ROOT);
 			String wanted = ChatText.stripForMatch(screen.title()).toLowerCase(Locale.ROOT);
-			return screen.contains() ? title.contains(wanted) : title.equals(wanted);
+			return ConditionResult.of(screen.contains() ? title.contains(wanted) : title.equals(wanted));
 		}
 		if (condition instanceof MacroCondition.Slot slot) {
 			boolean exists = findSlot(minecraft.screen, slot.slotId()) != null;
-			return exists == slot.mustExist();
+			return ConditionResult.of(exists == slot.mustExist());
 		}
 		if (condition instanceof MacroCondition.Item item) {
 			boolean found = findItem(minecraft, item.name(), item.contains(),
 				item.scope().serializedName(), 0) != null;
-			return item.matches(found);
+			return ConditionResult.of(item.matches(found));
 		}
 		if (condition instanceof MacroCondition.Chat chat) {
-			if (lastChatSequence <= minimumChatSequence) return false;
+			if (lastChatSequence <= minimumChatSequence) return ConditionResult.FALSE;
 			String wanted = ChatText.stripForMatch(chat.text()).toLowerCase(Locale.ROOT);
 			String actual = lastChat.toLowerCase(Locale.ROOT);
-			return chat.contains() ? actual.contains(wanted) : actual.equals(wanted);
+			return ConditionResult.of(chat.contains() ? actual.contains(wanted) : actual.equals(wanted));
 		}
 		if (condition instanceof MacroCondition.Variable variable) {
 			MacroVariableStore globals = MacrosModule.INSTANCE.globalVariables();
@@ -718,25 +782,67 @@ public final class MacroRunner {
 			} else if (left instanceof Boolean leftBoolean && right instanceof Boolean rightBoolean) {
 				comparison = Boolean.compare(leftBoolean, rightBoolean);
 			} else comparison = left.toString().compareTo(String.valueOf(right));
-			return switch (variable.operator()) {
+			return ConditionResult.of(switch (variable.operator()) {
 				case EQUALS -> comparison == 0;
 				case NOT_EQUALS -> comparison != 0;
 				case GREATER_THAN -> comparison > 0;
 				case GREATER_OR_EQUAL -> comparison >= 0;
 				case LESS_THAN -> comparison < 0;
 				case LESS_OR_EQUAL -> comparison <= 0;
-			};
+			});
+		}
+		if (condition instanceof MacroCondition.Hypixel hypixel) {
+			HypixelConditionData.Value value = HypixelConditionData.read(hypixel, minecraft);
+			if (!value.available()) return ConditionResult.UNKNOWN;
+			return compareHypixel(hypixel, value.value());
 		}
 		if (condition instanceof MacroCondition.All all) {
-			for (MacroCondition child : all.children()) if (!condition(child, minecraft, minimumChatSequence, variables)) return false;
-			return true;
+			boolean unknown = false;
+			for (MacroCondition child : all.children()) {
+				ConditionResult result = condition(child, minecraft, minimumChatSequence, variables);
+				if (result == ConditionResult.FALSE) return ConditionResult.FALSE;
+				if (result == ConditionResult.UNKNOWN) unknown = true;
+			}
+			return unknown ? ConditionResult.UNKNOWN : ConditionResult.TRUE;
 		}
 		if (condition instanceof MacroCondition.Any any) {
-			for (MacroCondition child : any.children()) if (condition(child, minecraft, minimumChatSequence, variables)) return true;
-			return false;
+			boolean unknown = false;
+			for (MacroCondition child : any.children()) {
+				ConditionResult result = condition(child, minecraft, minimumChatSequence, variables);
+				if (result == ConditionResult.TRUE) return ConditionResult.TRUE;
+				if (result == ConditionResult.UNKNOWN) unknown = true;
+			}
+			return unknown ? ConditionResult.UNKNOWN : ConditionResult.FALSE;
 		}
-		if (condition instanceof MacroCondition.Not not) return !condition(not.child(), minecraft, minimumChatSequence, variables);
-		return false;
+		if (condition instanceof MacroCondition.Not not) return condition(not.child(), minecraft, minimumChatSequence, variables).not();
+		return ConditionResult.FALSE;
+	}
+
+	private static ConditionResult compareHypixel(MacroCondition.Hypixel condition, Object actual) {
+		String expected = condition.expected().trim();
+		int comparison;
+		if (actual instanceof Number number) {
+			try { comparison = Double.compare(number.doubleValue(), Double.parseDouble(expected)); }
+			catch (NumberFormatException ignored) { return ConditionResult.UNKNOWN; }
+		} else if (actual instanceof Boolean value) {
+			if (!expected.equalsIgnoreCase("true") && !expected.equalsIgnoreCase("false")) return ConditionResult.UNKNOWN;
+			comparison = Boolean.compare(value, Boolean.parseBoolean(expected));
+		} else {
+			String value = String.valueOf(actual);
+			comparison = value.compareToIgnoreCase(expected);
+			if (condition.operator() == MacroCondition.Hypixel.Operator.CONTAINS) {
+				return ConditionResult.of(value.toLowerCase(Locale.ROOT).contains(expected.toLowerCase(Locale.ROOT)));
+			}
+		}
+		return ConditionResult.of(switch (condition.operator()) {
+			case EQUALS -> comparison == 0;
+			case NOT_EQUALS -> comparison != 0;
+			case GREATER_THAN -> comparison > 0;
+			case GREATER_OR_EQUAL -> comparison >= 0;
+			case LESS_THAN -> comparison < 0;
+			case LESS_OR_EQUAL -> comparison <= 0;
+			case CONTAINS -> false;
+		});
 	}
 
 	private static Slot findSlot(Screen screen, int slotId) {
@@ -779,6 +885,9 @@ public final class MacroRunner {
 		private long heldMouseUntilNanos;
 		private long inputBlockUntilNanos;
 		private boolean indefiniteInputBlock;
+		private MacroStep.Unknown pausedAtUnknown;
+		private Frame pausedFrame;
+		private String pausedReason = "";
 		/** The node whose explicit pre-node delay is currently being waited out. */
 		private MacroStep pendingDelayStep;
 		private Frame worldSwitchFrame;
@@ -812,8 +921,26 @@ public final class MacroRunner {
 
 		private boolean isWaiting() {
 			long now = System.nanoTime();
-			return blockedReason != null || now < nextActionNanos || heldKeyState.isScheduled()
+			return isPaused() || blockedReason != null || now < nextActionNanos || heldKeyState.isScheduled()
 				|| heldMouseInput != null;
+		}
+
+		private boolean isPaused() { return pausedAtUnknown != null; }
+		private String pausedReason() { return pausedReason; }
+
+		private boolean canResumeAfterUnknownResolution() {
+			return isPaused() && wasPausedUnknownStepResolved(
+				pausedFrame == null ? null : pausedFrame.steps, pausedAtUnknown);
+		}
+
+		private boolean resumeAfterUnknownResolution() {
+			if (!canResumeAfterUnknownResolution()) return false;
+			pausedAtUnknown = null;
+			pausedFrame = null;
+			pausedReason = "";
+			clearBlocked();
+			nextActionNanos = System.nanoTime();
+			return true;
 		}
 
 		private boolean isExecutingScript(String scriptId) {
@@ -822,6 +949,7 @@ public final class MacroRunner {
 		}
 
 		private MacroStep activeStepFor(String scriptId) {
+			if (isPaused()) return pausedAtUnknown;
 			for (Frame frame : frames) {
 				if (!scriptId.equals(frame.eventScriptId)) continue;
 				if (frame.pendingCall != null) return frame.pendingCall;
@@ -863,14 +991,6 @@ public final class MacroRunner {
 				abort("missing or disabled macro " + call.macroId());
 				return false;
 			}
-			if (!CheatsState.enabled() && MacroCheatRules.requiresCheats(target)) {
-				// Unreachable from a normal start - a Macro Call block is itself complex, so the
-				// caller already needed Cheats - but a hand-edited package should still not be able
-				// to reach a gated workflow through the back door.
-				message(minecraft, "Macro '" + macro.name() + "' stopped: the called macro needs Cheats.");
-				abort("called macro needs Cheats " + call.macroId());
-				return false;
-			}
 			if (!MacroRuntimeRules.canEnterCall(caller.callDepth, MAX_CALL_DEPTH,
 				caller.macroPath.contains(target.id()))) {
 				message(minecraft, "Macro '" + macro.name() + "' stopped: recursive macro call limit reached.");
@@ -908,6 +1028,7 @@ public final class MacroRunner {
 		}
 
 		private void tick(Minecraft minecraft) {
+			if (isPaused()) return;
 			if (levelChanged) {
 				if (worldSwitchFrame == null) {
 					abort("world changed without a World Switch node");
@@ -964,10 +1085,30 @@ public final class MacroRunner {
 					return;
 				}
 				MacroStep step = cursor.step();
-				if (step instanceof MacroStep.WaitUntil waitUntil
-					&& !condition(waitUntil.condition(), minecraft, chatStartSequence, cursor.frame().variables)) {
-					if (!blocked(minecraft, "waiting for condition")) return;
+				if (step instanceof MacroStep.Unknown unknown) {
+					pauseForUnknownStep(minecraft, unknown, cursor.frame());
 					return;
+				}
+				if (step instanceof MacroStep.Comment) {
+					cursor.frame().index++;
+					clearBlocked();
+					continue;
+				}
+				if (step instanceof MacroStep.WaitUntil waitUntil) {
+					ConditionResult result = condition(waitUntil.condition(), minecraft, chatStartSequence, cursor.frame().variables);
+					if (result == ConditionResult.UNKNOWN) { stopForUnknownCondition(minecraft, "Wait Until"); return; }
+					if (result == ConditionResult.FALSE) {
+						if (!blocked(minecraft, "waiting for condition")) return;
+						return;
+					}
+				}
+				if (step instanceof MacroStep.Wait wait && wait.mode() == MacroStep.Wait.Mode.CONDITION) {
+					ConditionResult result = condition(wait.condition(), minecraft, chatStartSequence, cursor.frame().variables);
+					if (result == ConditionResult.UNKNOWN) { stopForUnknownCondition(minecraft, "Wait"); return; }
+					if (result == ConditionResult.FALSE) {
+						if (!blocked(minecraft, "waiting for condition")) return;
+						return;
+					}
 				}
 				if (step instanceof MacroStep.WorldSwitch worldSwitch && worldSwitchFrame == null) {
 					if (!delayReady(step, now)) return;
@@ -975,25 +1116,61 @@ public final class MacroRunner {
 					worldSwitchTarget = worldSwitch.target();
 				}
 				if (!(step instanceof MacroStep.WorldSwitch) && !(step instanceof MacroStep.RepeatUntil)
+					&& !(step instanceof MacroStep.Repeat repeat && repeat.mode() == MacroStep.Repeat.Mode.UNTIL)
 					&& !delayReady(step, now)) return;
 				if (step instanceof MacroStep.IfElse branch) {
+					ConditionResult result = condition(branch.condition(), minecraft, chatStartSequence, cursor.frame().variables);
+					if (result == ConditionResult.UNKNOWN) { stopForUnknownCondition(minecraft, "If / else"); return; }
 					cursor.frame().index++;
-					List<MacroStep> selected = condition(branch.condition(), minecraft, chatStartSequence, cursor.frame().variables)
-						? branch.thenSteps() : branch.elseSteps();
+					List<MacroStep> selected = result == ConditionResult.TRUE
+						? branch.thenSteps() : branch.elseEnabled() ? branch.elseSteps() : List.of();
 					if (!selected.isEmpty()) frames.push(new Frame(selected, 0, 1, false, null, cursor.frame()));
 					continue;
 				}
+				if (step instanceof MacroStep.Switch value) {
+					Object current = value.targetsGlobal()
+						? MacrosModule.INSTANCE.globalVariables().value(value.globalVariableId())
+						: cursor.frame().variables.get(value.name());
+					String match = current == null ? "" : current.toString();
+					MacroStep.SwitchCase selected = value.cases().stream()
+						.filter(branch -> branch.value().equals(match)).findFirst().orElse(null);
+					List<MacroStep> child = selected == null ? value.defaultSteps() : selected.steps();
+					cursor.frame().index++;
+					if (!child.isEmpty()) frames.push(new Frame(child, 0, 1, false, null, cursor.frame()));
+					continue;
+				}
 				if (step instanceof MacroStep.Repeat repeat) {
+					if (repeat.mode() == MacroStep.Repeat.Mode.UNTIL) {
+						ConditionResult result = condition(repeat.condition(), minecraft, chatStartSequence, cursor.frame().variables);
+						if (result == ConditionResult.UNKNOWN) { stopForUnknownCondition(minecraft, "Repeat Until"); return; }
+						MacroFlowRules.UntilDecision decision = MacroFlowRules.repeatUntil(
+							result == ConditionResult.TRUE, !repeat.steps().isEmpty());
+						if (decision == MacroFlowRules.UntilDecision.EXIT) {
+							cursor.frame().index++;
+							clearBlocked();
+							continue;
+						}
+						if (decision == MacroFlowRules.UntilDecision.EMPTY_BODY) {
+							abort("Repeat Until has no steps");
+							return;
+						}
+						if (!delayReady(step, now)) return;
+						cursor.frame().index++;
+						frames.push(new Frame(repeat.steps(), 0, 1, false, repeat, cursor.frame()));
+						continue;
+					}
 					cursor.frame().index++;
 					if (!repeat.steps().isEmpty()) {
-						frames.push(new Frame(repeat.steps(), 0, repeat.forever() ? -1 : repeat.count(), true,
+						frames.push(new Frame(repeat.steps(), 0, repeat.mode() == MacroStep.Repeat.Mode.FOREVER ? -1 : repeat.count(), true,
 							null, cursor.frame()));
 					}
 					continue;
 				}
 				if (step instanceof MacroStep.RepeatUntil repeatUntil) {
+					ConditionResult result = condition(repeatUntil.condition(), minecraft, chatStartSequence, cursor.frame().variables);
+					if (result == ConditionResult.UNKNOWN) { stopForUnknownCondition(minecraft, "Repeat Until"); return; }
 					MacroFlowRules.UntilDecision decision = MacroFlowRules.repeatUntil(
-						condition(repeatUntil.condition(), minecraft, chatStartSequence, cursor.frame().variables), !repeatUntil.steps().isEmpty());
+						result == ConditionResult.TRUE, !repeatUntil.steps().isEmpty());
 					if (decision == MacroFlowRules.UntilDecision.EXIT) {
 						cursor.frame().index++;
 						clearBlocked();
@@ -1016,17 +1193,25 @@ public final class MacroRunner {
 					// A false condition skips the call and the workflow carries on: the block is a
 					// shorthand for "call it if this holds", not an error path, so it stays quiet in
 					// chat and leaves one line in the debug log.
-					if (macroCall.condition() != null
-						&& !condition(macroCall.condition(), minecraft, chatStartSequence, cursor.frame().variables)) {
+					if (macroCall.condition() != null) {
+						ConditionResult result = condition(macroCall.condition(), minecraft, chatStartSequence, cursor.frame().variables);
+						if (result == ConditionResult.UNKNOWN) { stopForUnknownCondition(minecraft, "Call Macro"); return; }
+						if (result == ConditionResult.FALSE) {
 						cursor.frame().index++;
 						clearBlocked();
 						log(macro, "SKIP call to macro " + macroCall.macroId() + " (condition false)");
 						continue;
+						}
 					}
 					if (!callMacro(macroCall, cursor.frame(), minecraft)) return;
 					continue;
 				}
 				if (step instanceof MacroStep.WaitUntil waitUntil) {
+					cursor.frame().index++;
+					clearBlocked();
+					return;
+				}
+				if (step instanceof MacroStep.Wait wait && wait.mode() == MacroStep.Wait.Mode.CONDITION) {
 					cursor.frame().index++;
 					clearBlocked();
 					return;
@@ -1050,6 +1235,10 @@ public final class MacroRunner {
 				}
 				cursor.frame().index++;
 				clearBlocked();
+				if (step instanceof MacroStep.StopRun) {
+					finishRun(this, "stopped by Stop Run block", true);
+					return;
+				}
 				return;
 			}
 			abort("workflow contains too many empty structural steps");
@@ -1060,8 +1249,14 @@ public final class MacroRunner {
 				Frame frame = frames.peek();
 				if (frame.index < frame.steps.size()) return new Cursor(frame, frame.steps.get(frame.index));
 				if (frame.repeatUntil != null) {
+					ConditionResult result = condition(untilCondition(frame.repeatUntil), minecraft,
+						chatStartSequence, frame.variables);
+					if (result == ConditionResult.UNKNOWN) {
+						stopForUnknownCondition(minecraft, "Repeat Until");
+						return null;
+					}
 					MacroFlowRules.UntilDecision decision = MacroFlowRules.repeatUntil(
-					condition(frame.repeatUntil.condition(), minecraft, chatStartSequence, frame.variables), !frame.steps.isEmpty());
+					result == ConditionResult.TRUE, !frame.steps.isEmpty());
 					if (decision == MacroFlowRules.UntilDecision.EXIT) {
 						popFrame(true);
 						clearBlocked();
@@ -1088,7 +1283,13 @@ public final class MacroRunner {
 		private boolean finishRepeatUntilWhenItemIsMissing(Minecraft minecraft) {
 			for (Frame frame : frames) {
 				if (frame.repeatUntil == null) continue;
-				boolean stopConditionTrue = condition(frame.repeatUntil.condition(), minecraft, chatStartSequence, frame.variables);
+				ConditionResult result = condition(untilCondition(frame.repeatUntil), minecraft,
+					chatStartSequence, frame.variables);
+				if (result == ConditionResult.UNKNOWN) {
+					stopForUnknownCondition(minecraft, "Repeat Until");
+					return true;
+				}
+				boolean stopConditionTrue = result == ConditionResult.TRUE;
 				if (!MacroFlowRules.missingItemEndsUntil(true, stopConditionTrue)) return false;
 				while (frames.peek() != frame) popFrame(false);
 				popFrame(false);
@@ -1098,6 +1299,12 @@ public final class MacroRunner {
 				return true;
 			}
 			return false;
+		}
+
+		private MacroCondition untilCondition(MacroStep step) {
+			if (step instanceof MacroStep.Repeat repeat) return repeat.condition();
+			if (step instanceof MacroStep.RepeatUntil repeatUntil) return repeatUntil.condition();
+			return new MacroCondition.Always(false);
 		}
 
 		private void popFrame(boolean completed) {
@@ -1120,9 +1327,16 @@ public final class MacroRunner {
 			if (step instanceof MacroStep.Chat chat) {
 				if (minecraft.player == null || chat.message().isBlank()) return false;
 				String value = expandVariables(chat.message(), variables);
-				minecraft.player.connection.sendChat(value);
-				rememberSentChat(value);
-				log(macro, "CHAT " + value);
+				if (value.stripLeading().startsWith("/")) {
+					String command = value.stripLeading().substring(1);
+					if (command.isBlank()) return false;
+					minecraft.player.connection.sendCommand(command);
+					log(macro, "COMMAND /" + command);
+				} else {
+					minecraft.player.connection.sendChat(value);
+					rememberSentChat(value);
+					log(macro, "CHAT " + value);
+				}
 				return true;
 			}
 			if (step instanceof MacroStep.Title title) {
@@ -1137,19 +1351,21 @@ public final class MacroRunner {
 				return true;
 			}
 			if (step instanceof MacroStep.Wait wait) {
+				if (wait.mode() == MacroStep.Wait.Mode.CONDITION) return true;
 				nextActionNanos = now + delay(wait.minMillis(), wait.maxMillis()) * 1_000_000L;
 				return true;
 			}
-			if (step instanceof MacroStep.Key key) return pressKey(key, minecraft, now);
+			if (step instanceof MacroStep.Comment || step instanceof MacroStep.StopRun) return true;
+			if (step instanceof MacroStep.Scroll scroll) return executeScroll(scroll, minecraft);
+			if (step instanceof MacroStep.Key key) {
+				return switch (key.inputMode()) {
+					case KEYBOARD -> pressKey(key, minecraft, now);
+					case MOUSE -> pressMouse(key.mouseButton(), key.hold(), delay(key.holdMinMillis(), key.holdMaxMillis()), minecraft, now);
+					case HOTBAR -> selectHotbarSlot(key.hotbarSlot(), minecraft);
+				};
+			}
 			if (step instanceof MacroStep.SelectHotbarSlot select) {
-				if (minecraft.player == null) return false;
-				if (!MacroRuntimeRules.canSelectHotbar(minecraft.screen instanceof AbstractContainerScreen<?>)) {
-					if (notices.add("hotbar-screen")) message(minecraft,
-						"Hotbar selection skipped while an inventory or container is open.");
-					return true;
-				}
-				minecraft.player.getInventory().setSelectedSlot(select.slot() - 1);
-				return true;
+				return selectHotbarSlot(select.slot(), minecraft);
 			}
 			if (step instanceof MacroStep.MouseButton mouse) return pressMouse(mouse, minecraft, now);
 			if (step instanceof MacroStep.BlockPlayerInput block) {
@@ -1181,6 +1397,35 @@ public final class MacroRunner {
 				double number = current instanceof Number value ? value.doubleValue() : 0;
 				variables.put(change.name(), number + change.amount());
 				return true;
+			}
+			if (step instanceof MacroStep.UpdateVariable update) {
+				MacroVariableStore globals = MacrosModule.INSTANCE.globalVariables();
+				if (update.operation() == MacroStep.UpdateVariable.Operation.SET) {
+					Object value = update.value().resolve(variables, globals);
+					if (update.targetsGlobal()) globals.setValue(update.globalVariableId(), value);
+					else variables.put(update.name(), value);
+					return true;
+				}
+				Object current = update.targetsGlobal() ? globals.value(update.globalVariableId()) : variables.get(update.name());
+				double number;
+				if (current instanceof Number numeric) number = numeric.doubleValue();
+				else if (current == null || current.toString().isBlank()) number = 0;
+				else {
+					try { number = Double.parseDouble(current.toString()); }
+					catch (NumberFormatException ignored) { return false; }
+				}
+				double delta = update.operation() == MacroStep.UpdateVariable.Operation.ADD
+					? update.amount() : -update.amount();
+				if (update.targetsGlobal()) globals.setValue(update.globalVariableId(), number + delta);
+				else variables.put(update.name(), number + delta);
+				return true;
+			}
+			if (step instanceof MacroStep.InventoryClick click) {
+				if (click.target() == MacroStep.InventoryClick.Target.SLOT) {
+					return clickSlot(new MacroStep.ClickSlot(click.slotId(), click.button(), click.shift()), minecraft);
+				}
+				return clickItem(new MacroStep.ClickItem(click.name(), click.contains(), click.scope(),
+					click.occurrence(), click.button(), click.shift()), minecraft);
 			}
 			if (step instanceof MacroStep.ClickSlot click) return clickSlot(click, minecraft);
 			if (step instanceof MacroStep.ClickItem click) return clickItem(click, minecraft);
@@ -1217,6 +1462,32 @@ public final class MacroRunner {
 			return true;
 		}
 
+		private boolean selectHotbarSlot(int slot, Minecraft minecraft) {
+			if (minecraft.player == null) return false;
+			if (!MacroRuntimeRules.canSelectHotbar(minecraft.screen instanceof AbstractContainerScreen<?>)) {
+				if (notices.add("hotbar-screen")) message(minecraft,
+					"Hotbar selection skipped while an inventory or container is open.");
+				return true;
+			}
+			minecraft.player.getInventory().setSelectedSlot(Math.max(1, Math.min(9, slot)) - 1);
+			return true;
+		}
+
+		private boolean executeScroll(MacroStep.Scroll scroll, Minecraft minecraft) {
+			double amount = scroll.direction() == MacroStep.Scroll.Direction.UP
+				? scroll.amount() : -scroll.amount();
+			if (minecraft.screen != null) {
+				minecraft.screen.mouseScrolled(minecraft.mouseHandler.getScaledXPos(minecraft.getWindow()),
+					minecraft.mouseHandler.getScaledYPos(minecraft.getWindow()), 0.0, amount);
+				return true;
+			}
+			if (minecraft.player == null) return false;
+			int direction = (int) Math.signum(amount);
+			int selected = minecraft.player.getInventory().getSelectedSlot();
+			minecraft.player.getInventory().setSelectedSlot(Math.floorMod(selected - direction * scroll.amount(), 9));
+			return true;
+		}
+
 		private void beginHeldKey(Screen screen, InputConstants.Key key, boolean delivered,
 			long now, MacroStep.Key step) {
 			int holdMillis = delay(step.holdMinMillis(), step.holdMaxMillis());
@@ -1228,20 +1499,30 @@ public final class MacroRunner {
 		}
 
 		private boolean pressMouse(MacroStep.MouseButton step, Minecraft minecraft, long now) {
+			return pressMouse(step.button(), step.hold(), step.holdMillis(), minecraft, now);
+		}
+
+		private boolean pressMouse(MacroStep.MouseButton.Button button, boolean hold, int holdMillis,
+			Minecraft minecraft, long now) {
 			if (minecraft.player == null || minecraft.screen != null) {
 				if (notices.add("mouse-screen")) message(minecraft,
 					"Mouse macro blocks run only in the world; close the current screen first.");
 				return true;
 			}
-			int mouseButton = switch (step.button()) {
+			int mouseButton = switch (button) {
 				case LEFT -> 0;
 				case RIGHT -> 1;
 				case MIDDLE -> 2;
+				case BUTTON_4 -> 3;
+				case BUTTON_5 -> 4;
+				case BUTTON_6 -> 5;
+				case BUTTON_7 -> 6;
+				case BUTTON_8 -> 7;
 			};
 			InputConstants.Key key = InputConstants.Type.MOUSE.getOrCreate(mouseButton);
-			if (step.hold()) {
+			if (hold) {
 				heldMouseInput = key;
-				heldMouseUntilNanos = now + step.holdMillis() * 1_000_000L;
+				heldMouseUntilNanos = now + Math.max(1, holdMillis) * 1_000_000L;
 				acquireHeldKey(this, key);
 			} else clickSyntheticKey(key);
 			return true;
@@ -1366,6 +1647,27 @@ public final class MacroRunner {
 			finishRun(this, reason, false);
 		}
 
+		private void stopForUnknownCondition(Minecraft minecraft, String nodeName) {
+			String notice = nodeName + " needs current client data; this macro was stopped because the value is missing or stale.";
+			message(minecraft, "Macro '" + macro.name() + "' stopped: " + notice);
+			log(macro, "STOPPED: unknown condition in " + nodeName);
+			abort("unknown condition in " + nodeName);
+		}
+
+		private void pauseForUnknownStep(Minecraft minecraft, MacroStep.Unknown step, Frame frame) {
+			String type = step.originalType();
+			pausedReason = step.depthLimited()
+				? "a block exceeds the supported nesting depth"
+				: "this build does not recognize block type '" + type + "'";
+			pausedAtUnknown = step;
+			pausedFrame = frame;
+			releaseAllInputs();
+			clearBlocked();
+			message(minecraft, "Macro '" + macro.name() + "' paused at a preserved block: " + pausedReason
+				+ ". Open the editor to inspect its raw data, then remove or replace it before resuming.");
+			log(macro, "PAUSED: preserved unknown step " + type);
+		}
+
 		private final Set<String> notices = new HashSet<>();
 	}
 
@@ -1374,7 +1676,7 @@ public final class MacroRunner {
 		private int index;
 		private int repeatsRemaining;
 		private final boolean repeatFrame;
-		private final MacroStep.RepeatUntil repeatUntil;
+		private final MacroStep repeatUntil;
 		private final Map<String, Object> variables;
 		private final Set<String> functionPath;
 		private final Set<Integer> macroPath;
@@ -1389,20 +1691,20 @@ public final class MacroRunner {
 		}
 
 		private Frame(List<MacroStep> steps, int index, int repeatsRemaining, boolean repeatFrame,
-			MacroStep.RepeatUntil repeatUntil) {
+			MacroStep repeatUntil) {
 			this(steps, index, repeatsRemaining, repeatFrame, repeatUntil,
 				new HashMap<>(), Set.of(), Set.of(), 0, null, null);
 		}
 
 		private Frame(List<MacroStep> steps, int index, int repeatsRemaining, boolean repeatFrame,
-			MacroStep.RepeatUntil repeatUntil, Frame parent) {
+			MacroStep repeatUntil, Frame parent) {
 			this(steps, index, repeatsRemaining, repeatFrame, repeatUntil,
 				parent.variables, parent.functionPath, parent.macroPath, parent.callDepth,
 				parent.eventScriptId, null);
 		}
 
 		private Frame(List<MacroStep> steps, int index, int repeatsRemaining, boolean repeatFrame,
-			MacroStep.RepeatUntil repeatUntil, Map<String, Object> variables, Set<String> functionPath,
+			MacroStep repeatUntil, Map<String, Object> variables, Set<String> functionPath,
 			Set<Integer> macroPath, int callDepth, String eventScriptId, Frame returnCaller) {
 			this.steps = steps;
 			this.index = index;

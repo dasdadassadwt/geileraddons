@@ -118,8 +118,8 @@ public final class MacroChatTriggerChecks {
 		MacroDefinition macro = new MacroDefinition(41);
 		macro.restoreScripts(List.of(chat));
 		JsonObject packageRoot = JsonParser.parseString(MacroTransfer.encode(List.of(macro))).getAsJsonObject();
-		assertEquals(5, packageRoot.get("version").getAsInt(),
-			"the transfer format is version 5 now that chat stacks exist");
+		assertEquals(7, packageRoot.get("version").getAsInt(),
+			"the transfer format is version 7 with zoom-range migration metadata");
 		MacroDefinition imported = MacroTransfer.decode(packageRoot.toString(), 100).macros().getFirst();
 		MacroScript importedChat = imported.scripts().stream()
 			.filter(script -> script.trigger() == MacroScript.Trigger.CHAT).findFirst().orElseThrow();

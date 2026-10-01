@@ -4,6 +4,7 @@ import geiler.addons.client.config.GeilerAddonsLog;
 import geiler.addons.client.enchanting.ChronomatronEvent;
 import geiler.addons.client.enchanting.ExperimentBoardGeometry;
 import geiler.addons.client.enchanting.ExperimentClickGate;
+import geiler.addons.client.enchanting.ExperimentCell;
 import geiler.addons.client.enchanting.ExperimentPhase;
 import geiler.addons.client.enchanting.ExperimentSnapshot;
 import geiler.addons.client.enchanting.ExperimentSolverEngine;
@@ -25,9 +26,9 @@ import java.util.List;
 /**
  * The single owner of experiment observation, menu listeners, and solver state.
  *
- * <p>The Solver module is a renderer and manual-input adapter. Auto Experiments is a timed input
- * adapter. Both read this controller's immutable view and share the same session and engine, so
- * enabling both never creates duplicate observations or competing cursors.</p>
+ * <p>The Solver module is a renderer and manual-input adapter. Auto Experiments reads this
+ * controller's immutable view and uses its own timed Ultrasequencer execution cursor; automated
+ * clicks do not advance or confirm the solver cursor.</p>
  */
 public final class ExperimentController {
 	public static final ExperimentController INSTANCE = new ExperimentController();
@@ -124,66 +125,87 @@ public final class ExperimentController {
 	}
 
 	/**
+	 * Whether a click on this slot is the step the solver is currently asking for.
+	 *
+	 * <p>Used to tell a player's legal move apart from a player taking over. Both were previously
+	 * treated the same way, so a manual click on the correct button - which on the Ultrasequencer is
+	 * the round's opening move - paused automation and cancelled the click that was already queued.
+	 */
+	public boolean isExpectedStepClick(int slotId) {
+		return view.current().map(step -> step.containsSlot(slotId)).orElse(false);
+	}
+
+	/**
 	 * Validates the live screen, active menu, puzzle, and exact solver step, then invokes vanilla's
 	 * normal PICKUP slot-click path and confirms that step once after dispatch.
 	 */
 	public boolean dispatchSequenceClick(AbstractContainerScreen<?> screen, int slotId,
 		ExperimentSolverModule.SlotClickDispatcher dispatcher) {
-		return dispatchSequenceClick(screen, -1, slotId, dispatcher);
+		return dispatchSequenceClickResult(screen, -1, slotId, dispatcher).dispatched();
 	}
 
-	private boolean dispatchSequenceClick(AbstractContainerScreen<?> screen, int expectedSequenceIndex,
+	ExperimentClickGate.SequenceDispatchResult dispatchManualSequenceClick(AbstractContainerScreen<?> screen,
+		int slotId, ExperimentSolverModule.SlotClickDispatcher dispatcher) {
+		return dispatchSequenceClickResult(screen, -1, slotId, dispatcher);
+	}
+
+	private ExperimentClickGate.SequenceDispatchResult dispatchSequenceClickResult(
+		AbstractContainerScreen<?> screen, int expectedSequenceIndex,
 		int slotId, ExperimentSolverModule.SlotClickDispatcher dispatcher) {
 		if (screen == null || dispatcher == null || slotId < 0) {
 			logDispatchRejection("invalid request");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		Minecraft minecraft = Minecraft.getInstance();
 		if (!minecraft.isSameThread()) {
 			logDispatchRejection("not on the client thread");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		if (minecraft.screen != screen) {
 			logDispatchRejection("screen replaced");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		if (!isEligibleScreen(screen)) {
 			logDispatchRejection("no active experiment owner");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		observe(screen);
 		if (!isCurrentSession(screen)) {
 			logDispatchRejection("session replaced");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		if (!hasActiveOwner(session.type)) {
 			logDispatchRejection("module disabled during dispatch");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		if (session.type != ExperimentType.CHRONOMATRON
 			&& session.type != ExperimentType.ULTRASEQUENCER) {
 			logDispatchRejection("experiment is not a sequence game");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		Slot slot = boardSlot(screen.getMenu(), session.type, session.tier, slotId);
 		if (slot == null) {
 			logDispatchRejection("slot " + slotId + " is not a live board slot");
-			return false;
+			return ExperimentClickGate.SequenceDispatchResult.REJECTED;
 		}
 		engine.configure(ExperimentSolverModule.INSTANCE.configuration());
 		int dispatchSequenceIndex = expectedSequenceIndex >= 0 ? expectedSequenceIndex
 			: view.current().map(step -> step.index()).orElse(-1);
-		boolean success = clickGate.dispatchSequenceClick(engine, dispatchSequenceIndex, slotId,
+		ExperimentClickGate.SequenceDispatchResult result = clickGate.dispatchSequenceClickResult(
+			engine, dispatchSequenceIndex, slotId,
 			isCurrentSession(screen) && hasActiveOwner(session.type),
 			id -> dispatcher.dispatch(slot, id, 0, ContainerInput.PICKUP));
-		if (success) {
+		if (result.dispatched()) {
 			view = engine.view();
+			if (result == ExperimentClickGate.SequenceDispatchResult.UNCERTAIN) {
+				logDispatchRejection("vanilla click ran, but solver progress was not confirmed safely; do not resend");
+			}
 		} else {
 			logDispatchRejection("click gate rejected index " + dispatchSequenceIndex + " slot " + slotId
 				+ " at " + view.phase() + " index " + view.visualIndex()
 				+ "/" + view.sequence().size());
 		}
-		return success;
+		return result;
 	}
 
 	/** Records the first gate that refused an automated click; silent rejections are undiagnosable. */
@@ -198,11 +220,49 @@ public final class ExperimentController {
 			"dispatch rejected: " + reason);
 	}
 
-	/** Automation entry point with a fresh master/per-experiment toggle check at dispatch time. */
+	/** Chronomatron-only Auto entry point; Ultrasequencer uses its one-pass executor below. */
 	public boolean dispatchAutoSequenceClick(AbstractContainerScreen<?> screen, int sequenceIndex, int slotId,
 		ExperimentSolverModule.SlotClickDispatcher dispatcher) {
-		if (!isAutoEligibleScreen(screen)) return false;
-		return dispatchSequenceClick(screen, sequenceIndex, slotId, dispatcher);
+		if (!isAutoEligibleScreen(screen)
+			|| ExperimentType.fromTitle(screen.getTitle().getString()).orElse(null)
+				!= ExperimentType.CHRONOMATRON) return false;
+		return dispatchSequenceClickResult(screen, sequenceIndex, slotId, dispatcher).dispatched();
+	}
+
+	/**
+	 * Dispatches one solver-provided Ultrasequencer slot through vanilla after checking only the
+	 * active client screen, experiment session, and board-slot identity. Auto owns the execution
+	 * cursor; this path deliberately does not confirm a solver click or inspect server progress.
+	 */
+	boolean dispatchAutoUltrasequencerClick(AbstractContainerScreen<?> screen,
+		int slotId, ExperimentSolverModule.SlotClickDispatcher dispatcher) {
+		if (screen == null || dispatcher == null || slotId < 0
+			|| !isAutoEligibleScreen(screen)
+			|| ExperimentType.fromTitle(screen.getTitle().getString()).orElse(null) != ExperimentType.ULTRASEQUENCER) {
+			logDispatchRejection("Ultrasequencer request is no longer eligible");
+			return false;
+		}
+		Minecraft minecraft = Minecraft.getInstance();
+		if (!minecraft.isSameThread() || minecraft.screen != screen) {
+			logDispatchRejection("Ultrasequencer screen changed before dispatch");
+			return false;
+		}
+		if (!isCurrentSession(screen) || session.type != ExperimentType.ULTRASEQUENCER
+			|| !hasActiveOwner(ExperimentType.ULTRASEQUENCER)) {
+			logDispatchRejection("Ultrasequencer session changed before dispatch");
+			return false;
+		}
+		Slot slot = boardSlot(screen.getMenu(), session.type, session.tier, slotId);
+		if (slot == null) {
+			logDispatchRejection("Ultrasequencer slot " + slotId + " is not part of the active menu board");
+			return false;
+		}
+		if (clickGate.dispatching()) {
+			logDispatchRejection("another custom experiment click is already dispatching");
+			return false;
+		}
+		clickGate.dispatchVanilla(() -> dispatcher.dispatch(slot, slotId, 0, ContainerInput.PICKUP));
+		return true;
 	}
 
 	/** Superpairs is manual-only, but its intentional custom click still passes through vanilla. */

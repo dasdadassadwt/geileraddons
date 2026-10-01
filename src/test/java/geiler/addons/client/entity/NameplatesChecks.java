@@ -31,6 +31,19 @@ public final class NameplatesChecks {
 			"ordinary floating labels exclude nearby players");
 		assertSame(nearbyPlayer, Nameplates.resolveBody(nearbyPlayer, List.of(body), true),
 			"the direct fake-player path keeps the exact player body");
+
+		ArmorStand namedLabel = new ArmorStand((Level) null, 0, 0, 0);
+		Player labelledMob = testPlayer(0.5, 0, 0);
+		assertSame(labelledMob, Nameplates.resolveUnambiguousBody(namedLabel,
+			List.of(namedLabel, labelledMob), true),
+			"a named armor stand is treated as a label, not as the miniboss body");
+
+		Entity crowdedLabel = markerLikeEntity(0, 0, 0);
+		Player leftBody = testPlayer(-0.5, 0, 0);
+		Player rightBody = testPlayer(0.5, 0, 0);
+		assertSame(null, Nameplates.resolveUnambiguousBody(crowdedLabel,
+			List.of(leftBody, rightBody), true),
+			"an equidistant nameplate does not get attached to the wrong nearby mob");
 	}
 
 	private static Entity markerLikeEntity(double x, double y, double z) {

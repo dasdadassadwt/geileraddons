@@ -6,11 +6,15 @@ import geiler.addons.client.macro.MacroDefinition;
 import geiler.addons.client.macro.MacroRunner;
 import geiler.addons.client.macro.MacroStep;
 import geiler.addons.client.macro.MacroScript;
-import geiler.addons.client.module.impl.GeneralModule;
+import geiler.addons.client.module.impl.DungeonHelperModule;
+import geiler.addons.client.module.impl.MacrosModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonInfo;
+import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Client-thread owner of module keybind capture and activation. */
@@ -124,6 +128,7 @@ public final class ModuleKeybindManager {
 			if (action == InputConstants.RELEASE && pendingBind != null
 				&& InputConstants.getKey(event).equals(pendingBind.key())) {
 				bindingScript.setKeybind(pendingBind);
+				reportConflicts(pendingBind);
 				ModConfig.markDirty();
 				cancelBinding();
 				return true;
@@ -144,6 +149,7 @@ public final class ModuleKeybindManager {
 			if (action == InputConstants.RELEASE && pendingBind != null
 				&& InputConstants.getKey(event).equals(pendingBind.key())) {
 				bindingMacro.setKeybind(pendingBind);
+				reportConflicts(pendingBind);
 				ModConfig.markDirty();
 				cancelBinding();
 				return true;
@@ -164,6 +170,7 @@ public final class ModuleKeybindManager {
 			if (action == InputConstants.RELEASE && pendingBind != null
 				&& InputConstants.getKey(event).equals(pendingBind.key())) {
 				bindingModule.setKeybind(pendingBind);
+				reportConflicts(pendingBind);
 				ModConfig.markDirty();
 				cancelBinding();
 				return true;
@@ -176,15 +183,100 @@ public final class ModuleKeybindManager {
 		List<Module> modules = ModuleManager.modules();
 		boolean matched = false;
 		for (Module module : modules) {
+			if (!module.showsKeybindControl()) continue;
 			if (!module.keybind().matches(event)) continue;
-			// General is a settings holder with nothing to toggle, so its key does the one action
-			// it advertises instead of flipping a switch that changes nothing.
-			if (module == GeneralModule.INSTANCE) MacroRunner.replayLastBlocked();
-			else module.toggle();
+			if (module == DungeonHelperModule.INSTANCE) DungeonHelperModule.INSTANCE.openEditorFromKeybind();
+			else {
+				module.toggle();
+				reportModuleToggle(module);
+			}
 			matched = true;
 		}
 		if (matched) ModConfig.markDirty();
 		return matched;
+	}
+
+	/** Handles mouse binds before Minecraft forwards the click, including buttons 4 through 8. */
+	public static boolean handleMouseButtonEvent(Minecraft minecraft, int action, MouseButtonInfo event) {
+		if (event == null) return false;
+		if (isCapturing()) {
+			if (action != InputConstants.PRESS) return true;
+			int button = event.button();
+			if (button < 0 || button > 7) return true;
+			if (bindingKeyStep != null) {
+				bindingKeyStep.setKey(InputConstants.Type.MOUSE.getOrCreate(button).getName());
+				ModConfig.markDirty();
+				cancelBinding();
+				return true;
+			}
+			ModuleKeybind bound = ModuleKeybind.fromMouse(button, event.modifiers());
+			if (bindingModule != null) bindingModule.setKeybind(bound);
+			else if (bindingMacro != null) bindingMacro.setKeybind(bound);
+			else if (bindingScript != null) bindingScript.setKeybind(bound);
+			else return true;
+			reportConflicts(bound);
+			ModConfig.markDirty();
+			cancelBinding();
+			return true;
+		}
+		if (action != InputConstants.PRESS || minecraft == null || minecraft.screen != null) return false;
+		if (MacroRunner.handleMouseButtonEvent(minecraft, action, event)) return true;
+		boolean matched = false;
+		for (Module module : ModuleManager.modules()) {
+			if (!module.showsKeybindControl()) continue;
+			if (!module.keybind().matchesMouse(event.button(), event.modifiers())) continue;
+			if (module == DungeonHelperModule.INSTANCE) DungeonHelperModule.INSTANCE.openEditorFromKeybind();
+			else {
+				module.toggle();
+				reportModuleToggle(module);
+			}
+			matched = true;
+		}
+		if (matched) ModConfig.markDirty();
+		return matched;
+	}
+
+	private static boolean isCapturing() {
+		return bindingModule != null || bindingMacro != null || bindingKeyStep != null || bindingScript != null;
+	}
+
+	private static void reportModuleToggle(Module module) {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (module == null || minecraft.gui == null) return;
+		String state = module.isEnabled() ? "enabled" : "disabled";
+		minecraft.gui.getChat().addClientSystemMessage(Component.literal(
+			"[GeilerAddons] " + module.name() + " is now " + state + "."));
+	}
+
+	/**
+	 * Names the other owner of a freshly bound key, so a shadowed hotkey is never a silent loss.
+	 *
+	 * <p>Macro hotkeys are consulted before module keybinds and every matching module is toggled, so a
+	 * collision used to mean one of two things happened invisibly: the macro swallowed the module's
+	 * key, or one press flipped several modules at once. Reported rather than resolved - which of the
+	 * two the player meant is their choice.
+	 */
+	private static void reportConflicts(ModuleKeybind bound) {
+		if (bound == null || !bound.isBound()) return;
+		List<String> others = new ArrayList<>();
+		for (Module module : ModuleManager.modules()) {
+			if (module.showsKeybindControl() && module != bindingModule && module.keybind().conflictsWith(bound)) {
+				others.add(module.name());
+			}
+		}
+		for (MacroDefinition macro : MacrosModule.INSTANCE.macros()) {
+			if (macro != bindingMacro && macro.keybind().conflictsWith(bound)) {
+				others.add("the macro \"" + macro.name() + "\"");
+			}
+		}
+		if (others.isEmpty()) return;
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.gui == null) return;
+		String owner = bindingModule != null ? bindingModule.name()
+			: bindingMacro != null ? "the macro \"" + bindingMacro.name() + "\"" : "the new hotkey";
+		minecraft.gui.getChat().addClientSystemMessage(Component.literal(
+			"[GeilerAddons] " + bound.displayName() + " is also bound to "
+				+ String.join(", ", others) + ", so " + owner + " will not be the only thing it triggers."));
 	}
 
 	private static boolean isEscape(KeyEvent event) {
@@ -193,15 +285,7 @@ public final class ModuleKeybindManager {
 
 	private static boolean isUsable(KeyEvent event) {
 		return event.key() != GLFW.GLFW_KEY_UNKNOWN
-			&& event.key() != InputConstants.KEY_ESCAPE
-			&& event.key() != InputConstants.KEY_LSHIFT
-			&& event.key() != InputConstants.KEY_RSHIFT
-			&& event.key() != InputConstants.KEY_LCONTROL
-			&& event.key() != InputConstants.KEY_RCONTROL
-			&& event.key() != InputConstants.KEY_LALT
-			&& event.key() != InputConstants.KEY_RALT
-			&& event.key() != InputConstants.KEY_LSUPER
-			&& event.key() != InputConstants.KEY_RSUPER;
+			&& event.key() != InputConstants.KEY_ESCAPE;
 	}
 
 	/** Macro Key nodes may press a modifier by itself; activation hotkeys still require a main key. */

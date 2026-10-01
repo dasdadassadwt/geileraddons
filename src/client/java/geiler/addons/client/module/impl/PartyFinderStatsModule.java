@@ -64,6 +64,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	private final BooleanSetting compact;
 	private final BooleanSetting debug;
 	private final BooleanSetting showCata;
+	private final BooleanSetting showOverflowCata;
 	private final BooleanSetting showClass;
 	private final BooleanSetting showClassAverage;
 	private final BooleanSetting showMagicalPower;
@@ -108,6 +109,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		this.compact = settings.compact;
 		this.debug = settings.debug;
 		this.showCata = settings.showCata;
+		this.showOverflowCata = settings.showOverflowCata;
 		this.showClass = settings.showClass;
 		this.showClassAverage = settings.showClassAverage;
 		this.showMagicalPower = settings.showMagicalPower;
@@ -117,7 +119,8 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		this.showHyperion = settings.showHyperion;
 		this.showGoldenDragon = settings.showGoldenDragon;
 		this.showBank = settings.showBank;
-		group(new SettingGroup("Display", settings.compact, settings.showCata, settings.showClass,
+		group(new SettingGroup("Display", settings.compact, settings.showCata, settings.showOverflowCata,
+			settings.showClass,
 			settings.showClassAverage, settings.showMagicalPower, settings.showSecretAverage,
 			settings.showPersonalBest, settings.showTerminator, settings.showHyperion,
 			settings.showGoldenDragon, settings.showBank), SettingGroup.debug("Diagnostics", settings.debug));
@@ -126,6 +129,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	private static final class Settings {
 		final BooleanSetting compact = new BooleanSetting("Compact", false);
 		final BooleanSetting showCata = new BooleanSetting("Cata", true);
+		final BooleanSetting showOverflowCata = new BooleanSetting("Show overflow Cata", true);
 		final BooleanSetting showClass = new BooleanSetting("Class", true);
 		final BooleanSetting showClassAverage = new BooleanSetting("CA", true);
 		final BooleanSetting showMagicalPower = new BooleanSetting("MP", true);
@@ -138,7 +142,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		final BooleanSetting debug = BooleanSetting.debug("Debug", false);
 
 		List<Setting> allSettings() {
-			return List.of(compact, showCata, showClass, showClassAverage, showMagicalPower,
+			return List.of(compact, showCata, showOverflowCata, showClass, showClassAverage, showMagicalPower,
 				showSecretAverage, showPersonalBest, showTerminator, showHyperion, showGoldenDragon,
 				showBank, debug);
 		}
@@ -206,7 +210,11 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 			debug("Join detected for %s (%s), but both dungeon modules are disabled", name, classOrFloor);
 			return;
 		}
-		if (joinedClass != null) PartyListBackend.setClass(name, joinedClass);
+		if (joinedClass != null) {
+			PartyListBackend.setClass(name, joinedClass);
+			recheckRetainedAutoKickStats(floor == null ? requestedFloor : floor,
+				PartyListBackend.snapshot().generation());
+		}
 		PartySnapshot currentParty = PartyListBackend.snapshot();
 		if (cycleStarted && currentParty.inParty()) {
 			DungeonFloor effectiveFloor = floor == null ? requestedFloor : floor;
@@ -385,6 +393,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 				}
 				if (member != null && isEnabled()) showStats(floor, member, stats);
 				AutoKickModule.INSTANCE.onStats(floor, PartyListBackend.snapshot().generation(), stats);
+				recheckRetainedAutoKickStats(floor, snapshot.generation());
 			} else if (member != null && !sameIdentity) {
 				debug("Ignored stale stats result for replaced member %s", requestedName);
 			}
@@ -557,6 +566,20 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		if (displayCurrent && member != null) showStats(floor, member, stats);
 		if (autoKickActive) {
 			AutoKickModule.INSTANCE.onStats(floor, PartyListBackend.snapshot().generation(), stats);
+			recheckRetainedAutoKickStats(floor, snapshot.generation());
+		}
+	}
+
+	/** Re-evaluates cached member stats after a roster class becomes available, without another request. */
+	private void recheckRetainedAutoKickStats(DungeonFloor floor, long generation) {
+		if (floor == null || !AutoKickModule.INSTANCE.wantsData()) return;
+		PartySnapshot snapshot = PartyListBackend.snapshot();
+		if (!snapshot.inParty() || snapshot.generation() != generation) return;
+		for (PartyMember member : snapshot.members()) {
+			PartyLookupAttempts.AttemptView attempt = lookupAttempts.get(generation, member);
+			if (attempt != null && attempt.state() == PartyLookupAttempts.State.SUCCESS && attempt.stats() != null) {
+				AutoKickModule.INSTANCE.onStats(floor, generation, attempt.stats());
+			}
 		}
 	}
 
@@ -598,6 +621,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	}
 
 	private void clearDepartedMemberLookup(String name) {
+		AutoKickModule.INSTANCE.onMemberDeparted(name);
 		PartySnapshot snapshot = PartyListBackend.snapshot();
 		syncPartySession(snapshot.generation());
 		boolean attemptCleared = lookupAttempts.forgetMember(snapshot.generation(), name);
@@ -834,7 +858,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	}
 
 	private DisplayOptions displayOptions() {
-		return new DisplayOptions(compact.value(), showCata.value(), showClass.value(),
+		return new DisplayOptions(compact.value(), showCata.value(), showOverflowCata.value(), showClass.value(),
 			showClassAverage.value(), showMagicalPower.value(), showSecretAverage.value(),
 			showPersonalBest.value(), showTerminator.value(), showHyperion.value(),
 			showGoldenDragon.value(), showBank.value());
@@ -850,7 +874,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		return actions;
 	}
 
-	record DisplayOptions(boolean compact, boolean showCata, boolean showClass,
+	record DisplayOptions(boolean compact, boolean showCata, boolean showOverflowCata, boolean showClass,
 		boolean showClassAverage, boolean showMagicalPower, boolean showSecretAverage,
 		boolean showPersonalBest, boolean showTerminator, boolean showHyperion,
 		boolean showGoldenDragon, boolean showBank) {
@@ -885,8 +909,9 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 		if (options.showCata()) {
 			Component cata = Component.literal("Cata ").withStyle(ChatFormatting.GRAY)
 				.append(Component.literal(view.catacombsKnown()
-					? Integer.toString(view.catacombsLevel()) : "?").withStyle(ChatFormatting.GOLD));
-			overviewParts.add(hover(cata, catacombsTooltip(view)));
+					? DungeonStatsService.formatCatacombsLevel(view.catacombsExperience(), options.showOverflowCata())
+					: "?").withStyle(ChatFormatting.GOLD));
+			overviewParts.add(hover(cata, catacombsTooltip(view, options.showOverflowCata())));
 		}
 		if (options.showClass()) {
 			String classValue = view.selectedClass() == null ? "Class ?"
@@ -1078,10 +1103,11 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 			.append(profileTooltipText(value));
 	}
 
-	private static Component catacombsTooltip(StatsView view) {
+	private static Component catacombsTooltip(StatsView view, boolean showOverflow) {
 		if (!view.catacombsKnown()) return Component.literal("Catacombs XP data unavailable in profile");
 		DungeonStatsService.CataProgress progress = DungeonStatsService.catacombsProgress(view.catacombsExperience());
-		MutableComponent tooltip = Component.literal("Catacombs Level " + progress.level())
+		MutableComponent tooltip = Component.literal("Catacombs Level "
+			+ DungeonStatsService.formatCatacombsLevel(view.catacombsExperience(), showOverflow))
 			.withStyle(ChatFormatting.GOLD)
 			.append("\nTotal Catacombs XP: ")
 			.append(Component.literal(String.format(Locale.ROOT, "%,d", progress.totalExperience()))
@@ -1342,6 +1368,7 @@ public final class PartyFinderStatsModule extends Module implements ModulePrevie
 	private static String allPbs(DungeonStats stats, boolean master) {
 		List<String> lines = new ArrayList<>();
 		for (DungeonFloor floor : geiler.addons.client.dungeon.DungeonFloor.values()) {
+			if (floor.number() == 0) continue;
 			if (floor.master() == master) {
 				lines.add(floor.displayName() + ": " + DungeonStatsService.formatTime(stats.fastestSPlusSeconds(floor)));
 			}

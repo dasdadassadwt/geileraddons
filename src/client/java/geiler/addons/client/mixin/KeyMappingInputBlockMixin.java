@@ -39,6 +39,11 @@ public abstract class KeyMappingInputBlockMixin {
 			|| name.equals("key.left") || name.equals("key.right")
 			|| name.equals("key.jump") || name.equals("key.sneak") || name.equals("key.sprint")
 			|| name.equals("key.attack") || name.equals("key.use") || name.equals("key.pickItem")
-			|| name.matches("key\\.hotbar\\.[1-9]");
+			|| isHotbarKey(name);
+	}
+
+	private static boolean isHotbarKey(String name) {
+		return name.length() == 12 && name.startsWith("key.hotbar.")
+			&& name.charAt(11) >= '1' && name.charAt(11) <= '9';
 	}
 }
